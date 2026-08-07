@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Prism Viewer
+Name[zh_CN]=Prism 查看器
+Comment=Prism camera and IMU monitor
+Comment[zh_CN]=Prism 相机与 IMU 监视器
+Exec=prism-viewer
+Icon=prism-viewer
+Terminal=false
+Categories=Utility;Video;

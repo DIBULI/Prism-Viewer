@@ -1,0 +1,56 @@
+#include "communication/device_session.hpp"
+
+#include <stdexcept>
+
+namespace prism_viewer::communication {
+
+const std::vector<prism::DeviceInfo>& DeviceSession::refresh() {
+  if (client_.isOpen()) {
+    throw std::logic_error("cannot scan devices while a device is open");
+  }
+  devices_ = prism::Client::enumerate();
+  return devices_;
+}
+
+OpenedDevice DeviceSession::open(size_t device_index) {
+  if (device_index >= devices_.size()) {
+    throw std::out_of_range("selected USB device no longer exists");
+  }
+
+  client_.openDevice(devices_[device_index]);
+  try {
+    OpenedDevice opened;
+    opened.hello = client_.hello();
+    opened.versions = client_.deviceVersions();
+    opened.device_info = client_.deviceInfo();
+    opened.exposure = client_.cameraExposure();
+    opened.network = client_.networkInfo();
+    opened.serial_number = client_.serialNumber();
+    opened.path = client_.path();
+    return opened;
+  } catch (...) {
+    client_.closeDevice();
+    throw;
+  }
+}
+
+void DeviceSession::close() noexcept {
+  try {
+    client_.closeDevice();
+  } catch (...) {
+  }
+}
+
+bool DeviceSession::isOpen() const {
+  return client_.isOpen();
+}
+
+prism::Client& DeviceSession::client() {
+  return client_;
+}
+
+const std::vector<prism::DeviceInfo>& DeviceSession::devices() const {
+  return devices_;
+}
+
+}  // namespace prism_viewer::communication

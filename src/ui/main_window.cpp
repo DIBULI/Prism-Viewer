@@ -1,0 +1,4402 @@
+#include "prism/usb_sdk.hpp"
+#include "common/ui_text.hpp"
+#include "communication/device_session.hpp"
+#include "control/operation_controller.hpp"
+#include "dataset/dataset_browser.hpp"
+#include "dual_imu_offset_estimator.hpp"
+#include "imu_timestamp_policy.hpp"
+#include "transfer/camera_frame_assembler.hpp"
+#include "ui/camera_exposure_panel.hpp"
+#include "ui/camera_zoom_dialog.hpp"
+#include "ui/device_info_panel.hpp"
+#include "ui/main_window.hpp"
+#include "ui/preview_image_decoder.hpp"
+#include "ui/wifi_hotspot_panel.hpp"
+
+#include <QtCore/QByteArray>
+#include <QtCore/QBuffer>
+#include <QtCore/QDateTime>
+#include <QtCore/QDir>
+#include <QtCore/QEvent>
+#include <QtCore/QFileInfo>
+#include <QtCore/QMetaObject>
+#include <QtCore/QLocale>
+#include <QtCore/QProcess>
+#include <QtCore/QSettings>
+#include <QtCore/QSignalBlocker>
+#include <QtCore/QStringList>
+#include <QtCore/QTimer>
+#include <QtCharts/QChart>
+#include <QtCharts/QChartView>
+#include <QtCharts/QLegendMarker>
+#include <QtCharts/QLineSeries>
+#include <QtCharts/QValueAxis>
+#include <QtGui/QCloseEvent>
+#include <QtGui/QBrush>
+#include <QtGui/QClipboard>
+#include <QtGui/QColor>
+#include <QtGui/QImage>
+#include <QtGui/QIcon>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
+#include <QtGui/QPixmap>
+#include <QtGui/QResizeEvent>
+#include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QButtonGroup>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QGridLayout>
+#include <QtWidgets/QGroupBox>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QHeaderView>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QMainWindow>
+#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
+#include <QtWidgets/QSlider>
+#include <QtWidgets/QTableWidget>
+#include <QtWidgets/QTableWidgetItem>
+#include <QtWidgets/QTabWidget>
+#include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+QT_CHARTS_USE_NAMESPACE
+#endif
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iomanip>
+#include <iostream>
+#include <locale>
+#include <limits>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace {
+
+constexpr auto kImuRateWindow = std::chrono::seconds(5);
+constexpr auto kCameraRateWindow = std::chrono::seconds(2);
+constexpr auto kCameraFrameSetProgressTimeout = std::chrono::seconds(5);
+constexpr auto kCameraControlCommandFreshnessLimit =
+    std::chrono::seconds(1);
+// Keep transport processing at the native IMU rate. The table receives the
+// latest value at 50 Hz, while the chart keeps a separate bounded 100 Hz
+// sample stream and repaints at about 30 fps. This preserves short motion
+// details without making QtCharts redraw at the 500/1000 Hz sensor rate.
+constexpr auto kImuUiPeriod = std::chrono::milliseconds(20);
+constexpr auto kImuUiFlushPeriod = std::chrono::milliseconds(20);
+constexpr auto kImuPlotSamplePeriod = std::chrono::milliseconds(10);
+constexpr auto kImuPlotRefreshPeriod = std::chrono::milliseconds(33);
+constexpr size_t kMaximumPendingImuPlotSamples = 32;
+constexpr auto kMetadataUiPeriod = std::chrono::milliseconds(200);
+constexpr auto kCameraStatusUiPeriod = std::chrono::milliseconds(250);
+constexpr size_t kMaximumQueuedPreviewFrameSets = 1;
+constexpr int kCameraPreviewWidth = 640;
+constexpr int kCameraPreviewHeight = 512;
+using prism_viewer::common::fromFilesystemPath;
+using prism_viewer::common::toFilesystemPath;
+using prism_viewer::common::toQString;
+using prism_viewer::common::uiText;
+using prism_viewer::common::wideToQString;
+using prism_viewer::dataset::DatasetImageEntry;
+using prism_viewer::dataset::TumFileSummary;
+using prism_viewer::dataset::loadDatasetImage;
+using prism_viewer::dataset::loadDatasetImageIndex;
+using prism_viewer::dataset::summarizeTumFile;
+using prism_viewer::ui::CameraExposurePanel;
+using prism_viewer::ui::CameraZoomDialog;
+using prism_viewer::ui::DeviceInfoPanel;
+using prism_viewer::ui::WifiHotspotPanel;
+using prism_viewer::ui::WifiHotspotViewState;
+using prism_viewer::ui::decodePreviewJpeg;
+
+struct CameraPreviewJob {
+  uint32_t frame_id = 0;
+  uint64_t received_frame_sets = 0;
+  uint64_t generation = 0;
+  int full_resolution_camera = -1;
+  QSize maximum_preview_size{kCameraPreviewWidth, kCameraPreviewHeight};
+  std::array<std::vector<uint8_t>, 4> jpeg;
+};
+
+struct DecodedCameraPreviewJob {
+  uint32_t frame_id = 0;
+  uint64_t received_frame_sets = 0;
+  uint64_t generation = 0;
+  bool decode_ok = true;
+  size_t failed_camera = 0;
+  std::array<QImage, 4> images;
+};
+
+struct ImuUiSnapshot {
+  prism::ImuSample sample;
+  uint64_t received_count = 0;
+  double sample_rate_hz = 0.0;
+  uint64_t fsync_event_count = 0;
+  uint64_t last_fsync_sample_us = 0;
+  bool last_fsync_delay_valid = false;
+};
+
+struct PendingImuPlotSample {
+  prism::ImuSample sample;
+  std::chrono::steady_clock::time_point received_at;
+};
+
+class SampleRateTracker {
+ public:
+  void add(std::chrono::steady_clock::time_point now) {
+    ++total_samples_;
+    if (anchors_.empty()) {
+      anchors_.push_back({now, total_samples_});
+      next_anchor_ = now + kAnchorPeriod;
+      return;
+    }
+    if (now < next_anchor_) return;
+
+    anchors_.push_back({now, total_samples_});
+    next_anchor_ = now + kAnchorPeriod;
+    while (anchors_.size() > 2 &&
+           now - anchors_[1].time >= kImuRateWindow) {
+      anchors_.pop_front();
+    }
+  }
+
+  double rate(std::chrono::steady_clock::time_point now) const {
+    if (anchors_.empty()) return 0.0;
+    const double elapsed =
+        std::chrono::duration<double>(now - anchors_.front().time).count();
+    if (elapsed <= 0.0) return 0.0;
+    return static_cast<double>(total_samples_ - anchors_.front().sample_count) /
+           elapsed;
+  }
+
+ private:
+  struct Anchor {
+    std::chrono::steady_clock::time_point time;
+    uint64_t sample_count = 0;
+  };
+
+  static constexpr auto kAnchorPeriod = std::chrono::milliseconds(100);
+  std::deque<Anchor> anchors_;
+  std::chrono::steady_clock::time_point next_anchor_{};
+  uint64_t total_samples_ = 0;
+};
+
+class ImageViewLabel : public QLabel {
+ public:
+  explicit ImageViewLabel(QWidget* parent = nullptr) : QLabel(parent) {
+    setAlignment(Qt::AlignCenter);
+  }
+
+  void setTransformationMode(Qt::TransformationMode mode) {
+    transformation_mode_ = mode;
+    refreshPixmap();
+  }
+
+  void setImage(const QImage& image) {
+    source_pixmap_ = QPixmap::fromImage(image);
+    refreshPixmap();
+  }
+
+  void clearImage(const QString& text) {
+    source_pixmap_ = QPixmap();
+    setPixmap(QPixmap());
+    setText(text);
+  }
+
+  std::function<void()> on_click;
+  std::function<void(const QSize&)> on_resize;
+
+ protected:
+  void resizeEvent(QResizeEvent* event) override {
+    QLabel::resizeEvent(event);
+    refreshPixmap();
+    if (on_resize) on_resize(event->size());
+  }
+
+  void mousePressEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton &&
+        !source_pixmap_.isNull() && on_click) {
+      on_click();
+      event->accept();
+      return;
+    }
+    QLabel::mousePressEvent(event);
+  }
+
+ private:
+  void refreshPixmap() {
+    if (source_pixmap_.isNull() || width() <= 0 || height() <= 0) return;
+    const QSize target_size =
+        source_pixmap_.size().scaled(size(), Qt::KeepAspectRatio);
+    if (target_size == source_pixmap_.size()) {
+      setPixmap(source_pixmap_);
+      return;
+    }
+    setPixmap(source_pixmap_.scaled(
+        target_size, Qt::IgnoreAspectRatio, transformation_mode_));
+  }
+
+  QPixmap source_pixmap_;
+  Qt::TransformationMode transformation_mode_ = Qt::SmoothTransformation;
+};
+
+struct DatasetRecordingSummary {
+  bool had_session = false;
+  bool success = true;
+  std::array<uint64_t, 2> sample_count{};
+  std::array<uint64_t, 4> image_count{};
+  uint64_t dropped_frame_sets = 0;
+  std::string error;
+};
+
+// Records a complete dataset: two TUM-style IMU streams plus four TUM-style
+// image indexes. All JPEG payloads are appended to large sequential container
+// files so exFAT does not allocate a 256-KiB cluster for every small JPEG.
+// The writer stays off the USB receive thread.
+class DatasetRecorder {
+ public:
+  bool start(const std::filesystem::path& root, bool overwrite,
+             std::string* error) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    try {
+      if (session_open_) {
+        if (error != nullptr) *error = "a dataset recording is already active";
+        return false;
+      }
+
+      std::error_code filesystem_error;
+      std::filesystem::create_directories(root, filesystem_error);
+      if (filesystem_error) {
+        if (error != nullptr) *error = "cannot create the dataset directory";
+        return false;
+      }
+      root_ = root;
+      const std::array<std::filesystem::path, 7> known_outputs = {
+          root_ / "imu0.tum", root_ / "imu1.tum", root_ / "cam0.tum",
+          root_ / "cam1.tum", root_ / "cam2.tum", root_ / "cam3.tum",
+          root_ / "dataset.info"};
+      bool existing_dataset = false;
+      for (const auto& path : known_outputs) {
+        const bool exists = std::filesystem::exists(path, filesystem_error);
+        if (filesystem_error) {
+          if (error != nullptr) {
+            *error = "cannot inspect the dataset directory";
+          }
+          return false;
+        }
+        existing_dataset = existing_dataset || exists;
+      }
+      for (size_t camera = 0; camera < 4; ++camera) {
+        const bool exists = std::filesystem::exists(
+            root_ / ("cam" + std::to_string(camera)), filesystem_error);
+        if (filesystem_error) {
+          if (error != nullptr) {
+            *error = "cannot inspect the dataset directory";
+          }
+          return false;
+        }
+        existing_dataset = existing_dataset || exists;
+      }
+      std::vector<std::filesystem::path> old_camera_containers;
+      std::filesystem::directory_iterator iterator(root_, filesystem_error);
+      const std::filesystem::directory_iterator end;
+      if (filesystem_error) {
+        if (error != nullptr) {
+          *error = "cannot inspect the dataset directory";
+        }
+        return false;
+      }
+      while (iterator != end) {
+        if (isCameraDataContainer(iterator->path())) {
+          existing_dataset = true;
+          old_camera_containers.push_back(iterator->path());
+        }
+        iterator.increment(filesystem_error);
+        if (filesystem_error) {
+          if (error != nullptr) {
+            *error = "cannot inspect all entries in the dataset directory";
+          }
+          return false;
+        }
+      }
+      if (existing_dataset && !overwrite) {
+        if (error != nullptr) *error = "dataset files already exist";
+        return false;
+      }
+      if (overwrite) {
+        for (size_t camera = 0; camera < 4; ++camera) {
+          std::filesystem::remove_all(
+              root_ / ("cam" + std::to_string(camera)), filesystem_error);
+          if (filesystem_error) {
+            if (error != nullptr) {
+              *error = "cannot replace an old camera directory";
+            }
+            return false;
+          }
+        }
+        for (const auto& path : old_camera_containers) {
+          std::filesystem::remove(path, filesystem_error);
+          if (filesystem_error) {
+            if (error != nullptr) {
+              *error = "cannot replace an old camera data container";
+            }
+            return false;
+          }
+        }
+      }
+
+      imu_counts_.fill(0);
+      image_counts_.fill(0);
+      dropped_frame_sets_ = 0;
+      write_failed_ = false;
+      write_error_.clear();
+      frame_jobs_.clear();
+      queued_frame_bytes_ = 0;
+      stop_writer_ = false;
+      start_unix_us_ = wallClockUs();
+      camera_chunk_index_ = 0;
+      camera_chunk_size_ = 0;
+      camera_chunk_name_.clear();
+
+      for (size_t sensor = 0; sensor < imu_files_.size(); ++sensor) {
+        imu_files_[sensor].open(
+            root_ / ("imu" + std::to_string(sensor) + ".tum"),
+            std::ios::out | std::ios::trunc);
+        imu_files_[sensor].imbue(std::locale::classic());
+        if (!imu_files_[sensor].is_open()) {
+          for (auto& file : imu_files_) {
+            if (file.is_open()) file.close();
+          }
+          if (error != nullptr) {
+            *error = "cannot open output file for IMU" +
+                     std::to_string(sensor);
+          }
+          return false;
+        }
+        imu_files_[sensor]
+            << "# Prism TUM-style IMU stream\n"
+            << "# timestamp[s] ax[m/s^2] ay[m/s^2] az[m/s^2] "
+               "gx[rad/s] gy[rad/s] gz[rad/s]\n";
+      }
+      for (size_t camera = 0; camera < camera_index_files_.size(); ++camera) {
+        camera_index_files_[camera].open(
+            root_ / ("cam" + std::to_string(camera) + ".tum"),
+            std::ios::out | std::ios::trunc);
+        camera_index_files_[camera].imbue(std::locale::classic());
+        if (!camera_index_files_[camera].is_open()) {
+          closeFiles();
+          if (error != nullptr) *error = "cannot open camera index file";
+          return false;
+        }
+        camera_index_files_[camera]
+            << "# Prism TUM-style image stream\n"
+            << "# timestamp[s] container_path byte_offset byte_size "
+               "actual_exposure_us\n";
+      }
+
+      session_open_ = true;
+      active_.store(true, std::memory_order_release);
+      writer_ = std::thread([this]() { writerLoop(); });
+      return true;
+    } catch (const std::exception& exception) {
+      active_.store(false, std::memory_order_release);
+      stop_writer_ = true;
+      session_open_ = false;
+      frame_jobs_.clear();
+      queued_frame_bytes_ = 0;
+      closeFiles();
+      if (error != nullptr) {
+        try {
+          *error = std::string("dataset initialization failed: ") +
+                   exception.what();
+        } catch (...) {
+          error->clear();
+        }
+      }
+      return false;
+    } catch (...) {
+      active_.store(false, std::memory_order_release);
+      stop_writer_ = true;
+      session_open_ = false;
+      frame_jobs_.clear();
+      queued_frame_bytes_ = 0;
+      closeFiles();
+      if (error != nullptr) {
+        try {
+          *error = "dataset initialization failed";
+        } catch (...) {
+          error->clear();
+        }
+      }
+      return false;
+    }
+  }
+
+  void appendImu(const prism::ImuSample& sample) {
+    try {
+      if (!active_.load(std::memory_order_acquire) || sample.sensor_id >= 2) {
+        return;
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_) {
+        return;
+      }
+
+      constexpr double kStandardGravity = 9.80665;
+      constexpr double kRadiansPerDegree =
+          3.14159265358979323846 / 180.0;
+      const uint64_t seconds = sample.timestamp_us / 1000000ULL;
+      const uint64_t microseconds = sample.timestamp_us % 1000000ULL;
+      auto& file = imu_files_[sample.sensor_id];
+      file << seconds << '.' << std::setw(6) << std::setfill('0')
+           << microseconds << std::setfill(' ') << std::fixed
+           << std::setprecision(9);
+      for (size_t axis = 0; axis < 3; ++axis) {
+        file << ' ' << static_cast<double>(sample.accel_mg[axis]) *
+                             kStandardGravity / 1000.0;
+      }
+      for (size_t axis = 0; axis < 3; ++axis) {
+        file << ' ' << static_cast<double>(sample.gyro_mdps[axis]) *
+                             kRadiansPerDegree / 1000.0;
+      }
+      file << '\n';
+      if (!file.good()) {
+        write_failed_ = true;
+        write_error_ = "write failed (disk full or output path unavailable)";
+        return;
+      }
+      ++imu_counts_[sample.sensor_id];
+    } catch (...) {
+      markWriteFailedNoThrow("IMU dataset write failed");
+    }
+  }
+
+  void appendFrameSet(
+      uint32_t frame_id, uint64_t timestamp_us,
+      const prism::VideoMeta& metadata,
+      const std::array<std::vector<uint8_t>, 4>& jpeg_set) {
+    try {
+      if (!active_.load(std::memory_order_acquire)) return;
+      uint64_t frame_set_bytes = 0;
+      for (const auto& jpeg : jpeg_set) {
+        if (jpeg.size() >
+            std::numeric_limits<uint64_t>::max() - frame_set_bytes) {
+          markWriteFailedNoThrow("camera dataset frame is too large");
+          return;
+        }
+        frame_set_bytes += jpeg.size();
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_) {
+        return;
+      }
+      const bool exposure_valid =
+          metadata.valid && metadata.host_frame_id == frame_id &&
+          std::all_of(
+              metadata.exposure_us.begin(), metadata.exposure_us.end(),
+              [](uint32_t exposure_us) {
+                return exposure_us >= prism::kCameraMinExposureUs &&
+                       exposure_us <= prism::kCameraMaxExposureUs;
+              });
+      if (!exposure_valid) {
+        ++dropped_frame_sets_;
+        return;
+      }
+      /*
+       * Bound both job count and payload bytes. A slow/removable destination
+       * must drop frame sets instead of exhausting Viewer memory.
+       */
+      constexpr size_t kMaximumQueuedFrameSets = 256;
+      if (frame_jobs_.size() >= kMaximumQueuedFrameSets ||
+          frame_set_bytes > kMaximumQueuedFrameBytes ||
+          queued_frame_bytes_ >
+              kMaximumQueuedFrameBytes - frame_set_bytes) {
+        ++dropped_frame_sets_;
+        return;
+      }
+      FrameSetJob job;
+      job.frame_id = frame_id;
+      job.timestamp_us = timestamp_us != 0 ? timestamp_us : wallClockUs();
+      job.exposure_us = metadata.exposure_us;
+      job.payload_bytes = frame_set_bytes;
+      job.jpeg = jpeg_set;
+      frame_jobs_.push_back(std::move(job));
+      queued_frame_bytes_ += frame_set_bytes;
+      writer_wakeup_.notify_one();
+    } catch (...) {
+      markWriteFailedNoThrow("camera dataset queue allocation failed");
+    }
+  }
+
+  DatasetRecordingSummary stop() {
+    active_.store(false, std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_writer_ = true;
+    }
+    writer_wakeup_.notify_all();
+    if (writer_.joinable()) writer_.join();
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    DatasetRecordingSummary summary;
+    summary.had_session = session_open_;
+    summary.sample_count = imu_counts_;
+    summary.image_count = image_counts_;
+    summary.dropped_frame_sets = dropped_frame_sets_;
+    if (!session_open_) return summary;
+
+    writeManifest();
+    closeFiles();
+    summary.success = !write_failed_;
+    summary.error = write_error_;
+    if (!summary.success && summary.error.empty()) {
+      summary.error = "failed to flush dataset recording";
+    }
+    session_open_ = false;
+    return summary;
+  }
+
+  bool isActive() const {
+    return active_.load(std::memory_order_acquire);
+  }
+
+ private:
+  struct FrameSetJob {
+    uint32_t frame_id = 0;
+    uint64_t timestamp_us = 0;
+    uint64_t payload_bytes = 0;
+    std::array<uint32_t, 4> exposure_us{};
+    std::array<std::vector<uint8_t>, 4> jpeg;
+  };
+
+  static bool isCameraDataContainer(const std::filesystem::path& path) {
+    if (path.extension() != std::filesystem::path(".bin")) return false;
+    const auto stem = path.stem().native();
+    const auto prefix =
+        std::filesystem::path("camera-data-").native();
+    return stem.size() >= prefix.size() &&
+           std::equal(prefix.begin(), prefix.end(), stem.begin());
+  }
+
+  static uint64_t wallClockUs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+  }
+
+  static void writeTumTimestamp(std::ostream& stream, uint64_t timestamp_us) {
+    stream << timestamp_us / 1000000ULL << '.' << std::setw(6)
+           << std::setfill('0') << timestamp_us % 1000000ULL
+           << std::setfill(' ');
+  }
+
+  void writerLoop() noexcept {
+    try {
+      writerLoopImpl();
+    } catch (...) {
+      markWriteFailedNoThrow("camera dataset writer failed");
+    }
+  }
+
+  void writerLoopImpl() {
+    for (;;) {
+      FrameSetJob job;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        writer_wakeup_.wait(lock, [this]() {
+          return stop_writer_ || !frame_jobs_.empty();
+        });
+        if (frame_jobs_.empty()) {
+          if (stop_writer_) return;
+          continue;
+        }
+        job = std::move(frame_jobs_.front());
+        frame_jobs_.pop_front();
+        queued_frame_bytes_ =
+            queued_frame_bytes_ >= job.payload_bytes
+                ? queued_frame_bytes_ - job.payload_bytes
+                : 0;
+      }
+
+      uint64_t frame_set_bytes = 0;
+      for (const auto& jpeg : job.jpeg) frame_set_bytes += jpeg.size();
+      if (!camera_chunk_file_.is_open() ||
+          (camera_chunk_size_ != 0 &&
+           camera_chunk_size_ + frame_set_bytes > kCameraChunkTargetBytes)) {
+        if (!openNextCameraChunk()) {
+          markWriteFailedNoThrow("cannot open camera data container");
+          continue;
+        }
+      }
+
+      std::array<uint64_t, 4> offsets{};
+      bool payload_ok = true;
+      for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
+        offsets[camera] = camera_chunk_size_;
+        camera_chunk_file_.write(
+            reinterpret_cast<const char*>(job.jpeg[camera].data()),
+            static_cast<std::streamsize>(job.jpeg[camera].size()));
+        if (!camera_chunk_file_.good()) {
+          payload_ok = false;
+          break;
+        }
+        camera_chunk_size_ += job.jpeg[camera].size();
+      }
+      if (!payload_ok) {
+        markWriteFailedNoThrow("camera data container write failed");
+        continue;
+      }
+
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (write_failed_) continue;
+      for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
+        writeTumTimestamp(camera_index_files_[camera], job.timestamp_us);
+        camera_index_files_[camera]
+            << ' ' << camera_chunk_name_ << ' ' << offsets[camera] << ' '
+            << job.jpeg[camera].size() << ' '
+            << job.exposure_us[camera] << '\n';
+        if (!camera_index_files_[camera].good()) {
+          write_failed_ = true;
+          write_error_ = "camera index write failed";
+          break;
+        }
+        ++image_counts_[camera];
+      }
+    }
+  }
+
+  bool openNextCameraChunk() {
+    if (camera_chunk_file_.is_open()) {
+      camera_chunk_file_.flush();
+      camera_chunk_file_.close();
+    }
+    std::ostringstream name;
+    name << "camera-data-" << std::setw(4) << std::setfill('0')
+         << camera_chunk_index_++ << ".bin";
+    camera_chunk_name_ = name.str();
+    camera_chunk_file_.open(root_ / camera_chunk_name_,
+                            std::ios::out | std::ios::binary |
+                                std::ios::trunc);
+    camera_chunk_size_ = 0;
+    return camera_chunk_file_.is_open();
+  }
+
+  void markWriteFailedNoThrow(const char* error) noexcept {
+    try {
+      std::lock_guard<std::mutex> lock(mutex_);
+      write_failed_ = true;
+      if (write_error_.empty()) write_error_ = error;
+    } catch (...) {
+      // The recorder must never terminate the Viewer from a worker callback.
+    }
+  }
+
+  void writeManifest() {
+    std::ofstream manifest(root_ / "dataset.info",
+                           std::ios::out | std::ios::trunc);
+    if (!manifest.is_open()) {
+      write_failed_ = true;
+      write_error_ = "cannot write dataset manifest";
+      return;
+    }
+    manifest << "format=prism-dataset-v3\n"
+             << "image_storage=chunk-v1\n"
+             << "camera_index=chunk-v2-with-actual-exposure\n"
+             << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
+             << "start_unix_us=" << start_unix_us_ << "\n"
+             << "end_unix_us=" << wallClockUs() << "\n"
+             << "imu0_samples=" << imu_counts_[0] << "\n"
+             << "imu1_samples=" << imu_counts_[1] << "\n"
+             << "dropped_frame_sets=" << dropped_frame_sets_ << "\n";
+    for (size_t camera = 0; camera < image_counts_.size(); ++camera) {
+      manifest << "camera" << camera << "_images=" << image_counts_[camera]
+               << "\n";
+    }
+    manifest.flush();
+    if (!manifest.good()) {
+      write_failed_ = true;
+      write_error_ = "dataset manifest write failed";
+    }
+  }
+
+  void closeFiles() {
+    for (auto& file : imu_files_) {
+      if (!file.is_open()) continue;
+      file.flush();
+      if (!file.good()) write_failed_ = true;
+      file.close();
+    }
+    for (auto& file : camera_index_files_) {
+      if (!file.is_open()) continue;
+      file.flush();
+      if (!file.good()) write_failed_ = true;
+      file.close();
+    }
+    if (camera_chunk_file_.is_open()) {
+      camera_chunk_file_.flush();
+      if (!camera_chunk_file_.good()) write_failed_ = true;
+      camera_chunk_file_.close();
+    }
+  }
+
+  static constexpr uint64_t kCameraChunkTargetBytes =
+      8ULL * 1024ULL * 1024ULL * 1024ULL;
+  static constexpr uint64_t kMaximumQueuedFrameBytes =
+      128ULL * 1024ULL * 1024ULL;
+  mutable std::mutex mutex_;
+  std::condition_variable writer_wakeup_;
+  std::thread writer_;
+  std::deque<FrameSetJob> frame_jobs_;
+  std::array<std::ofstream, 2> imu_files_;
+  std::array<std::ofstream, 4> camera_index_files_;
+  std::ofstream camera_chunk_file_;
+  std::filesystem::path root_;
+  std::string camera_chunk_name_;
+  uint64_t camera_chunk_size_ = 0;
+  uint32_t camera_chunk_index_ = 0;
+  std::array<uint64_t, 2> imu_counts_{};
+  std::array<uint64_t, 4> image_counts_{};
+  uint64_t start_unix_us_ = 0;
+  uint64_t dropped_frame_sets_ = 0;
+  uint64_t queued_frame_bytes_ = 0;
+  std::atomic<bool> active_{false};
+  bool session_open_ = false;
+  bool stop_writer_ = false;
+  bool write_failed_ = false;
+  std::string write_error_;
+};
+
+class ImuPlotWidget : public QWidget {
+ public:
+  explicit ImuPlotWidget(QWidget* parent = nullptr) : QWidget(parent) {
+    setMinimumHeight(280);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+    createPanel(&accel_panel_, uiText("Acceleration XYZ (g)", "加速度 XYZ (g)"),
+                uiText("Acceleration (g)", "加速度 (g)"), 1.2);
+    createPanel(&gyro_panel_, uiText("Gyroscope XYZ (", "角速度 XYZ (") +
+                                  QChar(0x00b0) + QStringLiteral("/s)"),
+                uiText("Angular rate (", "角速度 (") + QChar(0x00b0) +
+                    QStringLiteral("/s)"),
+                10.0);
+    layout->addWidget(accel_panel_.view, 1);
+    layout->addWidget(gyro_panel_.view, 1);
+
+    refresh_timer_ = new QTimer(this);
+    refresh_timer_->setInterval(
+        static_cast<int>(kImuPlotRefreshPeriod.count()));
+    refresh_timer_->setTimerType(Qt::PreciseTimer);
+    connect(refresh_timer_, &QTimer::timeout, this, [this]() {
+      if (!active_ || !dirty_) return;
+      refreshCharts();
+    });
+  }
+
+  void setSensor(int sensor) {
+    if (sensor < 0 || sensor >= static_cast<int>(series_.size())) return;
+    selected_sensor_ = sensor;
+    dirty_ = true;
+    if (active_) refreshCharts();
+  }
+
+  void setActive(bool active) {
+    if (active_ == active) return;
+    active_ = active;
+    if (active_) {
+      refresh_timer_->start();
+      refreshCharts();
+    } else {
+      refresh_timer_->stop();
+    }
+  }
+
+  void clear() {
+    for (auto& samples : series_) samples.clear();
+    dirty_ = true;
+    if (active_) refreshCharts();
+  }
+
+  void appendSample(
+      const prism::ImuSample& sample,
+      std::chrono::steady_clock::time_point received_at) {
+    if (sample.sensor_id >= series_.size()) return;
+    auto& samples = series_[sample.sensor_id];
+    PlotSample point;
+    point.time_s = std::chrono::duration<double>(
+        received_at.time_since_epoch()).count();
+    for (size_t axis = 0; axis < 3; ++axis) {
+      point.accel[axis] = static_cast<double>(sample.accel_mg[axis]) / 1000.0;
+      point.gyro[axis] = static_cast<double>(sample.gyro_mdps[axis]) / 1000.0;
+    }
+    samples.push_back(point);
+    while (!samples.empty() &&
+           (samples.size() > 1200 || point.time_s - samples.front().time_s > 15.0)) {
+      samples.pop_front();
+    }
+    if (static_cast<int>(sample.sensor_id) == selected_sensor_) dirty_ = true;
+  }
+
+ private:
+  struct PlotSample {
+    double time_s = 0.0;
+    std::array<double, 3> accel{};
+    std::array<double, 3> gyro{};
+  };
+
+  struct ChartPanel {
+    QChartView* view = nullptr;
+    QChart* chart = nullptr;
+    QValueAxis* x_axis = nullptr;
+    QValueAxis* y_axis = nullptr;
+    std::array<QLineSeries*, 3> series{};
+    QLineSeries* zero_line = nullptr;
+    double initial_scale = 1.0;
+  };
+
+  void createPanel(ChartPanel* panel, const QString& title,
+                   const QString& y_title, double initial_scale) {
+    panel->chart = new QChart();
+    panel->initial_scale = initial_scale;
+    panel->chart->setTitle(title);
+    panel->chart->setAnimationOptions(QChart::NoAnimation);
+    panel->chart->setDropShadowEnabled(false);
+    panel->chart->setBackgroundRoundness(6.0);
+    panel->chart->setMargins(QMargins(4, 2, 4, 2));
+
+    panel->x_axis = new QValueAxis(panel->chart);
+    panel->x_axis->setRange(-10.0, 0.0);
+    panel->x_axis->setTickCount(6);
+    panel->x_axis->setLabelFormat("%.1f s");
+    panel->x_axis->setTitleText(uiText("Time to now", "距当前时间"));
+    panel->x_axis->setGridLineColor(QColor(QStringLiteral("#e8edf4")));
+    panel->y_axis = new QValueAxis(panel->chart);
+    panel->y_axis->setRange(-initial_scale, initial_scale);
+    panel->y_axis->setTickCount(5);
+    panel->y_axis->setLabelFormat("%.2f");
+    panel->y_axis->setTitleText(y_title);
+    panel->y_axis->setGridLineColor(QColor(QStringLiteral("#e8edf4")));
+    panel->chart->addAxis(panel->x_axis, Qt::AlignBottom);
+    panel->chart->addAxis(panel->y_axis, Qt::AlignLeft);
+
+    const std::array<QColor, 3> colors = {
+        QColor(QStringLiteral("#d92d20")), QColor(QStringLiteral("#12b76a")),
+        QColor(QStringLiteral("#1570ef"))};
+    const std::array<QString, 3> names = {
+        QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")};
+    for (size_t axis = 0; axis < panel->series.size(); ++axis) {
+      panel->series[axis] = new QLineSeries(panel->chart);
+      panel->series[axis]->setName(names[axis]);
+      QPen pen(colors[axis], 1.5);
+      pen.setCosmetic(true);
+      panel->series[axis]->setPen(pen);
+      panel->chart->addSeries(panel->series[axis]);
+      panel->series[axis]->attachAxis(panel->x_axis);
+      panel->series[axis]->attachAxis(panel->y_axis);
+    }
+
+    panel->zero_line = new QLineSeries(panel->chart);
+    QPen zero_pen(QColor(QStringLiteral("#667085")), 1.0, Qt::DashLine);
+    zero_pen.setCosmetic(true);
+    panel->zero_line->setPen(zero_pen);
+    panel->zero_line->setName(uiText("Zero", "零线"));
+    panel->zero_line->append(-10.0, 0.0);
+    panel->zero_line->append(0.0, 0.0);
+    panel->chart->addSeries(panel->zero_line);
+    panel->zero_line->attachAxis(panel->x_axis);
+    panel->zero_line->attachAxis(panel->y_axis);
+    panel->chart->legend()->markers(panel->zero_line).front()->setVisible(false);
+    panel->chart->legend()->setAlignment(Qt::AlignTop);
+
+    panel->view = new QChartView(panel->chart, this);
+    // Dynamic QtCharts antialiasing is expensive and provides little benefit
+    // for one-pixel live traces. Static labels and axes remain unchanged.
+    panel->view->setRenderHint(QPainter::Antialiasing, false);
+    panel->view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    panel->view->setMinimumHeight(132);
+  }
+
+  void refreshPanel(ChartPanel* panel, bool acceleration) {
+    const auto& samples = series_[selected_sensor_];
+    const double end_time = samples.empty() ? 0.0 : samples.back().time_s;
+    bool have_visible_value = false;
+    double visible_min = 0.0;
+    double visible_max = 0.0;
+    for (size_t axis = 0; axis < panel->series.size(); ++axis) {
+      QList<QPointF> points;
+      points.reserve(static_cast<qsizetype>(samples.size()));
+      for (const auto& point : samples) {
+        const double x = point.time_s - end_time;
+        if (x < -10.0) continue;
+        const auto& values = acceleration ? point.accel : point.gyro;
+        const double value = values[axis];
+        points.append(QPointF(x, value));
+        if (!have_visible_value) {
+          visible_min = value;
+          visible_max = value;
+          have_visible_value = true;
+        } else {
+          visible_min = std::min(visible_min, value);
+          visible_max = std::max(visible_max, value);
+        }
+      }
+      panel->series[axis]->replace(points);
+    }
+    if (!have_visible_value) {
+      panel->y_axis->setRange(-panel->initial_scale, panel->initial_scale);
+      return;
+    }
+
+    // Use the extrema of exactly the samples currently visible on the chart.
+    // Only widen a constant-value range enough for QValueAxis to remain valid.
+    const double minimum_span = acceleration ? 0.002 : 0.02;
+    if (visible_max - visible_min < minimum_span) {
+      const double center = (visible_min + visible_max) * 0.5;
+      visible_min = center - minimum_span * 0.5;
+      visible_max = center + minimum_span * 0.5;
+    }
+    panel->y_axis->setRange(visible_min, visible_max);
+  }
+
+  void refreshCharts() {
+    refreshPanel(&accel_panel_, true);
+    refreshPanel(&gyro_panel_, false);
+    dirty_ = false;
+  }
+
+  std::array<std::deque<PlotSample>, 2> series_;
+  ChartPanel accel_panel_;
+  ChartPanel gyro_panel_;
+  QTimer* refresh_timer_ = nullptr;
+  int selected_sensor_ = 0;
+  bool active_ = false;
+  bool dirty_ = true;
+};
+
+WifiHotspotViewState toWifiHotspotViewState(
+    const prism::WifiHotspotStatus& status) {
+  WifiHotspotViewState view;
+  view.present = status.present;
+  view.enabled = status.enabled;
+  view.running = status.running;
+  view.ap_running = status.ap_running;
+  view.dhcp_running = status.dhcp_running;
+  view.persisted = status.persisted;
+  view.error_code = status.error_code;
+  view.interface_name = toQString(status.interface_name);
+  view.ssid = toQString(status.ssid);
+  view.address = toQString(status.address);
+  view.error = toQString(status.error);
+  return view;
+}
+
+class MainWindow : public QMainWindow {
+ public:
+  MainWindow() {
+    setWindowTitle(QStringLiteral("Prism Viewer"));
+    setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
+    resize(1480, 940);
+
+    auto* central = new QWidget(this);
+    auto* root = new QVBoxLayout(central);
+    root->setContentsMargins(12, 12, 12, 10);
+    root->setSpacing(10);
+
+    central->setStyleSheet(QStringLiteral(
+        "QWidget { background: #f4f7fb; color: #172033; font-size: 10pt; }"
+        "QGroupBox { background: #ffffff; border: 1px solid #d9e2ef; border-radius: 8px;"
+        "            margin-top: 12px; padding: 10px; font-weight: 600; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #4b5f7a; }"
+        "QPushButton { background: #ffffff; border: 1px solid #c6d2e1; border-radius: 6px;"
+        "              padding: 7px 12px; }"
+        "QPushButton:hover { background: #eef5ff; border-color: #8eb7ee; }"
+        "QPushButton#imuSelectButton { min-width: 72px; padding: 6px 14px;"
+        "                              background: #ffffff; color: #344054;"
+        "                              border: 1px solid #b8c7da; font-weight: 600; }"
+        "QPushButton#imuSelectButton:checked { background: #1557d2; color: #ffffff;"
+        "                                      border-color: #1557d2; }"
+        "QPushButton#imuSelectButton:checked:hover { background: #124bb5; }"
+        "QPushButton#startButton { background: #1557d2; color: white; border-color: #1557d2;"
+        "                          font-weight: 600; }"
+        "QPushButton#stopButton { background: #b42318; color: white; border-color: #b42318;"
+        "                         font-weight: 600; }"
+        "QPushButton:disabled, QPushButton#startButton:disabled,"
+        "QPushButton#stopButton:disabled, QPushButton#imuSelectButton:disabled {"
+        "  background: #e4e7ec; color: #98a2b3; border-color: #d0d5dd; }"
+        "QComboBox:disabled { background: #e4e7ec; color: #98a2b3;"
+        "                     border-color: #d0d5dd; }"
+        "QPlainTextEdit, QTableWidget { background: #ffffff; border: 1px solid #d9e2ef;"
+        "                              border-radius: 6px; }"));
+
+    auto* header = new QHBoxLayout();
+    auto* brand_mark = new QLabel(central);
+    brand_mark->setFixedSize(58, 58);
+    brand_mark->setAlignment(Qt::AlignCenter);
+    brand_mark->setPixmap(
+        QPixmap(QStringLiteral(":/branding/prism-mark.png"))
+            .scaled(54, 54, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    brand_mark->setToolTip(QStringLiteral("Prism"));
+    header->addWidget(brand_mark, 0, Qt::AlignVCenter);
+    auto* title_stack = new QVBoxLayout();
+    auto* title = new QLabel(QStringLiteral("Prism Viewer"), central);
+    title->setStyleSheet(QStringLiteral("font-size: 22pt; font-weight: 700; color: #101828;"));
+    auto* subtitle = new QLabel(
+        uiText("USB SDK based 4-channel MJPEG preview, metadata, and IMU monitor",
+               "基于 USB SDK 的四路相机预览、元数据和 IMU 监视器"),
+        central);
+    subtitle->setStyleSheet(QStringLiteral("color: #667085;"));
+    title_stack->addWidget(title);
+    title_stack->addWidget(subtitle);
+    header->addLayout(title_stack);
+    header->addStretch(1);
+
+    header->addWidget(new QLabel(uiText("Device:", "设备："), central));
+    device_selector_ = new QComboBox(central);
+    device_selector_->setMinimumWidth(230);
+    device_selector_->setToolTip(
+        uiText("Select a Prism USB serial number", "选择 Prism USB 序列号"));
+    refresh_devices_button_ = new QPushButton(uiText("Refresh", "刷新"), central);
+    open_device_button_ = new QPushButton(uiText("Open Device", "打开设备"), central);
+    close_device_button_ = new QPushButton(uiText("Close Device", "关闭设备"), central);
+    start_button_ = new QPushButton(uiText("Start Capture", "开始采集"), central);
+    stop_button_ = new QPushButton(uiText("Stop", "停止"), central);
+    imu_record_start_button_ = new QPushButton(
+        uiText("Record Dataset...", "录制数据集..."), central);
+    imu_record_stop_button_ = new QPushButton(
+        uiText("Stop Recording", "停止录制"), central);
+    host_time_sync_button_ = new QPushButton(
+        uiText("Set Device Time", "校准设备时间"), central);
+    system_upgrade_button_ = new QPushButton(
+        uiText("Upgrade System", "系统升级"), central);
+    log_button_ = new QPushButton(uiText("Open Log", "打开日志"), central);
+    language_selector_ = new QComboBox(central);
+    language_selector_->addItem(QString::fromUtf8(u8"中文"), QStringLiteral("zh_CN"));
+    language_selector_->addItem(QStringLiteral("English"), QStringLiteral("en"));
+    language_selector_->setCurrentIndex(
+        prism_viewer::common::chineseUi() ? 0 : 1);
+    language_selector_->setToolTip(
+        uiText("Change display language (the viewer restarts once)",
+               "切换显示语言（Viewer 会自动重启一次）"));
+    start_button_->setObjectName(QStringLiteral("startButton"));
+    stop_button_->setObjectName(QStringLiteral("stopButton"));
+    imu_record_start_button_->setMinimumWidth(130);
+    imu_record_stop_button_->setMinimumWidth(130);
+    close_device_button_->setEnabled(false);
+    start_button_->setEnabled(false);
+    stop_button_->setEnabled(false);
+    imu_record_start_button_->setEnabled(false);
+    imu_record_stop_button_->setEnabled(false);
+    host_time_sync_button_->setEnabled(false);
+    system_upgrade_button_->setEnabled(false);
+    header->addWidget(device_selector_);
+    header->addWidget(refresh_devices_button_);
+    header->addWidget(open_device_button_);
+    header->addWidget(close_device_button_);
+    header->addWidget(start_button_);
+    header->addWidget(stop_button_);
+    header->addWidget(imu_record_start_button_);
+    header->addWidget(imu_record_stop_button_);
+    header->addWidget(host_time_sync_button_);
+    header->addWidget(system_upgrade_button_);
+    header->addWidget(log_button_);
+    header->addWidget(language_selector_);
+    root->addLayout(header);
+
+    status_label_ = new QLabel(uiText("Device closed", "设备已关闭"), central);
+    status_label_->setStyleSheet(QStringLiteral(
+        "background: #ffffff; border: 1px solid #d9e2ef; border-radius: 6px;"
+        "padding: 8px 10px; color: #344054;"));
+    root->addWidget(status_label_);
+
+    time_sync_label_ = new QLabel(
+        uiText("Time sync: waiting for DeviceInfo", "时间同步：等待 DeviceInfo"), central);
+    time_sync_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    root->addWidget(time_sync_label_);
+
+    host_time_sync_label_ = new QLabel(
+        uiText("Host/device clock: not measured",
+               "主机/设备时钟：尚未测量"),
+        central);
+    host_time_sync_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    root->addWidget(host_time_sync_label_);
+
+    tabs_ = new QTabWidget(central);
+
+    device_info_panel_ = new DeviceInfoPanel(tabs_);
+    tabs_->addTab(device_info_panel_, uiText("Device Info", "设备信息"));
+
+    camera_page_ = new QWidget(tabs_);
+    auto* camera_layout = new QVBoxLayout(camera_page_);
+    camera_layout->setContentsMargins(8, 8, 8, 8);
+    camera_layout->setSpacing(10);
+    tabs_->addTab(camera_page_, uiText("Camera", "相机"));
+
+    camera_exposure_panel_ = new CameraExposurePanel(camera_page_);
+    camera_layout->addWidget(camera_exposure_panel_);
+    auto* camera_content_layout = new QHBoxLayout();
+    camera_content_layout->setSpacing(10);
+    camera_layout->addLayout(camera_content_layout, 1);
+
+    imu_page_ = new QWidget(tabs_);
+    auto* imu_page_layout = new QVBoxLayout(imu_page_);
+    imu_page_layout->setContentsMargins(8, 8, 8, 8);
+    imu_page_layout->setSpacing(10);
+    tabs_->addTab(imu_page_, QStringLiteral("IMU"));
+
+    wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);
+    tabs_->addTab(wifi_hotspot_panel_, uiText("Network", "网络"));
+
+    dataset_page_ = new QWidget(tabs_);
+    auto* dataset_layout = new QVBoxLayout(dataset_page_);
+    dataset_layout->setContentsMargins(8, 8, 8, 8);
+    dataset_layout->setSpacing(10);
+    tabs_->addTab(dataset_page_,
+                  uiText("Local Datasets", "本地数据集"));
+    root->addWidget(tabs_, 1);
+
+    auto* video_group = new QGroupBox(uiText("Video", "视频"), camera_page_);
+    auto* video_grid = new QGridLayout(video_group);
+    video_grid->setSpacing(8);
+    for (int i = 0; i < 4; ++i) {
+      auto* tile = new QWidget(video_group);
+      auto* tile_layout = new QVBoxLayout(tile);
+      tile_layout->setContentsMargins(0, 0, 0, 0);
+      tile_layout->setSpacing(4);
+
+      auto* caption = new QLabel(uiText("Camera %1", "相机 %1").arg(i), tile);
+      caption->setStyleSheet(QStringLiteral("font-weight: 600; color: #344054;"));
+      image_labels_[i] = new ImageViewLabel(tile);
+      image_labels_[i]->setTransformationMode(Qt::FastTransformation);
+      image_labels_[i]->setMinimumSize(360, 230);
+      image_labels_[i]->setCursor(Qt::PointingHandCursor);
+      image_labels_[i]->setStyleSheet(QStringLiteral(
+          "background: #111827; border-radius: 6px; color: #d0d5dd;"));
+      image_labels_[i]->clearImage(uiText("No frame", "无图像"));
+      image_labels_[i]->setToolTip(
+          uiText("Click to enlarge with four-camera thumbnails",
+                 "点击可在新窗口放大查看，并使用四路缩略图切换"));
+      image_labels_[i]->on_click = [this, i]() { showLiveCameraZoom(i); };
+      if (i == 0) {
+        image_labels_[i]->on_resize = [this](const QSize& size) {
+          camera_preview_width_.store(
+              std::clamp(size.width(), 1, kCameraPreviewWidth),
+              std::memory_order_release);
+          camera_preview_height_.store(
+              std::clamp(size.height(), 1, kCameraPreviewHeight),
+              std::memory_order_release);
+        };
+      }
+      frame_labels_[i] = new QLabel(
+          uiText("RX complete sets=0 fps=0.00",
+                 "接收完整帧组=0 帧率=0.00"),
+          tile);
+      frame_labels_[i]->setStyleSheet(QStringLiteral("color: #667085;"));
+      frame_labels_[i]->setToolTip(uiText(
+          "Counts complete four-camera frame sets received and acknowledged. "
+          "The low-latency preview may skip obsolete whole frame sets.",
+          "统计已接收并确认的四相机完整帧组。低延迟预览可能跳过过时的整组帧。"));
+
+      tile_layout->addWidget(caption);
+      tile_layout->addWidget(image_labels_[i], 1);
+      tile_layout->addWidget(frame_labels_[i]);
+      video_grid->addWidget(tile, i / 2, i % 2);
+    }
+    camera_content_layout->addWidget(video_group, 3);
+
+    meta_text_ = new QPlainTextEdit(camera_page_);
+    meta_text_->setReadOnly(true);
+    meta_text_->setMaximumBlockCount(200);
+    auto* meta_group = new QGroupBox(uiText("Metadata", "元数据"), camera_page_);
+    auto* meta_layout = new QVBoxLayout(meta_group);
+    meta_layout->addWidget(meta_text_);
+    camera_content_layout->addWidget(meta_group, 1);
+
+    live_camera_zoom_dialog_ = new CameraZoomDialog(this);
+    live_camera_zoom_dialog_->on_selected_camera_changed =
+        [this](int camera) {
+          live_camera_zoom_camera_.store(camera, std::memory_order_release);
+        };
+    live_camera_zoom_dialog_->on_visibility_changed =
+        [this](bool visible) {
+          live_camera_zoom_visible_.store(visible, std::memory_order_release);
+          updateVisualizationActivity();
+        };
+
+    auto* dataset_controls = new QHBoxLayout();
+    dataset_open_button_ = new QPushButton(
+        uiText("Open Dataset...", "打开数据集..."), dataset_page_);
+    dataset_path_label_ = new QLabel(
+        uiText("No dataset loaded", "尚未加载数据集"), dataset_page_);
+    dataset_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    dataset_path_label_->setStyleSheet(QStringLiteral(
+        "background: #ffffff; border: 1px solid #d9e2ef; border-radius: 6px;"
+        "padding: 7px 10px; color: #344054;"));
+    dataset_controls->addWidget(dataset_open_button_);
+    dataset_controls->addWidget(dataset_path_label_, 1);
+    dataset_layout->addLayout(dataset_controls);
+
+    dataset_summary_label_ = new QLabel(
+        uiText("Select a Prism dataset directory containing imu0.tum, "
+               "imu1.tum and cam0.tum ... cam3.tum.",
+               "请选择包含 imu0.tum、imu1.tum 和 cam0.tum ... cam3.tum "
+               "的 Prism 数据集目录。"),
+        dataset_page_);
+    dataset_summary_label_->setWordWrap(true);
+    dataset_summary_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 6px; padding: 8px 10px;"));
+    dataset_layout->addWidget(dataset_summary_label_);
+
+    auto* dataset_navigation = new QHBoxLayout();
+    dataset_frame_label_ = new QLabel(
+        uiText("Frame: -", "帧：-"), dataset_page_);
+    dataset_frame_slider_ = new QSlider(Qt::Horizontal, dataset_page_);
+    dataset_frame_slider_->setEnabled(false);
+    dataset_frame_slider_->setRange(0, 0);
+    dataset_navigation->addWidget(dataset_frame_label_);
+    dataset_navigation->addWidget(dataset_frame_slider_, 1);
+    dataset_layout->addLayout(dataset_navigation);
+
+    auto* dataset_images_group = new QGroupBox(
+        uiText("Recorded camera frame set", "已记录的四路相机帧集"),
+        dataset_page_);
+    auto* dataset_images_grid = new QGridLayout(dataset_images_group);
+    for (int camera = 0; camera < 4; ++camera) {
+      auto* tile = new QWidget(dataset_images_group);
+      auto* stack = new QVBoxLayout(tile);
+      stack->setContentsMargins(0, 0, 0, 0);
+      stack->addWidget(new QLabel(
+          uiText("Camera %1", "相机 %1").arg(camera), tile));
+      dataset_image_labels_[camera] = new ImageViewLabel(tile);
+      dataset_image_labels_[camera]->setMinimumSize(300, 190);
+      dataset_image_labels_[camera]->setCursor(Qt::PointingHandCursor);
+      dataset_image_labels_[camera]->setStyleSheet(QStringLiteral(
+          "background: #111827; border-radius: 6px; color: #d0d5dd;"));
+      dataset_image_labels_[camera]->clearImage(
+          uiText("No dataset frame", "无数据集图像"));
+      dataset_image_labels_[camera]->on_click =
+          [this, camera]() { showDatasetCameraZoom(camera); };
+      stack->addWidget(dataset_image_labels_[camera], 1);
+      dataset_images_grid->addWidget(tile, camera / 2, camera % 2);
+    }
+    dataset_layout->addWidget(dataset_images_group, 1);
+
+    dataset_details_ = new QPlainTextEdit(dataset_page_);
+    dataset_details_->setReadOnly(true);
+    dataset_details_->setMaximumHeight(120);
+    dataset_layout->addWidget(dataset_details_);
+    dataset_camera_zoom_dialog_ = new CameraZoomDialog(this);
+
+    imu_table_ = new QTableWidget(2, 13, imu_page_);
+    const QString degrees_per_second = QChar(0x00b0) + QStringLiteral("/s");
+    imu_table_->setHorizontalHeaderLabels({
+        QStringLiteral("IMU"),
+        uiText("Samples", "样本数"),
+        QStringLiteral("Hz"),
+        uiText("Timestamp", "时间戳"),
+        QStringLiteral("Ax g"),
+        QStringLiteral("Ay g"),
+        QStringLiteral("Az g"),
+        QStringLiteral("Gx ") + degrees_per_second,
+        QStringLiteral("Gy ") + degrees_per_second,
+        QStringLiteral("Gz ") + degrees_per_second,
+        uiText("Temp C", "温度 C"),
+        QStringLiteral("FSYNC"),
+        uiText("Flags", "标志"),
+    });
+    imu_table_->verticalHeader()->setVisible(false);
+    imu_table_->verticalHeader()->setDefaultSectionSize(24);
+    imu_table_->horizontalHeader()->setMinimumSectionSize(48);
+    imu_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    imu_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    imu_table_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    imu_table_->horizontalHeader()->setStretchLastSection(true);
+    imu_table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    imu_table_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    imu_table_->setAlternatingRowColors(true);
+    imu_table_->setMinimumWidth(0);
+    imu_table_->setMinimumHeight(96);
+    imu_table_->setMaximumHeight(120);
+    for (int row = 0; row < 2; ++row) {
+      imu_table_->setItem(row, 0, new QTableWidgetItem(QString::number(row)));
+      for (int col = 1; col < imu_table_->columnCount(); ++col) {
+        imu_table_->setItem(row, col, new QTableWidgetItem(QStringLiteral("-")));
+      }
+    }
+    auto* imu_group = new QGroupBox(QStringLiteral("IMU"), imu_page_);
+    auto* imu_layout = new QVBoxLayout(imu_group);
+    auto* imu_plot_controls = new QHBoxLayout();
+    imu_plot_controls->addWidget(new QLabel(uiText("Live plot:", "实时曲线："), imu_group));
+    imu_selector_group_ = new QButtonGroup(imu_group);
+    imu_selector_group_->setExclusive(true);
+    imu0_selector_ = new QPushButton(QStringLiteral("IMU 0"), imu_group);
+    imu1_selector_ = new QPushButton(QStringLiteral("IMU 1"), imu_group);
+    imu0_selector_->setObjectName(QStringLiteral("imuSelectButton"));
+    imu1_selector_->setObjectName(QStringLiteral("imuSelectButton"));
+    imu0_selector_->setCheckable(true);
+    imu1_selector_->setCheckable(true);
+    imu_selector_group_->addButton(imu0_selector_, 0);
+    imu_selector_group_->addButton(imu1_selector_, 1);
+    imu0_selector_->setChecked(true);
+    imu_plot_controls->addWidget(imu0_selector_);
+    imu_plot_controls->addWidget(imu1_selector_);
+    imu_offset_button_ = new QPushButton(
+        uiText("IMU Offset...", "IMU 时间偏移..."), imu_group);
+    imu_offset_button_->setMinimumWidth(140);
+    imu_offset_button_->setEnabled(false);
+    imu_plot_controls->addWidget(imu_offset_button_);
+    imu_plot_controls->addStretch(1);
+    imu_record_status_label_ = new QLabel(
+        uiText("Not recording", "未录制"), imu_group);
+    imu_record_status_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
+    imu_plot_controls->addWidget(imu_record_status_label_);
+    imu_alarm_label_ = new QLabel(
+        uiText("Timestamp interval: OK", "时间戳间隔：正常"), imu_group);
+    imu_alarm_label_->setStyleSheet(QStringLiteral(
+        "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+        "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
+    imu_plot_controls->addWidget(imu_alarm_label_);
+    imu_layout->addLayout(imu_plot_controls);
+    imu_layout->addWidget(imu_table_);
+    imu_plot_ = new ImuPlotWidget(imu_group);
+    imu_layout->addWidget(imu_plot_, 1);
+    imu_page_layout->addWidget(imu_group, 4);
+
+    imu_offset_dialog_ = new QDialog(this);
+    imu_offset_dialog_->setWindowTitle(
+        uiText("Dual IMU Time Offset Measurement", "双 IMU 时间偏移测量"));
+    imu_offset_dialog_->setMinimumSize(640, 320);
+    imu_offset_dialog_->resize(780, 420);
+    auto* offset_dialog_layout = new QVBoxLayout(imu_offset_dialog_);
+    offset_dialog_layout->setContentsMargins(18, 18, 18, 18);
+    offset_dialog_layout->setSpacing(12);
+    auto* offset_title = new QLabel(
+        uiText("Dual IMU Time Offset Measurement", "双 IMU 时间偏移测量"),
+        imu_offset_dialog_);
+    offset_title->setStyleSheet(QStringLiteral(
+        "font-size: 16pt; font-weight: 700; color: #101828;"));
+    offset_dialog_layout->addWidget(offset_title);
+    auto* offset_help = new QLabel(
+        uiText(
+            "After both IMUs are detected, collect 10 seconds of gyroscope data. "
+            "Rotate the device irregularly around multiple axes. The viewer jointly "
+            "estimates the fixed IMU1-to-IMU0 mounting rotation and time offset.",
+            "检测到两个 IMU 后采集 10 秒陀螺仪数据。采集期间请不规则地转动设备，"
+            "并尽量覆盖多个旋转轴；Viewer 将同时估算 IMU1 到 IMU0 的固定装配方向和时间偏移。"),
+        imu_offset_dialog_);
+    offset_help->setWordWrap(true);
+    offset_help->setStyleSheet(QStringLiteral("color: #475467; padding: 2px 0;"));
+    offset_dialog_layout->addWidget(offset_help);
+    imu_offset_detection_label_ = new QLabel(
+        uiText("IMU detection: waiting for IMU0 and IMU1",
+               "IMU 检测：等待 IMU0 和 IMU1"),
+        imu_offset_dialog_);
+    imu_offset_detection_label_->setStyleSheet(QStringLiteral(
+        "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+        "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
+    offset_dialog_layout->addWidget(imu_offset_detection_label_);
+    imu_offset_label_ = new QLabel(
+        uiText("Ready after both IMUs are detected", "检测到两个 IMU 后即可开始"),
+        imu_offset_dialog_);
+    imu_offset_label_->setWordWrap(true);
+    imu_offset_label_->setMinimumHeight(72);
+    imu_offset_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 6px; padding: 10px 12px; font-weight: 600;"));
+    imu_offset_label_->setToolTip(uiText(
+        "Positive t(IMU1)-t(IMU0) means the reported offset must be subtracted "
+        "from IMU1 timestamps.",
+        "正的 t(IMU1)-t(IMU0) 表示应从 IMU1 时间戳中减去报告的偏移。"));
+    offset_dialog_layout->addWidget(imu_offset_label_, 1);
+    auto* offset_actions = new QHBoxLayout();
+    imu_offset_start_button_ = new QPushButton(
+        uiText("Start 10-second Measurement", "开始 10 秒测量"), imu_offset_dialog_);
+    imu_offset_start_button_->setEnabled(false);
+    auto* close_offset_button = new QPushButton(
+        uiText("Close", "关闭"), imu_offset_dialog_);
+    offset_actions->addWidget(imu_offset_start_button_);
+    offset_actions->addStretch(1);
+    offset_actions->addWidget(close_offset_button);
+    offset_dialog_layout->addLayout(offset_actions);
+
+    log_dialog_ = new QDialog(this);
+    log_dialog_->setWindowTitle(uiText("Prism Viewer Log", "Prism Viewer 日志"));
+    log_dialog_->setMinimumSize(720, 420);
+    log_dialog_->resize(1100, 720);
+    auto* log_dialog_layout = new QVBoxLayout(log_dialog_);
+    log_dialog_layout->setContentsMargins(12, 12, 12, 12);
+    log_dialog_layout->setSpacing(8);
+    log_text_ = new QPlainTextEdit(log_dialog_);
+    log_text_->setReadOnly(true);
+    log_text_->setLineWrapMode(QPlainTextEdit::NoWrap);
+    log_text_->setMaximumBlockCount(5000);
+    log_text_->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit { background: #101828; color: #e4e7ec; border: 1px solid #344054;"
+        "font-family: Consolas, 'Courier New', monospace; font-size: 10pt; }"));
+    log_dialog_layout->addWidget(log_text_, 1);
+    auto* log_actions = new QHBoxLayout();
+    log_auto_scroll_ = new QCheckBox(uiText("Auto-scroll", "自动滚动"), log_dialog_);
+    log_auto_scroll_->setChecked(true);
+    auto* copy_log_button = new QPushButton(uiText("Copy All", "全部复制"), log_dialog_);
+    auto* clear_log_button = new QPushButton(uiText("Clear", "清空"), log_dialog_);
+    auto* close_log_button = new QPushButton(uiText("Close", "关闭"), log_dialog_);
+    log_actions->addWidget(log_auto_scroll_);
+    log_actions->addStretch(1);
+    log_actions->addWidget(copy_log_button);
+    log_actions->addWidget(clear_log_button);
+    log_actions->addWidget(close_log_button);
+    log_dialog_layout->addLayout(log_actions);
+
+    setCentralWidget(central);
+
+    connect(open_device_button_, &QPushButton::clicked,
+            this, [this]() { openDevice(); });
+    connect(refresh_devices_button_, &QPushButton::clicked,
+            this, [this]() { refreshDeviceList(); });
+    connect(language_selector_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+              const QString language = language_selector_->itemData(index).toString();
+              const bool requested_chinese = language == QStringLiteral("zh_CN");
+              if (requested_chinese ==
+                  prism_viewer::common::chineseUi()) {
+                return;
+              }
+              QSettings(QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"))
+                  .setValue(QStringLiteral("language"), language);
+              QStringList arguments = QCoreApplication::arguments();
+              if (!arguments.isEmpty()) arguments.removeFirst();
+              QProcess::startDetached(QCoreApplication::applicationFilePath(), arguments);
+              QApplication::quit();
+            });
+    connect(close_device_button_, &QPushButton::clicked,
+            this, [this]() { closeDevice(); });
+    connect(start_button_, &QPushButton::clicked, this, [this]() { startCapture(); });
+    connect(stop_button_, &QPushButton::clicked, this, [this]() { stopCapture(); });
+    connect(host_time_sync_button_, &QPushButton::clicked,
+            this, [this]() { startHostTimeSync(); });
+    connect(system_upgrade_button_, &QPushButton::clicked,
+            this, [this]() { startSystemUpgrade(); });
+    wifi_hotspot_panel_->on_refresh =
+        [this]() { startWifiHotspotOperation(std::nullopt); };
+    wifi_hotspot_panel_->on_enable =
+        [this]() { startWifiHotspotOperation(true); };
+    wifi_hotspot_panel_->on_disable =
+        [this]() { startWifiHotspotOperation(false); };
+    device_info_panel_->on_refresh = [this]() { refreshDeviceInfo(); };
+    device_info_panel_->on_refresh_versions =
+        [this]() { refreshDeviceVersions(); };
+    camera_exposure_panel_->on_refresh =
+        [this]() { startCameraExposureOperation(std::nullopt); };
+    camera_exposure_panel_->on_apply =
+        [this](const prism::ExposureConfiguration& configuration) {
+          startCameraExposureOperation(configuration);
+        };
+    connect(log_button_, &QPushButton::clicked, this, [this]() {
+      log_dialog_->show();
+      log_dialog_->raise();
+      log_dialog_->activateWindow();
+    });
+    connect(copy_log_button, &QPushButton::clicked, this, [this]() {
+      QApplication::clipboard()->setText(log_text_->toPlainText());
+    });
+    connect(clear_log_button, &QPushButton::clicked,
+            log_text_, &QPlainTextEdit::clear);
+    connect(close_log_button, &QPushButton::clicked,
+            log_dialog_, &QDialog::hide);
+    connect(imu_selector_group_, &QButtonGroup::idToggled,
+            this, [this](int sensor, bool checked) {
+              if (checked && imu_plot_ != nullptr) imu_plot_->setSensor(sensor);
+            });
+    connect(imu_offset_button_, &QPushButton::clicked,
+            this, [this]() {
+              imu_offset_dialog_->show();
+              imu_offset_dialog_->raise();
+              imu_offset_dialog_->activateWindow();
+            });
+    connect(imu_offset_start_button_, &QPushButton::clicked,
+            this, [this]() { startImuOffsetMeasurement(); });
+    connect(imu_record_start_button_, &QPushButton::clicked,
+            this, [this]() { startImuRecording(); });
+    connect(imu_record_stop_button_, &QPushButton::clicked,
+            this, [this]() { stopImuRecording(); });
+    connect(dataset_open_button_, &QPushButton::clicked,
+            this, [this]() { openRecordedDataset(); });
+    connect(dataset_frame_slider_, &QSlider::valueChanged,
+            this, [this](int frame) { showDatasetFrame(frame); });
+    connect(close_offset_button, &QPushButton::clicked,
+            imu_offset_dialog_, &QDialog::hide);
+    connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
+      QWidget* page = tabs_->widget(index);
+      if (!client_.isOpen() &&
+          (page == camera_page_ || page == imu_page_ ||
+           page == wifi_hotspot_panel_)) {
+        const QString section =
+            page == camera_page_
+                ? uiText("Camera", "相机")
+                : (page == imu_page_ ? QStringLiteral("IMU")
+                                     : uiText("Network", "网络"));
+        showOpenDeviceHint(section);
+      }
+    });
+    connect(tabs_, &QTabWidget::currentChanged, this,
+            [this](int) { updateVisualizationActivity(); });
+
+    imu_ui_timer_ = new QTimer(this);
+    imu_ui_timer_->setInterval(
+        static_cast<int>(kImuUiFlushPeriod.count()));
+    imu_ui_timer_->setTimerType(Qt::PreciseTimer);
+    connect(imu_ui_timer_, &QTimer::timeout, this,
+            [this]() { flushPendingImuUiUpdates(); });
+    imu_ui_timer_->start();
+
+    for (auto& worker : camera_preview_workers_) {
+      worker = std::thread([this]() { cameraPreviewWorkerMain(); });
+    }
+    updateVisualizationActivity();
+    refreshDeviceList();
+  }
+
+  ~MainWindow() override {
+    if (live_camera_zoom_dialog_ != nullptr) {
+      live_camera_zoom_dialog_->on_selected_camera_changed = {};
+      live_camera_zoom_dialog_->on_visibility_changed = {};
+    }
+    stopWorker();
+    stopCameraPreviewWorker();
+    dataset_recorder_.stop();
+    client_.closeDevice();
+  }
+
+ protected:
+  void closeEvent(QCloseEvent* event) override {
+    stopWorker();
+    dataset_recorder_.stop();
+    client_.closeDevice();
+    event->accept();
+  }
+
+  void changeEvent(QEvent* event) override {
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+      updateVisualizationActivity();
+    }
+  }
+
+ private:
+  void updateVisualizationActivity() {
+    if (tabs_ == nullptr || camera_page_ == nullptr ||
+        imu_page_ == nullptr) {
+      return;
+    }
+    const bool window_active = !isMinimized();
+    const bool camera_active =
+        window_active &&
+        (tabs_->currentWidget() == camera_page_ ||
+         live_camera_zoom_visible_.load(std::memory_order_acquire));
+    const bool was_camera_active =
+        camera_preview_enabled_.exchange(camera_active,
+                                         std::memory_order_acq_rel);
+    if (was_camera_active && !camera_active) {
+      camera_preview_generation_.fetch_add(1, std::memory_order_acq_rel);
+      std::lock_guard<std::mutex> lock(camera_preview_mutex_);
+      camera_preview_jobs_.clear();
+      camera_preview_completed_.clear();
+      camera_preview_next_sequence_ = 1;
+    }
+    {
+      std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+      pending_imu_ui_dirty_.fill(false);
+      for (auto& samples : pending_imu_plot_samples_) samples.clear();
+    }
+    const bool imu_active =
+        window_active && tabs_->currentWidget() == imu_page_;
+    imu_ui_enabled_.store(imu_active, std::memory_order_release);
+    if (imu_plot_ != nullptr) imu_plot_->setActive(imu_active);
+  }
+
+  void setStatusAppearance(bool warning) {
+    status_label_->setStyleSheet(
+        warning
+            ? QStringLiteral(
+                  "background: #fffaeb; border: 1px solid #fedf89; border-radius: 6px;"
+                  "padding: 8px 10px; color: #b54708; font-weight: 600;")
+            : QStringLiteral(
+                  "background: #ffffff; border: 1px solid #d9e2ef; border-radius: 6px;"
+                  "padding: 8px 10px; color: #344054;"));
+  }
+
+  void showOpenDeviceHint(const QString& section) {
+    setStatusAppearance(true);
+    status_label_->setText(
+        uiText("%1 unavailable: please open a device first",
+               "%1 不可用：请先打开设备").arg(section));
+  }
+
+  struct CameraExposureOperationRequest {
+    bool apply = false;
+    prism::ExposureConfiguration configuration;
+  };
+
+  void publishCameraExposureResult(
+      const prism::ExposureConfiguration& configuration, bool applied) {
+    post([this, configuration, applied]() {
+      camera_exposure_operation_running_ = false;
+      camera_exposure_panel_->setConfiguration(configuration);
+      camera_exposure_panel_->setBusy(false);
+      setStatusAppearance(false);
+      status_label_->setText(
+          applied
+              ? uiText("Runtime camera exposure applied",
+                       "已应用相机运行时曝光设置")
+              : uiText("Runtime camera exposure refreshed",
+                       "已刷新相机运行时曝光设置"));
+      appendLogLine(
+          QDateTime::currentDateTime().toString(
+              QStringLiteral("HH:mm:ss.zzz ")) +
+          QStringLiteral(
+              "Camera exposure %1 target=%2 automatic-mask=0x%3 "
+              "manual-us=[%4,%5,%6,%7]")
+              .arg(applied ? QStringLiteral("applied")
+                           : QStringLiteral("refreshed"))
+              .arg(configuration.target_brightness)
+              .arg(configuration.automatic_camera_mask, 2, 16,
+                   QLatin1Char('0'))
+              .arg(configuration.manual_exposure_time_us[0])
+              .arg(configuration.manual_exposure_time_us[1])
+              .arg(configuration.manual_exposure_time_us[2])
+              .arg(configuration.manual_exposure_time_us[3]));
+      refreshControls();
+    });
+  }
+
+  void publishCameraExposureError(const QString& error) {
+    post([this, error]() {
+      camera_exposure_operation_running_ = false;
+      camera_exposure_panel_->setBusy(false);
+      camera_exposure_panel_->setError(error);
+      setStatusAppearance(true);
+      status_label_->setText(
+          uiText("Camera exposure operation failed: %1",
+                 "相机曝光操作失败：%1")
+              .arg(error));
+      appendLogLine(
+          QDateTime::currentDateTime().toString(
+              QStringLiteral("HH:mm:ss.zzz ")) +
+          QStringLiteral("Camera exposure operation failed: %1").arg(error));
+      refreshControls();
+    });
+  }
+
+  void runCameraExposureOperation(
+      const CameraExposureOperationRequest& request) {
+    try {
+      const prism::ExposureConfiguration result =
+          request.apply
+              ? client_.setExposureConfiguration(request.configuration)
+              : client_.cameraExposure();
+      publishCameraExposureResult(result, request.apply);
+    } catch (const std::exception& ex) {
+      publishCameraExposureError(toQString(ex.what()));
+    }
+  }
+
+  bool processPendingCameraExposureOperation() {
+    std::optional<CameraExposureOperationRequest> request;
+    {
+      std::lock_guard<std::mutex> lock(camera_exposure_request_mutex_);
+      if (!pending_camera_exposure_request_.has_value()) return false;
+      request = std::move(pending_camera_exposure_request_);
+      pending_camera_exposure_request_.reset();
+    }
+    runCameraExposureOperation(*request);
+    return true;
+  }
+
+  void cancelPendingCameraExposureOperation(const QString& reason) {
+    bool cancelled = false;
+    {
+      std::lock_guard<std::mutex> lock(camera_exposure_request_mutex_);
+      cancelled = pending_camera_exposure_request_.has_value();
+      pending_camera_exposure_request_.reset();
+    }
+    if (cancelled) publishCameraExposureError(reason);
+  }
+
+  void startCameraExposureOperation(
+      std::optional<prism::ExposureConfiguration> requested) {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(uiText("Camera exposure", "相机曝光"));
+      return;
+    }
+    if (camera_exposure_operation_running_) return;
+    if (time_sync_running_ || wifi_operation_running_ || upgrade_running_) {
+      QMessageBox::warning(
+          this,
+          uiText("Camera exposure controls unavailable",
+                 "相机曝光控制不可用"),
+          uiText("Wait for the current device operation to finish. Exposure "
+                 "can be changed while normal capture is running.",
+                 "请等待当前设备操作完成。正常采集中允许实时修改曝光。"));
+      return;
+    }
+
+    CameraExposureOperationRequest request;
+    request.apply = requested.has_value();
+    if (requested.has_value()) request.configuration = *requested;
+
+    camera_exposure_operation_running_ = true;
+    camera_exposure_panel_->setBusy(
+        true,
+        request.apply
+            ? uiText("Applying runtime camera exposure...",
+                     "正在应用相机运行时曝光设置……")
+            : uiText("Reading runtime camera exposure...",
+                     "正在读取相机运行时曝光设置……"));
+    refreshControls();
+
+    if (worker_running_) {
+      {
+        std::lock_guard<std::mutex> lock(camera_exposure_request_mutex_);
+        pending_camera_exposure_request_ = request;
+      }
+      appendLog(QStringLiteral(
+          "Camera exposure %1 queued on the active capture worker")
+                    .arg(request.apply ? QStringLiteral("apply")
+                                       : QStringLiteral("refresh")));
+      return;
+    }
+
+    operation_controller_.join();
+    operation_controller_.start(
+        [this, request]() { runCameraExposureOperation(request); });
+  }
+
+  void startWifiHotspotOperation(
+      std::optional<bool> requested_enabled) {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(uiText("Network", "网络"));
+      return;
+    }
+    if (worker_running_ || time_sync_running_ ||
+        wifi_operation_running_ || camera_exposure_operation_running_ ||
+        upgrade_running_ ||
+        client_.streamTransferActive()) {
+      QMessageBox::warning(
+          this,
+          uiText("Wi-Fi hotspot controls unavailable",
+                 "Wi-Fi 热点控制不可用"),
+          uiText("Stop camera and IMU transfer and wait for the current "
+                 "device operation to finish before changing Wi-Fi hotspot "
+                 "settings.",
+                 "请先停止相机和 IMU 传输，并等待当前设备操作完成后再更改 "
+                 "Wi-Fi 热点设置。"));
+      return;
+    }
+    operation_controller_.join();
+
+    const QString operation =
+        !requested_enabled.has_value()
+            ? uiText("Reading Wi-Fi hotspot status...",
+                     "正在读取 Wi-Fi 热点状态…")
+            : (*requested_enabled
+                   ? uiText("Enabling Wi-Fi hotspot...",
+                            "正在开启 Wi-Fi 热点…")
+                   : uiText("Disabling Wi-Fi hotspot...",
+                            "正在关闭 Wi-Fi 热点…"));
+    wifi_operation_running_ = true;
+    wifi_hotspot_panel_->setBusy(true, operation);
+    refreshControls();
+    appendLog(!requested_enabled.has_value()
+                  ? QStringLiteral("Reading Wi-Fi hotspot status")
+                  : QStringLiteral("Setting Wi-Fi hotspot enabled=%1")
+                        .arg(*requested_enabled ? 1 : 0));
+
+    operation_controller_.start(
+        [this, requested_enabled]() {
+          try {
+            const prism::WifiHotspotStatus status =
+                requested_enabled.has_value()
+                    ? client_.setWifiHotspotEnabled(*requested_enabled)
+                    : client_.wifiHotspotStatus();
+            post([this, status, requested_enabled]() {
+              wifi_operation_running_ = false;
+              wifi_hotspot_panel_->setStatus(
+                  toWifiHotspotViewState(status));
+              wifi_hotspot_panel_->setBusy(false);
+              appendLogLine(
+                  QDateTime::currentDateTime().toString(
+                      QStringLiteral("HH:mm:ss.zzz ")) +
+                  QStringLiteral(
+                      "Wi-Fi hotspot status present=%1 enabled=%2 "
+                      "ap=%3 dhcp=%4 persisted=%5 interface=%6 "
+                      "ssid=%7 error=%8")
+                      .arg(status.present ? 1 : 0)
+                      .arg(status.enabled ? 1 : 0)
+                      .arg(status.ap_running ? 1 : 0)
+                      .arg(status.dhcp_running ? 1 : 0)
+                      .arg(status.persisted ? 1 : 0)
+                      .arg(toQString(status.interface_name))
+                      .arg(toQString(status.ssid))
+                      .arg(status.error_code));
+              if (requested_enabled.has_value()) {
+                setStatusAppearance(
+                    status.error_code != 0 || !status.error.empty());
+                status_label_->setText(
+                    status.error_code == 0 && status.error.empty()
+                        ? (*requested_enabled
+                               ? uiText("Wi-Fi hotspot enabled",
+                                        "Wi-Fi 热点已开启")
+                               : uiText("Wi-Fi hotspot disabled",
+                                        "Wi-Fi 热点已关闭"))
+                        : uiText("Wi-Fi hotspot operation reported an error",
+                                 "Wi-Fi 热点操作报告错误"));
+              }
+              refreshControls();
+            });
+          } catch (const std::exception& ex) {
+            const QString error = toQString(ex.what());
+            post([this, error]() {
+              wifi_operation_running_ = false;
+              wifi_hotspot_panel_->setError(error);
+              wifi_hotspot_panel_->setBusy(false);
+              appendLogLine(
+                  QDateTime::currentDateTime().toString(
+                      QStringLiteral("HH:mm:ss.zzz ")) +
+                  QStringLiteral("Wi-Fi hotspot operation failed: %1")
+                      .arg(error));
+              refreshControls();
+            });
+          }
+        });
+  }
+
+  void refreshDeviceList() {
+    if (worker_running_ || wifi_operation_running_ || client_.isOpen()) {
+      return;
+    }
+
+    const QString previous_serial = device_selector_->currentData().toString();
+    device_selector_->clear();
+    try {
+      device_session_.refresh();
+      int restore_index = -1;
+      for (size_t i = 0; i < devices_.size(); ++i) {
+        const QString serial = wideToQString(devices_[i].serial_number);
+        const QString label = serial.isEmpty()
+            ? uiText("Device %1 (no serial)", "设备 %1（无序列号）").arg(i + 1)
+            : serial;
+        device_selector_->addItem(label, serial);
+        if (!previous_serial.isEmpty() && serial == previous_serial) {
+          restore_index = static_cast<int>(i);
+        }
+      }
+      if (restore_index >= 0) device_selector_->setCurrentIndex(restore_index);
+      status_label_->setText(
+          devices_.empty()
+              ? uiText("No Prism USB device found", "未找到 Prism USB 设备")
+              : uiText("Found %1 device(s); select a serial number",
+                       "找到 %1 个设备，请选择序列号")
+                    .arg(devices_.size()));
+      setStatusAppearance(devices_.empty());
+      appendLog(QStringLiteral("USB device scan found %1 device(s)")
+                    .arg(devices_.size()));
+    } catch (const std::exception& ex) {
+      setStatusAppearance(true);
+      status_label_->setText(
+          uiText("Device scan failed: %1", "设备扫描失败：%1").arg(ex.what()));
+      appendLog(QStringLiteral("Device scan failed: %1").arg(ex.what()));
+    }
+    refreshControls();
+  }
+
+  void openDevice() {
+    if (worker_running_ || wifi_operation_running_ || client_.isOpen()) {
+      return;
+    }
+    operation_controller_.join();
+
+    const int selected = device_selector_->currentIndex();
+    if (selected < 0 || selected >= static_cast<int>(devices_.size())) {
+      showOpenDeviceHint(uiText("Camera/IMU", "相机/IMU"));
+      return;
+    }
+
+    setStatusAppearance(false);
+    status_label_->setText(uiText("Opening USB device", "正在打开 USB 设备"));
+    appendLog(QStringLiteral("Opening USB device through prism_usb_sdk"));
+    try {
+      const auto opened =
+          device_session_.open(static_cast<size_t>(selected));
+      const auto& hello = opened.hello;
+      const auto& versions = opened.versions;
+      const auto& device_info = opened.device_info;
+      const auto& network = opened.network;
+      const QString serial = wideToQString(opened.serial_number);
+      appendLog(QStringLiteral("Device serial=%1 path=%2")
+                    .arg(serial.isEmpty() ? QStringLiteral("(not reported)") : serial)
+                    .arg(wideToQString(opened.path)));
+      appendLog(QStringLiteral("Agent %1 %2 protocol=%3")
+                    .arg(toQString(hello.app))
+                    .arg(toQString(hello.version))
+                    .arg(hello.protocol_version));
+      appendLog(QStringLiteral("Versions agent=%1 sensor-board=%2")
+                    .arg(toQString(versions.agent))
+                    .arg(toQString(versions.sensor_board)));
+      appendLog(QStringLiteral("Network %1 %2")
+                    .arg(toQString(network.primary_interface))
+                    .arg(toQString(network.ipv4)));
+      appendLog(
+          QStringLiteral(
+              "DeviceInfo serial=%1 USB=%2 IMUs=%3 cameras=%4 "
+              "IMU-fps=%5 camera-fps=%6 WiFi=%7")
+              .arg(toQString(device_info.product_serial))
+              .arg(QString::fromLatin1(
+                  prism::usbLinkSpeedName(device_info.usb_speed)))
+              .arg(device_info.detected_imu_count)
+              .arg(device_info.detected_camera_count)
+              .arg(device_info.imu_fps)
+              .arg(device_info.camera_fps)
+              .arg(device_info.wifi.present
+                       ? toQString(device_info.wifi.ssid)
+                       : QStringLiteral("not-present")));
+      updateDeviceInfo(device_info);
+      updateDeviceVersions(versions);
+      camera_exposure_panel_->setConfiguration(opened.exposure);
+      status_label_->setText(
+          serial.isEmpty() ? uiText("Device open", "设备已打开")
+                           : uiText("Device open: %1", "设备已打开：%1").arg(serial));
+    } catch (const std::exception& ex) {
+      client_.closeDevice();
+      setStatusAppearance(true);
+      status_label_->setText(uiText("Open failed: %1", "打开失败：%1").arg(ex.what()));
+      appendLog(QStringLiteral("Open device failed: %1").arg(ex.what()));
+    }
+    refreshControls();
+    if (client_.isOpen()) {
+      startWifiHotspotOperation(std::nullopt);
+    }
+  }
+
+  void closeDevice() {
+    if (time_sync_running_ || wifi_operation_running_ ||
+        camera_exposure_operation_running_) {
+      return;
+    }
+    if (worker_running_) {
+      appendLog(QStringLiteral("Close requested; stopping active streams first"));
+      stopWorker();
+    } else if (operation_controller_.joinable()) {
+      operation_controller_.join();
+    }
+    if (dataset_recorder_.isActive()) stopImuRecording();
+    if (client_.isOpen()) {
+      client_.closeDevice();
+      appendLog(QStringLiteral("USB device closed"));
+    }
+    imu_detected_.fill(false);
+    imu_offset_measurement_active_ = false;
+    latest_device_info_valid_ = false;
+    latest_device_versions_valid_ = false;
+    latest_rk_heartbeat_time_us_ = 0;
+    device_info_panel_->setDeviceOpen(false);
+    camera_exposure_panel_->setDeviceOpen(false);
+    time_sync_label_->setText(uiText("Time sync: device closed", "时间同步：设备已关闭"));
+    host_time_sync_label_->setText(
+        uiText("Host/device clock: device closed",
+               "主机/设备时钟：设备已关闭"));
+    setStatusAppearance(false);
+    status_label_->setText(uiText("Device closed", "设备已关闭"));
+    wifi_hotspot_panel_->setDeviceOpen(false);
+    refreshControls();
+  }
+
+  void refreshDeviceInfo() {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(uiText("Device Info", "设备信息"));
+      return;
+    }
+    if (worker_running_ || time_sync_running_ ||
+        wifi_operation_running_ || camera_exposure_operation_running_ ||
+        upgrade_running_ ||
+        client_.streamTransferActive()) {
+      return;
+    }
+
+    try {
+      const auto info = client_.deviceInfo();
+      updateDeviceInfo(info);
+      appendLog(QStringLiteral("DeviceInfo refreshed"));
+    } catch (const std::exception& ex) {
+      const QString error = QString::fromUtf8(ex.what());
+      if (device_info_panel_ != nullptr) {
+        device_info_panel_->setError(error);
+      }
+      appendLog(QStringLiteral("DeviceInfo refresh failed: %1").arg(error));
+    }
+  }
+
+  void refreshDeviceVersions() {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(uiText("Versions", "版本"));
+      return;
+    }
+    if (worker_running_ || time_sync_running_ ||
+        wifi_operation_running_ || camera_exposure_operation_running_ ||
+        upgrade_running_ ||
+        client_.streamTransferActive()) {
+      return;
+    }
+
+    try {
+      const auto versions = client_.deviceVersions();
+      updateDeviceVersions(versions);
+      appendLog(QStringLiteral("Versions refreshed: agent=%1 sensor-board=%2")
+                    .arg(toQString(versions.agent))
+                    .arg(toQString(versions.sensor_board)));
+    } catch (const std::exception& ex) {
+      const QString error = QString::fromUtf8(ex.what());
+      if (device_info_panel_ != nullptr) {
+        device_info_panel_->setVersionError(error);
+      }
+      appendLog(QStringLiteral("Version refresh failed: %1").arg(error));
+    }
+  }
+
+  void startCapture() {
+    if (worker_running_ || time_sync_running_ ||
+        wifi_operation_running_ || camera_exposure_operation_running_ ||
+        !client_.isOpen()) {
+      if (!client_.isOpen()) {
+        showOpenDeviceHint(uiText("Capture", "采集"));
+      }
+      return;
+    }
+    operation_controller_.join();
+
+    stop_requested_ = false;
+    worker_running_ = true;
+    resetUi();
+    setRunningUi(true);
+    setStatusAppearance(true);
+    status_label_->setText(
+        uiText("Waiting for the RK/sensor-board link before capture",
+               "等待 RK 与 sensor-board 连接后再开始采集"));
+    appendLog(QStringLiteral(
+        "Capture requested; waiting for DeviceInfo to report an online sensor-board before "
+        "starting camera or IMU streams"));
+
+    operation_controller_.start([this]() { workerMain(); });
+  }
+
+  void startHostTimeSync() {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(uiText("Time synchronization", "时间同步"));
+      return;
+    }
+    if (worker_running_ || time_sync_running_ ||
+        wifi_operation_running_ || camera_exposure_operation_running_ ||
+        client_.streamTransferActive()) {
+      QMessageBox::warning(
+          this, uiText("Time synchronization unavailable", "无法进行时间同步"),
+          uiText("Stop camera and IMU transfer before synchronizing time.",
+                 "请先停止相机和 IMU 传输，再进行时间同步。"));
+      return;
+    }
+    operation_controller_.join();
+
+    time_sync_running_ = true;
+    host_time_sync_label_->setText(
+        uiText("RK clock: measuring offset before setting system time, PHC and RTC...",
+               "RK 时钟：正在测量偏差，随后设置系统时间、以太网 PHC 和 RTC……"));
+    host_time_sync_label_->setStyleSheet(QStringLiteral(
+        "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
+        "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    setStatusAppearance(false);
+    status_label_->setText(
+        uiText("Setting RK system time, Ethernet PHC and RTC while streams are idle",
+               "正在空闲状态下设置 RK 系统时间、以太网 PHC 和 RTC"));
+    appendLog(QStringLiteral(
+        "RK system-time + Ethernet-PHC + RTC synchronization started "
+        "(host authoritative, streams idle)"));
+    refreshControls();
+
+    operation_controller_.start([this]() {
+      try {
+        const auto result = client_.synchronizeSystemTime(12, 6, 1000);
+        post([this, result]() {
+          const QString before_sign = result.before.offset_us >= 0
+                                   ? QStringLiteral("+")
+                                   : QString();
+          const QString after_sign = result.after.offset_us >= 0
+                                  ? QStringLiteral("+")
+                                  : QString();
+          host_time_sync_label_->setText(
+              uiText("RK clock synchronized: before=%1%2 us | residual=%3%4 us "
+                     "| PHC=%5 | RTC=%6 | passes=%7",
+                     "RK 时钟已同步：校准前=%1%2 us | 剩余偏差=%3%4 us "
+                     "| PHC=%5 | RTC=%6 | 校准次数=%7")
+                  .arg(before_sign)
+                  .arg(result.before.offset_us)
+                  .arg(after_sign)
+                  .arg(result.after.offset_us)
+                  .arg(result.ptp_hardware_clock_set
+                           ? QStringLiteral("OK")
+                           : QStringLiteral("failed"))
+                  .arg(toQString(result.rtc_device))
+                  .arg(result.correction_passes));
+          host_time_sync_label_->setToolTip(
+              uiText("The host clock was used as the authority. RK "
+                     "CLOCK_REALTIME, the Ethernet PHC and the listed hardware "
+                     "RTC were written, then the residual offset was measured again.",
+                     "以主机时间为基准，已写入 RK CLOCK_REALTIME、以太网 PHC 和所列硬件 RTC，"
+                     "随后重新测量了剩余偏差。"));
+          host_time_sync_label_->setStyleSheet(QStringLiteral(
+              "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+              "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+          setStatusAppearance(false);
+          status_label_->setText(
+              uiText("RK system time, Ethernet PHC and RTC synchronized",
+                     "RK 系统时间、以太网 PHC 和 RTC 已同步"));
+          appendLogLine(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("HH:mm:ss.zzz ")) +
+              QStringLiteral(
+                  "RK clock sync complete before=%1 us correction=%2 us "
+                  "residual=%3 us PHC=%4 RTC=%5 passes=%6 verified=%7")
+                  .arg(result.before.offset_us)
+                  .arg(result.applied_correction_us)
+                  .arg(result.after.offset_us)
+                  .arg(result.ptp_hardware_clock_set ? 1 : 0)
+                  .arg(toQString(result.rtc_device))
+                  .arg(result.correction_passes)
+                  .arg(result.verified ? 1 : 0));
+          time_sync_running_ = false;
+          refreshControls();
+        });
+      } catch (const std::exception& ex) {
+        const QString error = toQString(ex.what());
+        post([this, error]() {
+          host_time_sync_label_->setText(
+              uiText("Host/device clock: synchronization failed: %1",
+                     "主机/设备时钟：同步失败：%1")
+                  .arg(error));
+          host_time_sync_label_->setStyleSheet(QStringLiteral(
+              "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+              "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+          setStatusAppearance(true);
+          status_label_->setText(
+              uiText("Time synchronization failed", "时间同步失败"));
+          appendLogLine(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("HH:mm:ss.zzz ")) +
+              QStringLiteral("RK system/RTC sync failed: %1").arg(error));
+          time_sync_running_ = false;
+          refreshControls();
+        });
+      }
+    });
+  }
+
+  void stopCapture() {
+    stop_requested_ = true;
+    imu_offset_measure_request_ = false;
+    appendLog(QStringLiteral("Stopping streams"));
+    /*
+     * Let the USB worker begin quiescing camera and IMU immediately. Dataset
+     * finalization can otherwise spend seconds draining a slow disk while the
+     * board continues to stream and the GUI appears frozen.
+     */
+    if (dataset_recorder_.isActive()) stopImuRecording();
+  }
+
+  void startImuRecording() {
+    try {
+      startImuRecordingImpl();
+    } catch (const std::exception& exception) {
+      const QString detail = toQString(exception.what());
+      appendLog(QStringLiteral("Dataset recording start failed: %1")
+                    .arg(detail));
+      QMessageBox::critical(
+          this, uiText("Dataset recording failed", "数据集录制失败"),
+          uiText("Unable to start recording: %1", "无法开始录制：%1")
+              .arg(detail));
+      refreshControls();
+    } catch (...) {
+      appendLog(QStringLiteral(
+          "Dataset recording start failed: unknown exception"));
+      QMessageBox::critical(
+          this, uiText("Dataset recording failed", "数据集录制失败"),
+          uiText("Unable to start recording because of an unexpected error.",
+                 "发生意外错误，无法开始录制。"));
+      refreshControls();
+    }
+  }
+
+  void startImuRecordingImpl() {
+    if (!worker_running_ || dataset_recorder_.isActive()) return;
+
+    const QString selected_directory = QFileDialog::getExistingDirectory(
+        this, uiText("Select dataset recording directory", "选择数据集录制目录"),
+        QDir::homePath(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
+    if (selected_directory.isEmpty()) return;
+    /*
+     * A modal directory dialog runs a nested event loop. Capture may stop
+     * while it is open, so do not create an orphan recording session after
+     * the user returns from the dialog.
+     */
+    if (!worker_running_ || dataset_recorder_.isActive()) {
+      appendLog(QStringLiteral(
+          "Dataset recording request cancelled because capture stopped"));
+      refreshControls();
+      return;
+    }
+    const QDir output_directory(selected_directory);
+    bool existing_dataset =
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("imu0.tum"))) ||
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("imu1.tum"))) ||
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("dataset.info")));
+    for (int camera = 0; camera < 4; ++camera) {
+      existing_dataset =
+          existing_dataset ||
+          QFileInfo::exists(output_directory.filePath(
+              QStringLiteral("cam%1.tum").arg(camera))) ||
+          QDir(output_directory.filePath(
+                   QStringLiteral("cam%1").arg(camera)))
+              .exists();
+    }
+    bool overwrite = false;
+    if (existing_dataset) {
+      const auto answer = QMessageBox::question(
+          this, uiText("Overwrite dataset?", "覆盖数据集？"),
+          uiText("This directory already contains a Prism dataset. Replace "
+                 "imu0.tum, imu1.tum, cam0...cam3 images and indexes?\n%1",
+                 "该目录已经包含 Prism 数据集。是否替换 imu0.tum、imu1.tum、"
+                 "cam0...cam3 图像及索引？\n%1")
+              .arg(selected_directory),
+          QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+      if (answer != QMessageBox::Yes) return;
+      overwrite = true;
+    }
+
+    std::string error;
+    if (!dataset_recorder_.start(toFilesystemPath(selected_directory),
+                                 overwrite, &error)) {
+      QMessageBox::critical(
+          this, uiText("Dataset recording failed", "数据集录制失败"),
+          uiText("Unable to start recording: %1", "无法开始录制：%1")
+              .arg(toQString(error)));
+      return;
+    }
+    recorded_dataset_root_ = selected_directory;
+    imu_record_status_label_->setText(
+        uiText("Recording IMU + 4 cameras", "正在录制 IMU + 四路图像"));
+    imu_record_status_label_->setToolTip(selected_directory);
+    imu_record_status_label_->setStyleSheet(QStringLiteral(
+        "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+        "border-radius: 5px; padding: 4px 8px; font-weight: 700;"));
+    appendLog(QStringLiteral("Dataset recording started: %1")
+                  .arg(selected_directory));
+    refreshControls();
+  }
+
+  void stopImuRecording() {
+    const DatasetRecordingSummary summary = dataset_recorder_.stop();
+    if (!summary.had_session) return;
+
+    if (summary.success) {
+      imu_record_status_label_->setText(
+          uiText("Saved: IMU %1/%2, images %3x4, dropped sets %4",
+                 "已保存：IMU %1/%2，图像 %3×4，丢弃帧集 %4")
+              .arg(summary.sample_count[0])
+              .arg(summary.sample_count[1])
+              .arg(*std::min_element(summary.image_count.begin(),
+                                     summary.image_count.end()))
+              .arg(summary.dropped_frame_sets));
+      imu_record_status_label_->setStyleSheet(QStringLiteral(
+          "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
+          "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
+      appendLog(QStringLiteral(
+                    "Dataset saved: root=%1 imu0=%2 imu1=%3 "
+                    "camera_images=%4/%5/%6/%7 dropped_sets=%8")
+                    .arg(recorded_dataset_root_)
+                    .arg(summary.sample_count[0])
+                    .arg(summary.sample_count[1])
+                    .arg(summary.image_count[0])
+                    .arg(summary.image_count[1])
+                    .arg(summary.image_count[2])
+                    .arg(summary.image_count[3])
+                    .arg(summary.dropped_frame_sets));
+      loadRecordedDataset(recorded_dataset_root_, false);
+    } else {
+      imu_record_status_label_->setText(
+          uiText("Recording save failed", "录制保存失败"));
+      imu_record_status_label_->setStyleSheet(QStringLiteral(
+          "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+          "border-radius: 5px; padding: 4px 8px; font-weight: 700;"));
+      const QString error = toQString(summary.error);
+      appendLog(QStringLiteral("Dataset recording save failed: %1").arg(error));
+      QMessageBox::critical(
+          this, uiText("Dataset recording failed", "数据集录制失败"), error);
+    }
+    refreshControls();
+  }
+
+  bool bothImusDetected() const {
+    return imu_detected_[0] && imu_detected_[1];
+  }
+
+  void updateImuOffsetControls() {
+    const bool running = worker_running_;
+    const bool both_detected = bothImusDetected();
+    const bool can_measure = running && both_detected;
+    imu_offset_button_->setEnabled(can_measure);
+    imu_offset_start_button_->setEnabled(
+        can_measure && !imu_offset_measurement_active_);
+
+    QStringList detected;
+    if (imu_detected_[0]) detected.push_back(QStringLiteral("IMU0"));
+    if (imu_detected_[1]) detected.push_back(QStringLiteral("IMU1"));
+    if (both_detected) {
+      imu_offset_detection_label_->setText(
+          uiText("IMU detection: IMU0 and IMU1 detected",
+                 "IMU 检测：已检测到 IMU0 和 IMU1"));
+      imu_offset_detection_label_->setStyleSheet(QStringLiteral(
+          "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+          "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
+    } else {
+      const QString suffix = detected.empty()
+          ? uiText("waiting for IMU0 and IMU1", "等待 IMU0 和 IMU1")
+          : uiText("%1 detected; waiting for the other IMU",
+                   "已检测到 %1，等待另一个 IMU")
+                .arg(detected.join(QStringLiteral(" + ")));
+      imu_offset_detection_label_->setText(
+          uiText("IMU detection: %1", "IMU 检测：%1").arg(suffix));
+      imu_offset_detection_label_->setStyleSheet(QStringLiteral(
+          "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+          "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
+    }
+  }
+
+  void startImuOffsetMeasurement() {
+    if (!worker_running_ || !bothImusDetected() ||
+        imu_offset_measurement_active_) {
+      return;
+    }
+    imu_offset_measurement_active_ = true;
+    imu_offset_measure_request_ = true;
+    updateImuOffsetControls();
+    imu_offset_label_->setText(
+        uiText("IMU time offset: preparing 10-second collection",
+               "IMU 时间偏移：准备进行 10 秒采集"));
+    imu_offset_label_->setStyleSheet(QStringLiteral(
+        "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
+        "border-radius: 5px; padding: 6px 9px; font-weight: 600;"));
+    appendLog(QStringLiteral(
+        "Dual IMU time-offset collection requested; move/rotate the device"));
+  }
+
+  void startSystemUpgrade() {
+    if (worker_running_ || wifi_operation_running_ ||
+        camera_exposure_operation_running_ || !client_.isOpen()) {
+      if (!client_.isOpen()) {
+        showOpenDeviceHint(uiText("system upgrade", "系统升级"));
+      }
+      return;
+    }
+    operation_controller_.join();
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        uiText("Select Prism system update package", "选择 Prism 系统升级包"),
+        QString(),
+        uiText("Prism system update (*.zip)",
+               "Prism 系统升级包 (*.zip)"),
+        nullptr, QFileDialog::DontUseNativeDialog);
+    if (path.isEmpty()) return;
+
+    prism::SystemUpgradePackageInfo package;
+    try {
+      package =
+          prism::inspectSystemUpgradePackage(path.toStdString());
+    } catch (const std::exception& ex) {
+      QMessageBox::critical(
+          this, uiText("Invalid system update package", "系统升级包无效"),
+          uiText("The selected ZIP must contain a matching agent image and "
+                 "sensor-board BOOT.BIN.\n\n%1",
+                 "所选 ZIP 必须同时包含匹配的 agent 镜像和 sensor-board "
+                 "BOOT.BIN。\n\n%1")
+              .arg(ex.what()));
+      return;
+    }
+
+    if (QMessageBox::warning(
+            this,
+            uiText("Upgrade Prism system", "升级 Prism 系统"),
+            uiText("Camera and IMU streams must be stopped. This package will "
+                   "upgrade and restart the agent first, then upgrade and "
+                   "restart the sensor-board after QSPI read-back verification."
+                   "\n\nPackage: %1\nAgent: %2\nsensor-board: %3\n\nContinue?",
+                   "必须先停止相机和 IMU 数据流。系统会先升级并重启 agent，"
+                   "随后在 QSPI 回读验证成功后升级并重启 sensor-board。"
+                   "\n\n升级包：%1\nAgent：%2\nsensor-board：%3\n\n是否继续？")
+                .arg(toQString(package.package_version))
+                .arg(toQString(package.agent_version))
+                .arg(toQString(package.sensor_board_version)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+      return;
+    }
+
+    worker_running_ = true;
+    upgrade_running_ = true;
+    stop_requested_ = false;
+    imu_detected_.fill(false);
+    imu_offset_measurement_active_ = false;
+    setRunningUi(true);
+    stop_button_->setEnabled(false);
+    updateImuOffsetControls();
+    updateStatus(uiText("Validating Prism system update package",
+                        "正在验证 Prism 系统升级包"));
+    appendLog(
+        QStringLiteral("System update package: %1 | package=%2 agent=%3 "
+                       "sensor-board=%4")
+            .arg(path)
+            .arg(toQString(package.package_version))
+            .arg(toQString(package.agent_version))
+            .arg(toQString(package.sensor_board_version)));
+      operation_controller_.start([this, path]() {
+      try {
+        const auto hello = client_.hello();
+        appendLog(QStringLiteral("Connected to %1 %2")
+                      .arg(toQString(hello.app)).arg(toQString(hello.version)));
+        prism::UpgradeOptions options;
+        const auto result = client_.upgradeSystem(
+            path.toStdString(), options,
+            [this](const prism::SystemUpgradeProgress& status) {
+              const unsigned percent = status.total_bytes == 0
+                                           ? 0U
+                                           : static_cast<unsigned>(
+                                                 (status.completed_bytes * 100U) /
+                                                 status.total_bytes);
+              const QString phase =
+                  status.phase == prism::SystemUpgradePhase::Agent
+                      ? QStringLiteral("agent")
+                      : (status.phase ==
+                                 prism::SystemUpgradePhase::SensorBoard
+                             ? QStringLiteral("sensor-board")
+                             : (status.phase ==
+                                        prism::SystemUpgradePhase::Complete
+                                    ? QStringLiteral("complete")
+                                    : QStringLiteral("validating")));
+              updateStatus(QStringLiteral("System upgrade %1% [%2]: %3")
+                               .arg(percent)
+                               .arg(phase)
+                               .arg(toQString(status.message)));
+              appendLog(QStringLiteral(
+                            "System upgrade phase=%1 component=%2/%3 "
+                            "overall=%4/%5: %6")
+                            .arg(phase)
+                            .arg(status.component_received)
+                            .arg(status.component_total)
+                            .arg(status.completed_bytes)
+                            .arg(status.total_bytes)
+                            .arg(toQString(status.message)));
+            });
+        updateStatus(uiText("Prism system upgrade complete",
+                            "Prism 系统升级完成"));
+        appendLog(
+            QStringLiteral("System upgrade committed: package=%1 agent=%2 "
+                           "sensor-board=%3")
+                .arg(toQString(result.package.package_version))
+                .arg(toQString(result.agent.installed_version))
+                .arg(toQString(result.package.sensor_board_version)));
+        client_.closeDevice();
+        appendLog(QStringLiteral("USB device closed after system upgrade"));
+      } catch (const std::exception& ex) {
+        updateStatus(uiText("System upgrade failed: %1",
+                            "系统升级失败：%1")
+                         .arg(ex.what()));
+        appendLog(
+            QStringLiteral("System upgrade error: %1").arg(ex.what()));
+        client_.closeDevice();
+      }
+      upgrade_running_ = false;
+      worker_running_ = false;
+      post([this]() {
+        imu_offset_measurement_active_ = false;
+        refreshControls();
+      });
+    });
+  }
+
+  void stopWorker() {
+    stop_requested_ = true;
+    operation_controller_.join();
+  }
+
+  void resetUi() {
+    start_time_ = std::chrono::steady_clock::now();
+    camera_preview_generation_.fetch_add(1, std::memory_order_acq_rel);
+    {
+      std::lock_guard<std::mutex> lock(camera_preview_mutex_);
+      camera_preview_jobs_.clear();
+      camera_preview_completed_.clear();
+      camera_preview_next_sequence_ = 1;
+    }
+    camera_frames_.fill(0);
+    camera_frame_sets_ = 0;
+    latest_camera_images_.fill(QImage());
+    latest_camera_frame_id_ = 0;
+    imu_samples_.fill(0);
+    imu_fsync_events_.fill(0);
+    imu_timestamp_alarm_.fill(false);
+    imu_timestamp_alarm_detail_.fill(QString());
+    imu_detected_.fill(false);
+    imu_offset_measure_request_ = false;
+    imu_offset_measurement_active_ = false;
+    latest_device_info_valid_ = false;
+    latest_rk_heartbeat_time_us_ = 0;
+    if (imu_alarm_label_ != nullptr) {
+      imu_alarm_label_->setText(
+          uiText("Timestamp interval: OK", "时间戳间隔：正常"));
+      imu_alarm_label_->setStyleSheet(QStringLiteral(
+          "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+          "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
+    }
+    if (time_sync_label_ != nullptr) {
+      time_sync_label_->setText(
+          uiText("Time sync: waiting for DeviceInfo", "时间同步：等待 DeviceInfo"));
+      time_sync_label_->setStyleSheet(QStringLiteral(
+          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+      time_sync_label_->setToolTip(QString());
+    }
+    if (host_time_sync_label_ != nullptr) {
+      host_time_sync_label_->setText(
+          uiText("Host/device clock: not measured",
+                 "主机/设备时钟：尚未测量"));
+      host_time_sync_label_->setStyleSheet(QStringLiteral(
+          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+      host_time_sync_label_->setToolTip(QString());
+    }
+    if (imu_offset_label_ != nullptr) {
+      imu_offset_label_->setText(
+          uiText("Ready after both IMUs are detected", "检测到两个 IMU 后即可开始"));
+      imu_offset_label_->setStyleSheet(QStringLiteral(
+          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+          "border-radius: 5px; padding: 6px 9px; font-weight: 600;"));
+    }
+    if (imu_plot_ != nullptr) imu_plot_->clear();
+    for (int i = 0; i < 4; ++i) {
+      image_labels_[i]->clearImage(uiText("Waiting", "等待数据"));
+      frame_labels_[i]->setText(
+          uiText("RX complete sets=0 fps=0.00",
+                 "接收完整帧组=0 帧率=0.00"));
+    }
+    for (int row = 0; row < 2; ++row) {
+      for (int col = 1; col < imu_table_->columnCount(); ++col) {
+        imu_table_->item(row, col)->setText(QStringLiteral("-"));
+      }
+      imu_table_->item(row, 3)->setBackground(QBrush());
+      imu_table_->item(row, 3)->setForeground(QBrush());
+    }
+    meta_text_->clear();
+    log_text_->clear();
+    updateImuOffsetControls();
+  }
+
+  void refreshControls() {
+    const bool running = worker_running_;
+    const bool time_syncing = time_sync_running_;
+    const bool wifi_busy = wifi_operation_running_;
+    const bool exposure_busy = camera_exposure_operation_running_;
+    const bool busy = running || time_syncing || wifi_busy || exposure_busy;
+    const bool upgrading = upgrade_running_;
+    const bool device_open = client_.isOpen();
+    const bool selection_valid = device_selector_->currentIndex() >= 0 &&
+        device_selector_->currentIndex() < static_cast<int>(devices_.size());
+    device_selector_->setEnabled(!busy && !device_open);
+    language_selector_->setEnabled(!busy && !device_open);
+    refresh_devices_button_->setEnabled(!busy && !device_open);
+    if (camera_page_ != nullptr) camera_page_->setEnabled(device_open);
+    if (imu_page_ != nullptr) imu_page_->setEnabled(device_open);
+    if (wifi_hotspot_panel_ != nullptr) {
+      wifi_hotspot_panel_->setEnabled(device_open);
+      wifi_hotspot_panel_->setDeviceOpen(device_open);
+      wifi_hotspot_panel_->setControlsLocked(
+          running || time_syncing || upgrading ||
+          client_.streamTransferActive());
+    }
+    if (device_info_panel_ != nullptr) {
+      device_info_panel_->setDeviceOpen(device_open);
+      device_info_panel_->setControlsLocked(
+          busy || upgrading || client_.streamTransferActive());
+    }
+    if (camera_exposure_panel_ != nullptr) {
+      camera_exposure_panel_->setDeviceOpen(device_open);
+      camera_exposure_panel_->setCaptureActive(running && !upgrading);
+      camera_exposure_panel_->setControlsLocked(
+          time_syncing || wifi_busy || upgrading);
+    }
+    if (imu0_selector_ != nullptr) imu0_selector_->setEnabled(device_open);
+    if (imu1_selector_ != nullptr) imu1_selector_->setEnabled(device_open);
+    open_device_button_->setEnabled(!busy && !device_open && selection_valid);
+    close_device_button_->setEnabled(
+        device_open && !upgrading && !time_syncing && !wifi_busy &&
+        !exposure_busy);
+    start_button_->setEnabled(!busy && device_open);
+    stop_button_->setEnabled(running);
+    host_time_sync_button_->setEnabled(
+        !busy && device_open && !client_.streamTransferActive());
+    system_upgrade_button_->setEnabled(!busy && device_open);
+    const bool imu_recording = dataset_recorder_.isActive();
+    if (imu_record_start_button_ != nullptr) {
+      imu_record_start_button_->setEnabled(running && !imu_recording);
+    }
+    if (imu_record_stop_button_ != nullptr) {
+      imu_record_stop_button_->setEnabled(imu_recording);
+    }
+    updateImuOffsetControls();
+  }
+
+  void setRunningUi(bool running) {
+    refreshControls();
+    if (!running) imu_offset_measurement_active_ = false;
+    updateImuOffsetControls();
+    status_label_->setText(
+        running ? uiText("Running", "正在运行")
+                : (client_.isOpen() ? uiText("Device open", "设备已打开")
+                                    : uiText("Device closed", "设备已关闭")));
+  }
+
+  void post(const std::function<void()>& fn) {
+    QMetaObject::invokeMethod(this, fn, Qt::QueuedConnection);
+  }
+
+  void appendLog(const QString& text) {
+    post([this, text]() {
+      appendLogLine(
+          QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
+          text);
+    });
+  }
+
+  void appendLogLine(const QString& text) {
+    log_text_->appendPlainText(text);
+    if (log_auto_scroll_ != nullptr && log_auto_scroll_->isChecked()) {
+      auto* scroll_bar = log_text_->verticalScrollBar();
+      scroll_bar->setValue(scroll_bar->maximum());
+    }
+  }
+
+  void updateStatus(const QString& text) {
+    post([this, text]() {
+      setStatusAppearance(false);
+      status_label_->setText(text);
+    });
+  }
+
+  void renderDeviceInfoStatus() {
+    if (!latest_device_info_valid_) return;
+    const auto& info = latest_device_info_;
+    auto imu_text = [&info](size_t sensor) {
+      const uint8_t bit = static_cast<uint8_t>(1u << sensor);
+      if ((info.imu_present_mask & bit) == 0u)
+        return uiText("not seen", "未检测到");
+      if ((info.imu_time_synced_mask & bit) != 0u)
+        return uiText("synced", "已同步");
+      if ((info.imu_receiving_mask & bit) != 0u)
+        return uiText("unsynced", "未同步");
+      return uiText("idle", "空闲");
+    };
+    QString rk_time = uiText("RK time waiting for heartbeat",
+                             "等待心跳中的 RK 时间");
+    if (latest_rk_heartbeat_time_us_ != 0u) {
+      rk_time = QDateTime::fromMSecsSinceEpoch(
+                    static_cast<qint64>(
+                        latest_rk_heartbeat_time_us_ / 1000u))
+                    .toUTC()
+                    .toString(
+                        QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"));
+    }
+
+    QString text;
+    QString style;
+    if (info.sensor_board_error_flags != 0u) {
+      const QString detail =
+          info.sensor_board_error.empty()
+              ? QString::fromLatin1(prism::sensorBoardErrorCodeName(
+                    info.sensor_board_error_code))
+              : toQString(info.sensor_board_error);
+      text = uiText(
+                 "sensor-board transfer error: %1 | flags=0x%2 | RK %3",
+                 "sensor-board 传输错误：%1 | 标志=0x%2 | RK %3")
+                 .arg(detail)
+                 .arg(info.sensor_board_error_flags, 8, 16,
+                      QLatin1Char('0'))
+                 .arg(rk_time);
+      style = QStringLiteral(
+          "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+    } else if (!info.sensor_board_online) {
+      text = uiText("Time sync: sensor-board offline | RK %1 | "
+                    "IMU0 %2 | IMU1 %3",
+                    "时间同步：sensor-board 离线 | RK %1 | "
+                    "IMU0 %2 | IMU1 %3")
+                 .arg(rk_time, imu_text(0), imu_text(1));
+      style = QStringLiteral(
+          "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+    } else if (!info.sensor_board_time_synced) {
+      text = uiText("Time sync: UNSYNCED | RK %1 | waiting for GPS/NMEA + PPS | "
+                    "IMU0 %2 | IMU1 %3",
+                    "时间同步：未同步 | RK %1 | 等待 GPS/NMEA + PPS | "
+                    "IMU0 %2 | IMU1 %3")
+                 .arg(rk_time, imu_text(0), imu_text(1));
+      style = QStringLiteral(
+          "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+    } else {
+      text = uiText("Time sync: SYNCED | RK %1 | IMU0 %2 | IMU1 %3",
+                    "时间同步：已同步 | RK %1 | IMU0 %2 | IMU1 %3")
+                 .arg(rk_time, imu_text(0), imu_text(1));
+      style = QStringLiteral(
+          "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+    }
+    time_sync_label_->setText(text);
+    time_sync_label_->setStyleSheet(style);
+    time_sync_label_->setToolTip(
+        QStringLiteral(
+            "DeviceInfo: product=%1 USB=%2 IMUs=%3 mask=0x%4 "
+            "cameras=%5 mask=0x%6 IMU-fps=%7 camera-fps=%8 "
+            "sensor-board-error=0x%9")
+            .arg(toQString(info.product_serial))
+            .arg(QString::fromLatin1(
+                prism::usbLinkSpeedName(info.usb_speed)))
+            .arg(info.detected_imu_count)
+            .arg(info.imu_present_mask, 2, 16, QLatin1Char('0'))
+            .arg(info.detected_camera_count)
+            .arg(info.camera_present_mask, 2, 16, QLatin1Char('0'))
+            .arg(info.imu_fps)
+            .arg(info.camera_fps)
+            .arg(info.sensor_board_error_flags, 8, 16,
+                 QLatin1Char('0')));
+  }
+
+  void updateDeviceInfo(const prism::DeviceInfo& info) {
+    post([this, info]() {
+      latest_device_info_ = info;
+      latest_device_info_valid_ = true;
+      if (device_info_panel_ != nullptr) {
+        device_info_panel_->setInfo(info);
+      }
+      const std::array<bool, 2> detected = {
+          (info.imu_present_mask & 0x01u) != 0u,
+          (info.imu_present_mask & 0x02u) != 0u};
+      if (detected != imu_detected_) {
+        imu_detected_ = detected;
+        updateImuOffsetControls();
+      }
+      renderDeviceInfoStatus();
+    });
+  }
+
+  void updateDeviceVersions(const prism::DeviceVersions& versions) {
+    post([this, versions]() {
+      latest_device_versions_ = versions;
+      latest_device_versions_valid_ = true;
+      if (device_info_panel_ != nullptr) {
+        device_info_panel_->setVersions(versions);
+      }
+    });
+  }
+
+  void updateHeartbeat(const prism::HeartbeatStatus& heartbeat) {
+    post([this, heartbeat]() {
+      latest_rk_heartbeat_time_us_ = heartbeat.rk_system_time_us;
+      renderDeviceInfoStatus();
+    });
+  }
+
+  void showLiveCameraZoom(int camera) {
+    if (camera < 0 || camera >= 4 || latest_camera_images_[camera].isNull()) {
+      return;
+    }
+    live_camera_zoom_camera_.store(camera, std::memory_order_release);
+    live_camera_zoom_dialog_->setImageSet(
+        latest_camera_images_, camera,
+        uiText("Live frame %1", "实时帧 %1").arg(latest_camera_frame_id_));
+    live_camera_zoom_dialog_->show();
+    live_camera_zoom_dialog_->raise();
+    live_camera_zoom_dialog_->activateWindow();
+  }
+
+  void showDatasetCameraZoom(int camera) {
+    if (camera < 0 || camera >= 4 || dataset_images_[camera].isNull()) return;
+    dataset_camera_zoom_dialog_->setImageSet(
+        dataset_images_, camera,
+        uiText("Dataset frame %1", "数据集帧 %1")
+            .arg(dataset_current_frame_ + 1));
+    dataset_camera_zoom_dialog_->show();
+    dataset_camera_zoom_dialog_->raise();
+    dataset_camera_zoom_dialog_->activateWindow();
+  }
+
+  QString describeDatasetTimestamp(uint64_t timestamp_us) const {
+    // Unix timestamps in the current product are around 1.7e15 us. Smaller
+    // values are monotonic device timestamps and must not be rendered as 1970.
+    if (timestamp_us >= 100000000000000ULL) {
+      return QDateTime::fromMSecsSinceEpoch(
+                 static_cast<qint64>(timestamp_us / 1000ULL))
+          .toUTC()
+          .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"));
+    }
+    return QStringLiteral("%1.%2 s (device monotonic)")
+        .arg(timestamp_us / 1000000ULL)
+        .arg(timestamp_us % 1000000ULL, 6, 10, QLatin1Char('0'));
+  }
+
+  void openRecordedDataset() {
+    const QString initial =
+        loaded_dataset_root_.isEmpty() ? QDir::homePath()
+                                       : loaded_dataset_root_;
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, uiText("Open recorded Prism dataset", "打开已录制的 Prism 数据集"),
+        initial,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
+    if (!directory.isEmpty()) loadRecordedDataset(directory, true);
+  }
+
+  void loadRecordedDataset(const QString& directory, bool show_errors) {
+    const auto root = toFilesystemPath(directory);
+    std::array<std::vector<DatasetImageEntry>, 4> camera_entries;
+    std::string error;
+    for (size_t camera = 0; camera < camera_entries.size(); ++camera) {
+      if (!loadDatasetImageIndex(root, camera, &camera_entries[camera],
+                                 &error)) {
+        if (show_errors) {
+          QMessageBox::critical(
+              this, uiText("Unable to open dataset", "无法打开数据集"),
+              uiText("%1\n%2", "%1\n%2").arg(directory, toQString(error)));
+        }
+        return;
+      }
+    }
+
+    size_t complete_frames = camera_entries[0].size();
+    for (const auto& entries : camera_entries) {
+      complete_frames = std::min(complete_frames, entries.size());
+    }
+    if (complete_frames == 0) {
+      if (show_errors) {
+        QMessageBox::warning(
+            this, uiText("Empty dataset", "空数据集"),
+            uiText("No complete four-camera frame set was found.",
+                   "没有找到完整的四路相机帧集。"));
+      }
+      return;
+    }
+
+    dataset_camera_entries_ = std::move(camera_entries);
+    dataset_frame_count_ = complete_frames;
+    loaded_dataset_root_ = directory;
+    dataset_path_label_->setText(directory);
+    dataset_path_label_->setToolTip(directory);
+
+    const TumFileSummary imu0 = summarizeTumFile(root / "imu0.tum");
+    const TumFileSummary imu1 = summarizeTumFile(root / "imu1.tum");
+    dataset_summary_label_->setText(
+        uiText("Loaded %1 complete four-camera frame sets | "
+               "IMU0 %2 samples | IMU1 %3 samples",
+               "已加载 %1 个完整四路帧集 | IMU0 %2 个样本 | "
+               "IMU1 %3 个样本")
+            .arg(dataset_frame_count_)
+            .arg(imu0.rows)
+            .arg(imu1.rows));
+    dataset_summary_label_->setStyleSheet(QStringLiteral(
+        "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+        "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
+
+    QString details;
+    details += QStringLiteral("root=%1\n").arg(directory);
+    details += QStringLiteral(
+                   "camera frames: cam0=%1 cam1=%2 cam2=%3 cam3=%4\n")
+                   .arg(dataset_camera_entries_[0].size())
+                   .arg(dataset_camera_entries_[1].size())
+                   .arg(dataset_camera_entries_[2].size())
+                   .arg(dataset_camera_entries_[3].size());
+    details += QStringLiteral("imu0: samples=%1 first=%2 last=%3\n")
+                   .arg(imu0.rows)
+                   .arg(imu0.first_timestamp_us)
+                   .arg(imu0.last_timestamp_us);
+    details += QStringLiteral("imu1: samples=%1 first=%2 last=%3")
+                   .arg(imu1.rows)
+                   .arg(imu1.first_timestamp_us)
+                   .arg(imu1.last_timestamp_us);
+    dataset_details_->setPlainText(details);
+
+    {
+      const QSignalBlocker blocker(dataset_frame_slider_);
+      dataset_frame_slider_->setRange(
+          0, static_cast<int>(std::min<size_t>(
+                 dataset_frame_count_ - 1,
+                 static_cast<size_t>(std::numeric_limits<int>::max()))));
+      dataset_frame_slider_->setValue(0);
+      dataset_frame_slider_->setEnabled(true);
+    }
+    showDatasetFrame(0);
+    appendLog(QStringLiteral("Recorded dataset loaded: %1 frame_sets=%2")
+                  .arg(directory)
+                  .arg(dataset_frame_count_));
+  }
+
+  void showDatasetFrame(int frame) {
+    if (frame < 0 || static_cast<size_t>(frame) >= dataset_frame_count_) return;
+    dataset_current_frame_ = frame;
+    for (size_t camera = 0; camera < dataset_images_.size(); ++camera) {
+      const auto& entry = dataset_camera_entries_[camera][frame];
+      QImage image = loadDatasetImage(entry);
+      dataset_images_[camera] = image;
+      if (image.isNull()) {
+        dataset_image_labels_[camera]->clearImage(
+            uiText("Image file missing", "图像文件缺失"));
+      } else {
+        dataset_image_labels_[camera]->setImage(image);
+      }
+      dataset_image_labels_[camera]->setToolTip(
+          uiText("%1 @ %2 + %3 | actual exposure=%4 us",
+                 "%1 @ %2 + %3 | 实际曝光=%4 微秒")
+              .arg(entry.absolute_path)
+              .arg(entry.byte_offset)
+              .arg(entry.byte_size)
+              .arg(entry.exposure_us));
+    }
+
+    const uint64_t timestamp_us =
+        dataset_camera_entries_[0][frame].timestamp_us;
+    dataset_frame_label_->setText(
+        uiText("Frame %1/%2 | %3 | exposure [%4, %5, %6, %7] us",
+               "帧 %1/%2 | %3 | 曝光 [%4, %5, %6, %7] 微秒")
+            .arg(frame + 1)
+            .arg(dataset_frame_count_)
+            .arg(describeDatasetTimestamp(timestamp_us))
+            .arg(dataset_camera_entries_[0][frame].exposure_us)
+            .arg(dataset_camera_entries_[1][frame].exposure_us)
+            .arg(dataset_camera_entries_[2][frame].exposure_us)
+            .arg(dataset_camera_entries_[3][frame].exposure_us));
+    if (dataset_camera_zoom_dialog_->isVisible()) {
+      dataset_camera_zoom_dialog_->setImageSet(
+          dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(),
+          uiText("Dataset frame %1/%2", "数据集帧 %1/%2")
+              .arg(frame + 1)
+              .arg(dataset_frame_count_));
+    }
+  }
+
+  void queueCameraFrameSetStatus(
+      uint32_t frame_id, uint64_t received_frame_sets, double received_fps,
+      const std::array<size_t, 4>& jpeg_sizes,
+      const std::array<uint32_t, 4>& exposure_us) {
+    const uint64_t generation =
+        camera_preview_generation_.load(std::memory_order_acquire);
+    post([this, generation, frame_id, received_frame_sets, received_fps,
+          jpeg_sizes, exposure_us]() {
+      if (generation !=
+          camera_preview_generation_.load(std::memory_order_acquire)) {
+        return;
+      }
+
+      /*
+       * These are transport/assembly counters, not preview counters. A complete
+       * four-camera frame set has already been assembled and acknowledged
+       * before this update is queued. Lossy preview decode/render scheduling
+       * must never make one camera appear to have dropped on the link.
+       */
+      camera_frame_sets_ = received_frame_sets;
+      camera_frames_.fill(camera_frame_sets_);
+      const QString preview_frame =
+          latest_camera_images_[0].isNull()
+              ? QStringLiteral("-")
+              : QString::number(latest_camera_frame_id_);
+      for (size_t camera = 0; camera < frame_labels_.size(); ++camera) {
+        frame_labels_[camera]->setText(
+            uiText("RX frame=%1 complete sets=%2 fps=%3 preview frame=%4 "
+                   "jpeg=%5 KiB exposure=%6 us",
+                   "接收帧=%1 完整帧组=%2 帧率=%3 预览帧=%4 "
+                   "JPEG=%5 KiB 曝光=%6 微秒")
+                .arg(frame_id)
+                .arg(camera_frame_sets_)
+                .arg(received_fps, 0, 'f', 2)
+                .arg(preview_frame)
+                .arg(static_cast<double>(jpeg_sizes[camera]) / 1024.0, 0,
+                     'f', 1)
+                .arg(exposure_us[camera]));
+      }
+    });
+  }
+
+  void enqueueCameraPreview(CameraPreviewJob job) {
+    if (!camera_preview_enabled_.load(std::memory_order_acquire)) return;
+    {
+      std::lock_guard<std::mutex> lock(camera_preview_mutex_);
+      /*
+       * Preview is deliberately lossy. The USB receive loop has already
+       * acknowledged and, when requested, recorded the complete frame set.
+       * Keeping stale JPEGs here only lets a temporarily slow Qt renderer
+       * consume unbounded memory and makes the whole Viewer appear frozen.
+       */
+      // Latest-wins keeps presentation latency and CPU bounded. Transport
+      // ACK and dataset recording are handled before this lossy queue.
+      camera_preview_jobs_.clear();
+      camera_preview_jobs_.push_back(std::move(job));
+    }
+    camera_preview_wakeup_.notify_one();
+  }
+
+  void publishDecodedCameraPreview(DecodedCameraPreviewJob decoded) {
+    std::vector<DecodedCameraPreviewJob> ready;
+    {
+      std::lock_guard<std::mutex> lock(camera_preview_mutex_);
+      if (decoded.generation !=
+          camera_preview_generation_.load(std::memory_order_acquire)) {
+        return;
+      }
+      camera_preview_completed_.emplace(
+          decoded.received_frame_sets, std::move(decoded));
+      while (!camera_preview_completed_.empty()) {
+        auto next = camera_preview_completed_.begin();
+        if (next->first < camera_preview_next_sequence_) {
+          camera_preview_completed_.erase(next);
+          continue;
+        }
+        /*
+         * A bounded preview queue may intentionally skip obsolete frames.
+         * Advance across such a gap instead of waiting forever for a preview
+         * frame that was already discarded.
+         */
+        camera_preview_next_sequence_ = next->first;
+        ready.push_back(std::move(next->second));
+        camera_preview_completed_.erase(next);
+        ++camera_preview_next_sequence_;
+      }
+    }
+
+    for (auto& frame : ready) {
+      if (!frame.decode_ok) {
+        appendLog(QStringLiteral(
+                      "Preview decode skipped for complete four-camera frame "
+                      "set %1 (camera %2 JPEG decode failed); transport data "
+                      "was already received and acknowledged")
+                      .arg(frame.frame_id)
+                      .arg(frame.failed_camera));
+        continue;
+      }
+
+      if (camera_preview_ui_posts_pending_.load(std::memory_order_acquire) >=
+          kMaximumQueuedPreviewFrameSets) {
+        continue;
+      }
+      camera_preview_ui_posts_pending_.fetch_add(1,
+                                                 std::memory_order_acq_rel);
+      post([this, frame = std::move(frame)]() mutable {
+        if (frame.generation !=
+            camera_preview_generation_.load(std::memory_order_acquire)) {
+          camera_preview_ui_posts_pending_.fetch_sub(
+              1, std::memory_order_acq_rel);
+          return;
+        }
+        latest_camera_images_ = std::move(frame.images);
+        latest_camera_frame_id_ = frame.frame_id;
+        for (size_t camera = 0; camera < latest_camera_images_.size();
+             ++camera) {
+          image_labels_[camera]->setImage(latest_camera_images_[camera]);
+        }
+        if (live_camera_zoom_dialog_->isVisible()) {
+          live_camera_zoom_dialog_->setImageSet(
+              latest_camera_images_,
+              live_camera_zoom_dialog_->selectedCamera(),
+              uiText("Live frame %1", "实时帧 %1").arg(frame.frame_id));
+        }
+        camera_preview_ui_posts_pending_.fetch_sub(
+            1, std::memory_order_acq_rel);
+      });
+    }
+  }
+
+  void cameraPreviewWorkerMain() {
+    for (;;) {
+      CameraPreviewJob job;
+      {
+        std::unique_lock<std::mutex> lock(camera_preview_mutex_);
+        camera_preview_wakeup_.wait(lock, [this]() {
+          return camera_preview_stop_ || !camera_preview_jobs_.empty();
+        });
+        if (camera_preview_stop_) return;
+        job = std::move(camera_preview_jobs_.front());
+        camera_preview_jobs_.pop_front();
+      }
+
+      DecodedCameraPreviewJob decoded;
+      decoded.frame_id = job.frame_id;
+      decoded.received_frame_sets = job.received_frame_sets;
+      decoded.generation = job.generation;
+      if (camera_preview_ui_posts_pending_.load(std::memory_order_acquire) >=
+          kMaximumQueuedPreviewFrameSets) {
+        continue;
+      }
+      for (size_t camera = 0; camera < decoded.images.size(); ++camera) {
+        decoded.images[camera] = decodePreviewJpeg(
+            job.jpeg[camera],
+            static_cast<int>(camera) == job.full_resolution_camera
+                ? QSize()
+                : job.maximum_preview_size);
+        if (decoded.images[camera].isNull()) {
+          decoded.decode_ok = false;
+          decoded.failed_camera = camera;
+          break;
+        }
+      }
+      publishDecodedCameraPreview(std::move(decoded));
+    }
+  }
+
+  void stopCameraPreviewWorker() {
+    {
+      std::lock_guard<std::mutex> lock(camera_preview_mutex_);
+      camera_preview_stop_ = true;
+      camera_preview_jobs_.clear();
+      camera_preview_completed_.clear();
+    }
+    camera_preview_wakeup_.notify_all();
+    for (auto& worker : camera_preview_workers_) {
+      if (worker.joinable()) worker.join();
+    }
+  }
+
+  void processFrameSet(
+      uint32_t frame_id,
+      uint64_t timestamp_us,
+      uint64_t received_frame_sets,
+      const prism::VideoMeta& metadata,
+      std::array<std::vector<uint8_t>, 4> jpeg_set) {
+    dataset_recorder_.appendFrameSet(
+        frame_id, timestamp_us, metadata, jpeg_set);
+
+    if (!camera_preview_enabled_.load(std::memory_order_acquire)) return;
+
+    CameraPreviewJob preview;
+    preview.frame_id = frame_id;
+    preview.received_frame_sets = received_frame_sets;
+    preview.generation =
+        camera_preview_generation_.load(std::memory_order_acquire);
+    preview.full_resolution_camera =
+        live_camera_zoom_visible_.load(std::memory_order_acquire)
+            ? live_camera_zoom_camera_.load(std::memory_order_acquire)
+            : -1;
+    preview.maximum_preview_size = QSize(
+        camera_preview_width_.load(std::memory_order_acquire),
+        camera_preview_height_.load(std::memory_order_acquire));
+    preview.jpeg = std::move(jpeg_set);
+    enqueueCameraPreview(std::move(preview));
+  }
+
+  void updateMeta(const prism::VideoMeta& meta) {
+    post([this, meta]() {
+      QString text;
+      text += QStringLiteral("valid=%1 cameras=%2\n")
+                  .arg(meta.valid ? 1 : 0)
+                  .arg(meta.cameras);
+      text += QStringLiteral("host_frame_id=%1 carrier_frame_id=%2\n")
+                  .arg(meta.host_frame_id)
+                  .arg(meta.carrier_frame_id);
+      text += QStringLiteral("carrier_width_bytes=%1 image_height_per_camera=%2 meta_row_bytes=%3\n")
+                  .arg(meta.carrier_width_bytes)
+                  .arg(meta.image_height_per_camera)
+                  .arg(meta.meta_row_bytes);
+      text += QStringLiteral("trigger_time_ns=%1\n")
+                  .arg(meta.trigger_time_ns);
+      for (int i = 0; i < 4; ++i) {
+        text += uiText("camera%1 actual exposure=%2 us\n",
+                       "相机%1 实际曝光=%2 微秒\n")
+                    .arg(i)
+                    .arg(meta.exposure_us[i]);
+      }
+      text += QStringLiteral("meta_crc32=0x%1\n")
+                  .arg(meta.meta_crc32, 8, 16, QLatin1Char('0'));
+      meta_text_->setPlainText(text);
+    });
+  }
+
+  void queueImuUiUpdate(const prism::ImuSample& sample,
+                        uint64_t received_count,
+                        double sample_rate_hz,
+                        uint64_t fsync_event_count,
+                        uint64_t last_fsync_sample_us,
+                        bool last_fsync_delay_valid) {
+    const int sensor = static_cast<int>(sample.sensor_id);
+    if (sensor < 0 || sensor >= 2) return;
+
+    ImuUiSnapshot snapshot;
+    snapshot.sample = sample;
+    snapshot.received_count = received_count;
+    snapshot.sample_rate_hz = sample_rate_hz;
+    snapshot.fsync_event_count = fsync_event_count;
+    snapshot.last_fsync_sample_us = last_fsync_sample_us;
+    snapshot.last_fsync_delay_valid = last_fsync_delay_valid;
+    std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+    pending_imu_ui_[sensor] = std::move(snapshot);
+    pending_imu_ui_dirty_[sensor] = true;
+  }
+
+  void queueImuPlotSample(
+      const prism::ImuSample& sample,
+      std::chrono::steady_clock::time_point received_at) {
+    if (!imu_ui_enabled_.load(std::memory_order_acquire) ||
+        sample.sensor_id >= pending_imu_plot_samples_.size()) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+    auto& samples = pending_imu_plot_samples_[sample.sensor_id];
+    if (samples.size() >= kMaximumPendingImuPlotSamples) {
+      samples.pop_front();
+    }
+    samples.push_back({sample, received_at});
+  }
+
+  void applyImuUiSnapshot(const ImuUiSnapshot& snapshot) {
+      const prism::ImuSample& sample = snapshot.sample;
+      const int sensor = static_cast<int>(sample.sensor_id);
+      const uint64_t received_count = snapshot.received_count;
+      const double sample_rate_hz = snapshot.sample_rate_hz;
+      const uint64_t fsync_event_count = snapshot.fsync_event_count;
+      const uint64_t last_fsync_sample_us =
+          snapshot.last_fsync_sample_us;
+      const bool last_fsync_delay_valid =
+          snapshot.last_fsync_delay_valid;
+      const bool newly_detected = !imu_detected_[sensor];
+      imu_detected_[sensor] = true;
+      if (newly_detected) updateImuOffsetControls();
+      imu_samples_[sensor] = received_count;
+      imu_table_->item(sensor, 1)->setText(QString::number(imu_samples_[sensor]));
+      imu_table_->item(sensor, 2)->setText(QString::number(sample_rate_hz, 'f', 1));
+      const bool timestamp_synced = sample.timestamp_synced;
+      QString timestamp_text;
+      if (timestamp_synced) {
+        timestamp_text = QDateTime::fromMSecsSinceEpoch(
+                             static_cast<qint64>(sample.timestamp_us / 1000u))
+                             .toUTC()
+                             .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"));
+      } else {
+        timestamp_text = uiText("%1 us (unsynced)", "%1 us（未同步）")
+                             .arg(sample.timestamp_us);
+      }
+      imu_table_->item(sensor, 3)->setText(timestamp_text);
+      imu_table_->item(sensor, 3)->setToolTip(
+          QStringLiteral("raw timestamp: %1 us").arg(sample.timestamp_us));
+      imu_table_->item(sensor, 4)->setText(
+          QString::number(static_cast<double>(sample.accel_mg[0]) / 1000.0, 'f', 4));
+      imu_table_->item(sensor, 5)->setText(
+          QString::number(static_cast<double>(sample.accel_mg[1]) / 1000.0, 'f', 4));
+      imu_table_->item(sensor, 6)->setText(
+          QString::number(static_cast<double>(sample.accel_mg[2]) / 1000.0, 'f', 4));
+      imu_table_->item(sensor, 7)->setText(
+          QString::number(static_cast<double>(sample.gyro_mdps[0]) / 1000.0, 'f', 3));
+      imu_table_->item(sensor, 8)->setText(
+          QString::number(static_cast<double>(sample.gyro_mdps[1]) / 1000.0, 'f', 3));
+      imu_table_->item(sensor, 9)->setText(
+          QString::number(static_cast<double>(sample.gyro_mdps[2]) / 1000.0, 'f', 3));
+      imu_table_->item(sensor, 10)->setText(
+          QString::number(static_cast<double>(sample.temp_milli_c) / 1000.0, 'f', 2));
+      if (fsync_event_count == 0) {
+        imu_table_->item(sensor, 11)->setText(uiText("waiting", "等待中"));
+      } else {
+        imu_table_->item(sensor, 11)->setText(
+            QStringLiteral("#%1 UTC=%2 us %3")
+                .arg(fsync_event_count)
+                .arg(last_fsync_sample_us)
+                .arg(last_fsync_delay_valid ? uiText("valid", "有效")
+                                            : uiText("delay invalid", "延迟无效")));
+        imu_table_->item(sensor, 11)->setToolTip(
+            QStringLiteral("tagged sample UTC: %1 us").arg(last_fsync_sample_us));
+      }
+      if (fsync_event_count != imu_fsync_events_[sensor]) {
+        imu_fsync_events_[sensor] = fsync_event_count;
+        appendLogLine(
+            QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
+            QStringLiteral("IMU%1 FSYNC #%2 tagged_sample_utc=%3 us "
+                           "delay=%4")
+                .arg(sensor)
+                .arg(fsync_event_count)
+                .arg(last_fsync_sample_us)
+                .arg(last_fsync_delay_valid ? QStringLiteral("valid")
+                                            : QStringLiteral("invalid")));
+      }
+      imu_table_->item(sensor, 12)->setText(
+          QStringLiteral("0x%1").arg(sample.flags, 4, 16, QLatin1Char('0')));
+  }
+
+  void flushPendingImuUiUpdates() {
+    if (!imu_ui_enabled_.load(std::memory_order_acquire)) return;
+
+    std::array<ImuUiSnapshot, 2> snapshots;
+    std::array<bool, 2> dirty{};
+    std::array<std::deque<PendingImuPlotSample>, 2> plot_samples;
+    {
+      std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+      snapshots = pending_imu_ui_;
+      dirty = pending_imu_ui_dirty_;
+      pending_imu_ui_dirty_.fill(false);
+      for (size_t sensor = 0; sensor < plot_samples.size(); ++sensor) {
+        plot_samples[sensor].swap(pending_imu_plot_samples_[sensor]);
+      }
+    }
+    if (!dirty[0] && !dirty[1] && plot_samples[0].empty() &&
+        plot_samples[1].empty()) {
+      return;
+    }
+
+    if (dirty[0] || dirty[1]) {
+      imu_table_->setUpdatesEnabled(false);
+      for (size_t sensor = 0; sensor < dirty.size(); ++sensor) {
+        if (dirty[sensor]) applyImuUiSnapshot(snapshots[sensor]);
+      }
+      imu_table_->setUpdatesEnabled(true);
+      imu_table_->viewport()->update();
+    }
+    for (const auto& sensor_samples : plot_samples) {
+      for (const auto& pending : sensor_samples) {
+        imu_plot_->appendSample(pending.sample, pending.received_at);
+      }
+    }
+  }
+
+  void updateImuTimestampAlarm(int sensor, bool active, const QString& detail) {
+    post([this, sensor, active, detail]() {
+      if (sensor < 0 || sensor >= static_cast<int>(imu_timestamp_alarm_.size())) return;
+      if (imu_timestamp_alarm_[sensor] == active) return;
+
+      imu_timestamp_alarm_[sensor] = active;
+      imu_timestamp_alarm_detail_[sensor] = active ? detail : QString();
+      auto* timestamp_item = imu_table_->item(sensor, 3);
+      if (active) {
+        timestamp_item->setBackground(QColor(QStringLiteral("#fee4e2")));
+        timestamp_item->setForeground(QColor(QStringLiteral("#b42318")));
+      } else {
+        timestamp_item->setBackground(QBrush());
+        timestamp_item->setForeground(QBrush());
+      }
+
+      QStringList active_alarms;
+      for (size_t i = 0; i < imu_timestamp_alarm_.size(); ++i) {
+        if (imu_timestamp_alarm_[i]) {
+          active_alarms.push_back(QStringLiteral("IMU%1: %2")
+                                      .arg(i)
+                                      .arg(imu_timestamp_alarm_detail_[i]));
+        }
+      }
+      if (active_alarms.empty()) {
+        imu_alarm_label_->setText(
+            uiText("Timestamp interval: OK", "时间戳间隔：正常"));
+        imu_alarm_label_->setStyleSheet(QStringLiteral(
+            "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+            "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
+      } else {
+        imu_alarm_label_->setText(uiText("TIMESTAMP ALARM | ", "时间戳告警 | ") +
+                                  active_alarms.join(QStringLiteral(" | ")));
+        imu_alarm_label_->setStyleSheet(QStringLiteral(
+            "background: #fee4e2; color: #b42318; border: 1px solid #fda29b;"
+            "border-radius: 5px; padding: 4px 8px; font-weight: 700;"));
+      }
+
+      appendLogLine(
+          QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
+          (active ? QStringLiteral("ALARM: IMU%1 timestamp interval %2").arg(sensor).arg(detail)
+                  : QStringLiteral("RECOVERED: IMU%1 timestamp interval stable").arg(sensor)));
+    });
+  }
+
+  void updateImuOffsetEstimate(
+      const prism_viewer::ImuOffsetEstimate& result) {
+    if (!result.updated) return;
+    post([this, result]() {
+      QString text;
+      QString style = QStringLiteral(
+          "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+          "border-radius: 5px; padding: 6px 9px; font-weight: 600;");
+      switch (result.state) {
+        case prism_viewer::ImuOffsetState::Idle:
+          text = uiText("IMU time offset: idle", "IMU 时间偏移：空闲");
+          style = QStringLiteral(
+              "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+              "border-radius: 5px; padding: 6px 9px; font-weight: 600;");
+          break;
+        case prism_viewer::ImuOffsetState::WaitingForBothImus:
+          text = uiText("IMU time offset: waiting for both IMU streams",
+                        "IMU 时间偏移：等待两个 IMU 数据流");
+          break;
+        case prism_viewer::ImuOffsetState::WaitingForTimeSync:
+          text = uiText("IMU time offset: waiting for synchronized timestamps",
+                        "IMU 时间偏移：等待时间戳同步");
+          break;
+        case prism_viewer::ImuOffsetState::Collecting:
+          text = uiText("IMU time offset: collecting %1% (%2 / 10.0 s) | "
+                        "samples=%3/%4 | rotate the device",
+                        "IMU 时间偏移：采集中 %1%（%2 / 10.0 秒）| "
+                        "样本=%3/%4 | 请转动设备")
+                     .arg(result.progress * 100.0, 0, 'f', 0)
+                     .arg(result.duration_s, 0, 'f', 1)
+                     .arg(result.sample_count[0])
+                     .arg(result.sample_count[1]);
+          style = QStringLiteral(
+              "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
+              "border-radius: 5px; padding: 6px 9px; font-weight: 600;");
+          break;
+        case prism_viewer::ImuOffsetState::Complete:
+          text = uiText("IMU time offset result: t(IMU1)-t(IMU0)=%1 us | "
+                        "apply %2 us to IMU1 | r=%3 | peak width=%4 us | %5 s | "
+                        "mount IMU1->IMU0 RPY=(%6, %7, %8) deg",
+                        "IMU 时间偏移结果：t(IMU1)-t(IMU0)=%1 us | "
+                        "IMU1 应修正 %2 us | r=%3 | 峰宽=%4 us | %5 秒 | "
+                        "装配 IMU1->IMU0 RPY=(%6, %7, %8) 度")
+                     .arg(result.offset_us, 0, 'f', 1)
+                     .arg(-result.offset_us, 0, 'f', 1)
+                     .arg(result.correlation, 0, 'f', 4)
+                     .arg(result.correlation_peak_width_us, 0, 'f', 0)
+                     .arg(result.duration_s, 0, 'f', 1)
+                     .arg(result.mounting_rpy_degrees[0], 0, 'f', 1)
+                     .arg(result.mounting_rpy_degrees[1], 0, 'f', 1)
+                     .arg(result.mounting_rpy_degrees[2], 0, 'f', 1);
+          style = QStringLiteral(
+              "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+              "border-radius: 5px; padding: 6px 9px; font-weight: 700;");
+          break;
+        case prism_viewer::ImuOffsetState::InsufficientMotion:
+          text = uiText("IMU time offset: insufficient multi-axis rotation | gyro std=%1 "
+                        "deg/s, span=%2 deg/s, axis excitation=%3 | collect again",
+                        "IMU 时间偏移：转动不足 | 陀螺仪标准差=%1 度/秒，"
+                        "范围=%2 度/秒，多轴激励=%3 | 请绕多个轴转动设备后重新采集")
+                     .arg(result.motion_stddev_dps, 0, 'f', 1)
+                     .arg(result.motion_peak_to_peak_dps, 0, 'f', 1)
+                     .arg(result.orientation_excitation_ratio, 0, 'f', 2);
+          break;
+        case prism_viewer::ImuOffsetState::LowConfidence:
+          text = uiText("IMU time offset: result not reliable | r=%1, peak width=%2 us | "
+                        "collect again with irregular rotation",
+                        "IMU 时间偏移：结果不可靠 | r=%1，峰宽=%2 us | "
+                        "请不规则转动设备后重新采集")
+                     .arg(result.correlation, 0, 'f', 4)
+                     .arg(result.correlation_peak_width_us, 0, 'f', 0);
+          break;
+      }
+      imu_offset_label_->setText(text);
+      imu_offset_label_->setStyleSheet(style);
+
+      const bool finished =
+          result.state == prism_viewer::ImuOffsetState::Complete ||
+          result.state == prism_viewer::ImuOffsetState::InsufficientMotion ||
+          result.state == prism_viewer::ImuOffsetState::LowConfidence;
+      if (finished) {
+        imu_offset_measurement_active_ = false;
+        updateImuOffsetControls();
+        appendLogLine(
+            QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
+            text);
+      }
+    });
+  }
+
+  double elapsedSeconds() const {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
+  }
+
+  void workerMain() {
+    bool video_started = false;
+    bool aggregate_stream_start_attempted = false;
+    bool aggregate_stream_stop_attempted = false;
+    bool camera_progress_stalled = false;
+    try {
+      if (!client_.isOpen()) {
+        throw std::runtime_error("device is not open");
+      }
+
+      // The USB connection only proves that Viewer can reach the RK agent.
+      // DeviceInfo is the status interface; heartbeat contains RK time only.
+      bool sensor_board_link_ready = false;
+      std::optional<prism::DeviceInfo> capture_device_info;
+      std::optional<std::chrono::steady_clock::time_point>
+          capture_device_info_at;
+      while (!stop_requested_ && !sensor_board_link_ready) {
+        processPendingCameraExposureOperation();
+        try {
+          const auto info = client_.deviceInfo();
+          capture_device_info = info;
+          capture_device_info_at = std::chrono::steady_clock::now();
+          updateDeviceInfo(info);
+          sensor_board_link_ready = info.sensor_board_online;
+        } catch (const std::exception&) {
+        }
+        if (!stop_requested_ && !sensor_board_link_ready) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+      }
+
+      if (!sensor_board_link_ready) {
+        appendLog(QStringLiteral(
+            "Capture cancelled while waiting for the RK/sensor-board link"));
+        updateStatus(uiText("Capture not started: waiting was cancelled",
+                            "未开始采集：已取消等待 RK 与 sensor-board 连接"));
+        cancelPendingCameraExposureOperation(
+            uiText("Capture stopped before the exposure request was processed",
+                   "采集已停止，曝光请求尚未执行"));
+        worker_running_ = false;
+        post([this]() { refreshControls(); });
+        return;
+      }
+
+      appendLog(QStringLiteral(
+          "RK/sensor-board link is online; starting camera and IMU streams"));
+      updateStatus(uiText("RK/sensor-board link online; starting capture",
+                          "RK 与 sensor-board 已连接，正在开始采集"));
+
+      /*
+       * Camera and IMU form one capture transaction.  A camera failure must
+       * abort the operation instead of silently leaving an IMU-only stream.
+       */
+      aggregate_stream_start_attempted = true;
+      const auto status = client_.startVideo1280x1024(30);
+      video_started = true;
+      appendLog(QStringLiteral("Video started cameras=%1 fps=%2 size=%3x%4")
+                    .arg(status.cameras)
+                    .arg(status.fps)
+                    .arg(status.width)
+                    .arg(status.height));
+
+      prism_viewer::transfer::CameraFrameAssembler camera_assembler;
+      std::deque<std::chrono::steady_clock::time_point>
+          camera_rate_samples;
+      uint64_t received_camera_frame_sets = 0;
+      auto last_completed_camera_frame_set_at =
+          std::chrono::steady_clock::now();
+      auto last_usb_frame_at = last_completed_camera_frame_set_at;
+      auto last_video_chunk_at = last_completed_camera_frame_set_at;
+      std::optional<uint32_t> last_completed_camera_frame_id;
+      std::optional<uint32_t> last_video_chunk_frame_id;
+      uint64_t received_video_chunks = 0;
+      uint64_t discarded_incomplete_camera_frame_sets = 0;
+      std::chrono::steady_clock::time_point next_camera_status_post;
+      auto handleCompletedCameraFrame =
+          [this, &camera_rate_samples, &received_camera_frame_sets,
+           &last_completed_camera_frame_set_at,
+           &last_completed_camera_frame_id, &next_camera_status_post](
+              prism_viewer::transfer::CameraFrameSet completed) {
+            const auto received_at = std::chrono::steady_clock::now();
+            last_completed_camera_frame_set_at = received_at;
+            last_completed_camera_frame_id = completed.frame_id;
+            camera_rate_samples.push_back(received_at);
+            while (camera_rate_samples.size() > 2 &&
+                   received_at - camera_rate_samples.front() >
+                       kCameraRateWindow) {
+              camera_rate_samples.pop_front();
+            }
+            const double camera_elapsed =
+                camera_rate_samples.size() > 1
+                    ? std::chrono::duration<double>(
+                          camera_rate_samples.back() -
+                          camera_rate_samples.front())
+                          .count()
+                    : 0.0;
+            const double received_camera_fps =
+                camera_elapsed > 0.0
+                    ? static_cast<double>(camera_rate_samples.size() - 1) /
+                          camera_elapsed
+                    : 0.0;
+            ++received_camera_frame_sets;
+
+            /*
+             * Return flow-control credit once the four JPEGs and their exact
+             * per-frame metadata are both available in memory.
+             */
+            client_.sendVideoAck(completed.frame_id);
+            if (received_at >= next_camera_status_post) {
+              next_camera_status_post =
+                  received_at + kCameraStatusUiPeriod;
+              std::array<size_t, 4> jpeg_sizes{};
+              for (size_t camera = 0; camera < jpeg_sizes.size(); ++camera) {
+                jpeg_sizes[camera] = completed.jpeg[camera].size();
+              }
+              queueCameraFrameSetStatus(
+                  completed.frame_id, received_camera_frame_sets,
+                  received_camera_fps, jpeg_sizes,
+                  completed.metadata.exposure_us);
+            }
+            processFrameSet(
+                completed.frame_id, completed.timestamp_us,
+                received_camera_frame_sets, completed.metadata,
+                std::move(completed.jpeg));
+          };
+      std::array<std::chrono::steady_clock::time_point, 2> last_imu_post{};
+      last_imu_post.fill(std::chrono::steady_clock::now());
+      std::array<std::chrono::steady_clock::time_point, 2>
+          last_imu_plot_post{};
+      last_imu_plot_post.fill(std::chrono::steady_clock::now());
+      auto next_metadata_ui_update = std::chrono::steady_clock::now();
+      std::array<SampleRateTracker, 2> imu_rate_samples;
+      std::array<uint64_t, 2> received_imu_samples{};
+      std::array<uint64_t, 2> received_fsync_events{};
+      std::array<uint64_t, 2> last_fsync_sample_us{};
+      std::array<bool, 2> last_fsync_delay_valid{};
+      struct TimestampCheck {
+        bool initialized = false;
+        bool alarm = false;
+        bool last_timestamp_synced = false;
+        uint64_t last_timestamp_us = 0;
+        uint16_t last_sequence = 0;
+        uint32_t bad_streak = 0;
+        uint32_t good_streak = 0;
+      };
+      std::array<TimestampCheck, 2> timestamp_checks{};
+      prism_viewer::DualImuOffsetEstimator imu_offset_estimator;
+      prism::ImuStream imu_stream(
+          client_, [this, &last_imu_post, &last_imu_plot_post,
+                   &imu_rate_samples, &received_imu_samples,
+                   &received_fsync_events, &last_fsync_sample_us,
+                   &last_fsync_delay_valid,
+                   &timestamp_checks,
+                   &imu_offset_estimator](
+                      const prism::ImuSample& sample) {
+            const int sensor = static_cast<int>(sample.sensor_id);
+            if (sensor < 0 || sensor >= static_cast<int>(received_imu_samples.size())) {
+              return;
+            }
+            dataset_recorder_.appendImu(sample);
+            const uint64_t received_count = ++received_imu_samples[sensor];
+            if (sample.fsync_event) {
+              ++received_fsync_events[sensor];
+              last_fsync_sample_us[sensor] = sample.timestamp_us;
+              last_fsync_delay_valid[sensor] = sample.fsync_delay_valid;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            auto& rate_tracker = imu_rate_samples[sensor];
+            rate_tracker.add(now);
+            if (now - last_imu_plot_post[sensor] >=
+                kImuPlotSamplePeriod) {
+              last_imu_plot_post[sensor] = now;
+              queueImuPlotSample(sample, now);
+            }
+
+            auto& timestamp_check = timestamp_checks[sensor];
+            const uint16_t current_sequence =
+                static_cast<uint16_t>(sample.sample_id & 0xffffu);
+            const bool timestamp_valid = sample.timestamp_us != 0;
+            const bool timestamp_domain_changed =
+                timestamp_check.initialized &&
+                sample.timestamp_synced != timestamp_check.last_timestamp_synced;
+            const uint16_t sequence_delta = timestamp_check.initialized
+                                                ? static_cast<uint16_t>(
+                                                      current_sequence -
+                                                      timestamp_check.last_sequence)
+                                                : 0u;
+            const bool expected_fsync_reanchor =
+                prism_viewer::shouldRebaselineForSyncedFsync(
+                    timestamp_check.initialized, sample.timestamp_synced,
+                    sample.fsync_event, sample.fsync_delay_valid,
+                    sample.sample_gap, sequence_delta) ||
+                prism_viewer::shouldRebaselineForFirstUtcFsync(
+                    timestamp_check.initialized, sample.timestamp_synced,
+                    sample.fsync_event, sample.fsync_delay_valid,
+                    sample.sample_gap, sequence_delta,
+                    timestamp_check.last_timestamp_us, sample.timestamp_us);
+
+            // Local sensor-board time and synchronized UTC are different time
+            // domains.  Every valid synchronized FSYNC sample can replace the
+            // extrapolated sample clock with the precise PPS anchor.  When the
+            // sequence is continuous and PL reports no sample gap, that clock
+            // correction is not a sampling-interval failure.  Establish a
+            // fresh baseline and check again from the following sample.
+            if (!timestamp_valid || timestamp_domain_changed ||
+                expected_fsync_reanchor) {
+              timestamp_check.bad_streak = 0;
+              // An expected periodic re-anchor must not conceal an alarm
+              // raised by an actual earlier stream fault, nor interrupt its
+              // run of good samples toward recovery.
+              if (!expected_fsync_reanchor) {
+                timestamp_check.good_streak = 0;
+                if (timestamp_check.alarm) {
+                  timestamp_check.alarm = false;
+                  updateImuTimestampAlarm(sensor, false, QString());
+                }
+              }
+            } else if (timestamp_check.initialized) {
+              const bool timestamp_regressed =
+                  sample.timestamp_us <= timestamp_check.last_timestamp_us;
+              const bool sequence_repeated = sequence_delta == 0;
+              const uint64_t total_delta_us = timestamp_regressed
+                                            ? 0
+                                            : sample.timestamp_us -
+                                                  timestamp_check.last_timestamp_us;
+              const uint64_t interval_us = sequence_repeated
+                                               ? 0
+                                               : (total_delta_us + sequence_delta / 2u) /
+                                                     sequence_delta;
+              const bool interval_bad = timestamp_regressed || sequence_repeated ||
+                                        interval_us < 250 || interval_us > 4000;
+              if (interval_bad) {
+                timestamp_check.good_streak = 0;
+                ++timestamp_check.bad_streak;
+                const bool severe = timestamp_regressed || sequence_repeated ||
+                                    interval_us > 10000;
+                if (!timestamp_check.alarm &&
+                    (severe || timestamp_check.bad_streak >= 3)) {
+                  timestamp_check.alarm = true;
+                  const QString detail = timestamp_regressed
+                                             ? QStringLiteral("regression/repeat: previous=%1 us current=%2 us")
+                                                   .arg(timestamp_check.last_timestamp_us)
+                                                   .arg(sample.timestamp_us)
+                                         : sequence_repeated
+                                             ? QStringLiteral("duplicate sample detected")
+                                             : QStringLiteral("delta=%1 us over %2 samples (%3 us/sample)")
+                                                   .arg(total_delta_us)
+                                                   .arg(sequence_delta)
+                                                   .arg(interval_us);
+                  const QString context = QStringLiteral(
+                      " | fsync=%1 synced=%2 flags=0x%3 gap=%4")
+                                              .arg(sample.fsync_event ? 1 : 0)
+                                              .arg(sample.timestamp_synced ? 1 : 0)
+                                              .arg(sample.flags, 4, 16,
+                                                   QLatin1Char('0'))
+                                              .arg(sample.sample_gap ? 1 : 0);
+                  updateImuTimestampAlarm(sensor, true, detail + context);
+                }
+              } else {
+                timestamp_check.bad_streak = 0;
+                if (timestamp_check.alarm) {
+                  ++timestamp_check.good_streak;
+                  if (timestamp_check.good_streak >= 1000) {
+                    timestamp_check.alarm = false;
+                    timestamp_check.good_streak = 0;
+                    updateImuTimestampAlarm(sensor, false, QString());
+                  }
+                }
+              }
+            } else if (timestamp_valid) {
+              timestamp_check.initialized = true;
+            }
+            if (timestamp_valid) {
+              timestamp_check.initialized = true;
+              timestamp_check.last_timestamp_us = sample.timestamp_us;
+              timestamp_check.last_sequence = current_sequence;
+              timestamp_check.last_timestamp_synced = sample.timestamp_synced;
+            } else {
+              timestamp_check.initialized = false;
+            }
+
+            if (imu_offset_measure_request_.exchange(false)) {
+              imu_offset_estimator.start();
+              updateImuOffsetEstimate(imu_offset_estimator.latest());
+            }
+            prism_viewer::ImuOffsetInput offset_input;
+            offset_input.sensor_id = sample.sensor_id;
+            offset_input.timestamp_us = sample.timestamp_us;
+            offset_input.timestamp_synced = sample.timestamp_synced;
+            offset_input.gyro_mdps = sample.gyro_mdps;
+            const auto offset_result = imu_offset_estimator.add(offset_input);
+            if (offset_result.updated) updateImuOffsetEstimate(offset_result);
+
+            if (now - last_imu_post[sensor] >= kImuUiPeriod) {
+              last_imu_post[sensor] = now;
+              const double sample_rate = rate_tracker.rate(now);
+              queueImuUiUpdate(sample, received_count, sample_rate,
+                               received_fsync_events[sensor],
+                               last_fsync_sample_us[sensor],
+                               last_fsync_delay_valid[sensor]);
+            }
+          });
+      try {
+        imu_stream.start();
+      } catch (...) {
+        if (video_started) {
+          try {
+            aggregate_stream_stop_attempted = true;
+            client_.stopVideo();
+            video_started = false;
+          } catch (const std::exception& stop_error) {
+            appendLog(QStringLiteral(
+                          "Capture rollback failed after IMU start error: %1")
+                          .arg(stop_error.what()));
+          }
+        }
+        throw;
+      }
+      appendLog(QStringLiteral("IMU started through agent SDK ImuStream"));
+      updateStatus(uiText("Running", "运行中"));
+
+      const auto capture_started_at = std::chrono::steady_clock::now();
+      last_completed_camera_frame_set_at = capture_started_at;
+      last_usb_frame_at = capture_started_at;
+      last_video_chunk_at = capture_started_at;
+      auto next_device_info_query =
+          capture_started_at + std::chrono::milliseconds(500);
+      appendLog(QStringLiteral(
+                    "Camera frame-set progress watchdog armed: timeout=%1 ms; "
+                    "only complete four-camera frame sets count as progress")
+                    .arg(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             kCameraFrameSetProgressTimeout)
+                             .count()));
+      auto throwIfCameraFrameSetProgressStalled =
+          [&](std::chrono::steady_clock::time_point now) {
+            const auto camera_progress_age =
+                now - last_completed_camera_frame_set_at;
+            if (camera_progress_age < kCameraFrameSetProgressTimeout) return;
+
+            camera_progress_stalled = true;
+            const auto stalled_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    camera_progress_age)
+                    .count();
+            const auto usb_idle_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - last_usb_frame_at)
+                    .count();
+            std::ostringstream error;
+            error << "Camera frame-set progress stalled: no complete "
+                     "four-camera frame set for "
+                  << stalled_ms << " ms";
+            if (last_completed_camera_frame_id.has_value()) {
+              error << ", last complete frame-id="
+                    << *last_completed_camera_frame_id;
+            } else {
+              error << ", no complete frame set received since stream start";
+            }
+            error << ", last delivered USB frame=" << usb_idle_ms << " ms ago";
+            if (last_video_chunk_frame_id.has_value()) {
+              const auto video_idle_ms =
+                  std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now - last_video_chunk_at)
+                      .count();
+              error << ", video chunks received=" << received_video_chunks
+                    << ", last video chunk frame-id="
+                    << *last_video_chunk_frame_id << " (" << video_idle_ms
+                    << " ms ago)"
+                    << ", discarded incomplete frame sets="
+                    << discarded_incomplete_camera_frame_sets;
+            } else {
+              error << ", no video chunks delivered to the capture loop";
+            }
+            if (capture_device_info.has_value()) {
+              error << ", last-observed camera-streaming-mask=0x" << std::hex
+                    << static_cast<unsigned int>(
+                           capture_device_info->camera_streaming_mask)
+                    << ", sensor-board-error-flags=0x"
+                    << capture_device_info->sensor_board_error_flags << std::dec;
+              if (capture_device_info_at.has_value()) {
+                const auto device_info_age_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - *capture_device_info_at)
+                        .count();
+                error << " (" << device_info_age_ms << " ms old)";
+              }
+            }
+            error << ". Stopping camera and IMU streams.";
+            throw std::runtime_error(error.str());
+          };
+      unsigned consecutive_usb_read_errors = 0;
+      std::exception_ptr capture_error;
+      try {
+        while (!stop_requested_) {
+          /*
+           * SDK commands synchronously consume the shared USB IN endpoint and
+           * defer stream frames until the command response arrives. Exclude
+           * that interval from the camera-progress budget: the capture worker
+           * cannot assemble or acknowledge a frame set while it is inside
+           * command().
+           */
+          const auto exposure_operation_started_at =
+              std::chrono::steady_clock::now();
+          throwIfCameraFrameSetProgressStalled(exposure_operation_started_at);
+          const auto camera_progress_age_before_exposure =
+              exposure_operation_started_at -
+              last_completed_camera_frame_set_at;
+          const bool exposure_operation_processed =
+              processPendingCameraExposureOperation();
+          auto loop_now = std::chrono::steady_clock::now();
+          if (exposure_operation_processed) {
+            /*
+             * A live exposure transaction can fill the SDK deferred-frame
+             * queue. If progress was fresh when the command began, give the
+             * worker a full watchdog interval to drain it. A request made after
+             * progress was already stale may compensate only for its own
+             * synchronous command time; repeated requests must not conceal an
+             * existing camera stall.
+             */
+            if (camera_progress_age_before_exposure <
+                kCameraControlCommandFreshnessLimit) {
+              last_completed_camera_frame_set_at = loop_now;
+            } else {
+              last_completed_camera_frame_set_at +=
+                  loop_now - exposure_operation_started_at;
+            }
+            /*
+             * Do not chain periodic commands immediately after exposure. Drain
+             * the SDK's deferred stream frames first so the four-frame video
+             * credit window can be acknowledged promptly.
+             */
+            next_device_info_query = loop_now + std::chrono::seconds(1);
+            appendLog(QStringLiteral(
+                "Runtime exposure operation processed; prioritizing deferred "
+                "camera and IMU frames"));
+          }
+
+          throwIfCameraFrameSetProgressStalled(loop_now);
+          const auto camera_progress_age =
+              loop_now - last_completed_camera_frame_set_at;
+
+          /*
+           * Periodic status commands are useful only while camera progress is
+           * fresh. Once progress is questionable, dedicate the shared receiver
+           * to stream draining until a complete frame arrives or the watchdog
+           * expires. Version data is static for an open session and is
+           * therefore not refreshed from the capture loop.
+           */
+          if (loop_now >= next_device_info_query &&
+              camera_progress_age < kCameraControlCommandFreshnessLimit) {
+            const auto query_started_at = std::chrono::steady_clock::now();
+            try {
+              const auto info = client_.deviceInfo();
+              capture_device_info = info;
+              capture_device_info_at = std::chrono::steady_clock::now();
+              updateDeviceInfo(info);
+              if (!info.sensor_board_online) {
+                appendLog(QStringLiteral(
+                    "DeviceInfo reports sensor-board offline; stopping camera "
+                    "and IMU streams"));
+                updateStatus(
+                    uiText("RK/sensor-board link lost; stopping capture",
+                           "RK 与 sensor-board 连接中断，正在停止采集"));
+                stop_requested_ = true;
+                continue;
+              }
+            } catch (const std::exception& ex) {
+              appendLog(QStringLiteral("DeviceInfo refresh failed: %1")
+                            .arg(ex.what()));
+            }
+            const auto query_finished_at = std::chrono::steady_clock::now();
+            last_completed_camera_frame_set_at +=
+                query_finished_at - query_started_at;
+            next_device_info_query =
+                query_finished_at + std::chrono::seconds(1);
+            loop_now = query_finished_at;
+          }
+
+          prism::Frame frame;
+          try {
+            frame = client_.readFrame(1000);
+          } catch (const std::exception& ex) {
+            ++consecutive_usb_read_errors;
+            if (consecutive_usb_read_errors == 1) {
+              appendLog(
+                  QStringLiteral("USB frame read failed: %1").arg(ex.what()));
+            }
+            if (!client_.keepaliveEnabled() ||
+                consecutive_usb_read_errors >= 3) {
+              throw std::runtime_error(
+                  "USB transport stopped responding after " +
+                  std::to_string(consecutive_usb_read_errors) +
+                  " consecutive read failures: " + ex.what());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+          }
+          consecutive_usb_read_errors = 0;
+          last_usb_frame_at = std::chrono::steady_clock::now();
+
+          if (imu_stream.handleFrame(frame)) {
+            continue;
+          }
+
+          if (frame.type == prism::FrameType::Heartbeat) {
+            const auto heartbeat = prism::parseHeartbeat(frame);
+            updateHeartbeat(heartbeat);
+          } else if (frame.type == prism::FrameType::VideoChunk) {
+            const auto chunk = prism::parseVideoChunkView(frame);
+            last_video_chunk_at = std::chrono::steady_clock::now();
+            last_video_chunk_frame_id = chunk.frame_id;
+            ++received_video_chunks;
+            auto result = camera_assembler.ingest(chunk);
+            for (uint32_t discarded : result.discarded_incomplete_frame_ids) {
+              ++discarded_incomplete_camera_frame_sets;
+              appendLog(
+                  QStringLiteral(
+                      "Discarding and acknowledging incomplete or corrupt "
+                      "four-camera frame set %1")
+                      .arg(discarded));
+              /*
+               * A transmitted frame set consumes one server flow-control
+               * credit even when one camera image is corrupt or incomplete.
+               * The assembler emits every retired ID exactly once.
+               */
+              client_.sendVideoAck(discarded);
+            }
+            if (!result.completed.has_value()) continue;
+            handleCompletedCameraFrame(std::move(*result.completed));
+          } else if (frame.type == prism::FrameType::VideoMeta) {
+            const auto meta = prism::parseVideoMeta(frame);
+            std::optional<prism_viewer::transfer::CameraFrameSet> completed =
+                camera_assembler.addMetadata(meta);
+            if (completed.has_value()) {
+              handleCompletedCameraFrame(std::move(*completed));
+            }
+            const auto metadata_now = std::chrono::steady_clock::now();
+            if (camera_preview_enabled_.load(std::memory_order_acquire) &&
+                metadata_now >= next_metadata_ui_update) {
+              updateMeta(meta);
+              next_metadata_ui_update = metadata_now + kMetadataUiPeriod;
+            }
+          }
+        }
+      } catch (...) {
+        capture_error = std::current_exception();
+      }
+
+      std::exception_ptr stop_error;
+      aggregate_stream_stop_attempted = true;
+      try {
+        imu_stream.stop();
+        // IMU_STOP is the aggregate Camera + IMU stop transaction.
+        video_started = false;
+      } catch (...) {
+        stop_error = std::current_exception();
+      }
+      if (capture_error) {
+        if (stop_error) {
+          try {
+            std::rethrow_exception(stop_error);
+          } catch (const std::exception& ex) {
+            appendLog(
+                QStringLiteral("Capture error cleanup could not confirm "
+                               "aggregate stream stop: %1")
+                    .arg(ex.what()));
+          }
+        }
+        std::rethrow_exception(capture_error);
+      }
+      if (stop_error) std::rethrow_exception(stop_error);
+      appendLog(QStringLiteral("Streams stopped"));
+      updateStatus(uiText("Stopped", "已停止"));
+    } catch (const std::exception& ex) {
+      appendLog(QStringLiteral("Error: %1").arg(ex.what()));
+      updateStatus(uiText("Error: %1", "错误：%1").arg(ex.what()));
+      /*
+       * Attempt the aggregate stop at most once. This still covers a remote
+       * stream that started before its start acknowledgement was lost. Any
+       * capture transaction error then closes the transport because private
+       * SDK deferred frames cannot be safely reused by a fresh assembler.
+       */
+      if (aggregate_stream_start_attempted &&
+          !aggregate_stream_stop_attempted && client_.isOpen()) {
+        aggregate_stream_stop_attempted = true;
+        try {
+          client_.stopVideo();
+          appendLog(QStringLiteral(
+              "Capture error rollback stopped camera and IMU streams"));
+        } catch (const std::exception& stop_error) {
+          appendLog(QStringLiteral(
+                        "Capture error rollback could not confirm stream stop: %1")
+                        .arg(stop_error.what()));
+        }
+      }
+      if (aggregate_stream_start_attempted && client_.isOpen()) {
+        client_.closeDevice();
+        appendLog(camera_progress_stalled
+                      ? QStringLiteral(
+                            "USB session closed after camera frame-set stall "
+                            "to discard queued stream frames; reopen the device "
+                            "before retrying")
+                      : QStringLiteral(
+                            "USB session closed after capture transaction "
+                            "error to discard queued stream frames; reopen the "
+                            "device before retrying"));
+        post([this]() {
+          imu_detected_.fill(false);
+          imu_offset_measurement_active_ = false;
+          latest_device_info_valid_ = false;
+          latest_device_versions_valid_ = false;
+          latest_rk_heartbeat_time_us_ = 0;
+          device_info_panel_->setDeviceOpen(false);
+          camera_exposure_panel_->setDeviceOpen(false);
+          wifi_hotspot_panel_->setDeviceOpen(false);
+          time_sync_label_->setText(
+              uiText("Time sync: device closed", "时间同步：设备已关闭"));
+          host_time_sync_label_->setText(uiText(
+              "Host/device clock: device closed", "主机/设备时钟：设备已关闭"));
+        });
+      }
+      appendLog(client_.isOpen()
+                    ? QStringLiteral(
+                          "USB device remains open after capture error")
+                    : QStringLiteral(
+                          "USB transport is no longer available after capture error"));
+    }
+
+    cancelPendingCameraExposureOperation(
+        uiText("Capture stopped before the exposure request was processed",
+               "采集已停止，曝光请求尚未执行"));
+    worker_running_ = false;
+    post([this]() {
+      if (dataset_recorder_.isActive()) stopImuRecording();
+      refreshControls();
+    });
+  }
+
+  QComboBox* device_selector_ = nullptr;
+  QPushButton* refresh_devices_button_ = nullptr;
+  QPushButton* open_device_button_ = nullptr;
+  QPushButton* close_device_button_ = nullptr;
+  QPushButton* start_button_ = nullptr;
+  QPushButton* stop_button_ = nullptr;
+  QPushButton* host_time_sync_button_ = nullptr;
+  QPushButton* system_upgrade_button_ = nullptr;
+  QPushButton* log_button_ = nullptr;
+  QComboBox* language_selector_ = nullptr;
+  QLabel* status_label_ = nullptr;
+  QLabel* time_sync_label_ = nullptr;
+  QLabel* host_time_sync_label_ = nullptr;
+  QTabWidget* tabs_ = nullptr;
+  DeviceInfoPanel* device_info_panel_ = nullptr;
+  QWidget* camera_page_ = nullptr;
+  CameraExposurePanel* camera_exposure_panel_ = nullptr;
+  QWidget* imu_page_ = nullptr;
+  WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
+  QWidget* dataset_page_ = nullptr;
+  std::array<ImageViewLabel*, 4> image_labels_{};
+  std::array<QLabel*, 4> frame_labels_{};
+  CameraZoomDialog* live_camera_zoom_dialog_ = nullptr;
+  std::array<QImage, 4> latest_camera_images_{};
+  uint32_t latest_camera_frame_id_ = 0;
+  QPushButton* dataset_open_button_ = nullptr;
+  QLabel* dataset_path_label_ = nullptr;
+  QLabel* dataset_summary_label_ = nullptr;
+  QLabel* dataset_frame_label_ = nullptr;
+  QSlider* dataset_frame_slider_ = nullptr;
+  std::array<ImageViewLabel*, 4> dataset_image_labels_{};
+  QPlainTextEdit* dataset_details_ = nullptr;
+  CameraZoomDialog* dataset_camera_zoom_dialog_ = nullptr;
+  std::array<std::vector<DatasetImageEntry>, 4> dataset_camera_entries_{};
+  std::array<QImage, 4> dataset_images_{};
+  size_t dataset_frame_count_ = 0;
+  int dataset_current_frame_ = 0;
+  QString loaded_dataset_root_;
+  QPlainTextEdit* meta_text_ = nullptr;
+  QPlainTextEdit* log_text_ = nullptr;
+  QDialog* log_dialog_ = nullptr;
+  QCheckBox* log_auto_scroll_ = nullptr;
+  QTableWidget* imu_table_ = nullptr;
+  QButtonGroup* imu_selector_group_ = nullptr;
+  QPushButton* imu0_selector_ = nullptr;
+  QPushButton* imu1_selector_ = nullptr;
+  QPushButton* imu_offset_button_ = nullptr;
+  QPushButton* imu_record_start_button_ = nullptr;
+  QPushButton* imu_record_stop_button_ = nullptr;
+  QDialog* imu_offset_dialog_ = nullptr;
+  QPushButton* imu_offset_start_button_ = nullptr;
+  QLabel* imu_offset_detection_label_ = nullptr;
+  QLabel* imu_alarm_label_ = nullptr;
+  QLabel* imu_offset_label_ = nullptr;
+  QLabel* imu_record_status_label_ = nullptr;
+  ImuPlotWidget* imu_plot_ = nullptr;
+  QTimer* imu_ui_timer_ = nullptr;
+  prism_viewer::communication::DeviceSession device_session_;
+  prism::Client& client_ = device_session_.client();
+  const std::vector<prism::DeviceInfo>& devices_ = device_session_.devices();
+  DatasetRecorder dataset_recorder_;
+  QString recorded_dataset_root_;
+
+  prism_viewer::control::OperationController operation_controller_;
+  std::array<std::thread, 2> camera_preview_workers_;
+  std::atomic<bool> stop_requested_{false};
+  std::atomic<bool> worker_running_{false};
+  std::atomic<bool> upgrade_running_{false};
+  std::atomic<bool> time_sync_running_{false};
+  std::atomic<bool> wifi_operation_running_{false};
+  std::atomic<bool> camera_exposure_operation_running_{false};
+  std::atomic<bool> imu_offset_measure_request_{false};
+  std::atomic<bool> camera_preview_enabled_{false};
+  std::atomic<bool> imu_ui_enabled_{false};
+  std::atomic<bool> live_camera_zoom_visible_{false};
+  std::atomic<int> live_camera_zoom_camera_{0};
+  std::atomic<uint64_t> camera_preview_generation_{0};
+  std::atomic<size_t> camera_preview_ui_posts_pending_{0};
+  std::atomic<int> camera_preview_width_{kCameraPreviewWidth};
+  std::atomic<int> camera_preview_height_{kCameraPreviewHeight};
+  std::mutex camera_preview_mutex_;
+  std::mutex imu_ui_mutex_;
+  std::mutex camera_exposure_request_mutex_;
+  std::optional<CameraExposureOperationRequest>
+      pending_camera_exposure_request_;
+  std::condition_variable camera_preview_wakeup_;
+  std::deque<CameraPreviewJob> camera_preview_jobs_;
+  std::map<uint64_t, DecodedCameraPreviewJob> camera_preview_completed_;
+  std::array<ImuUiSnapshot, 2> pending_imu_ui_{};
+  std::array<bool, 2> pending_imu_ui_dirty_{};
+  std::array<std::deque<PendingImuPlotSample>, 2>
+      pending_imu_plot_samples_{};
+  uint64_t camera_preview_next_sequence_ = 1;
+  bool camera_preview_stop_ = false;
+  std::chrono::steady_clock::time_point start_time_ = std::chrono::steady_clock::now();
+  std::array<uint64_t, 4> camera_frames_{};
+  uint64_t camera_frame_sets_ = 0;
+  std::array<uint64_t, 2> imu_samples_{};
+  std::array<uint64_t, 2> imu_fsync_events_{};
+  std::array<bool, 2> imu_detected_{};
+  std::array<bool, 2> imu_timestamp_alarm_{};
+  std::array<QString, 2> imu_timestamp_alarm_detail_{};
+  prism::DeviceInfo latest_device_info_;
+  prism::DeviceVersions latest_device_versions_;
+  uint64_t latest_rk_heartbeat_time_us_ = 0;
+  bool latest_device_info_valid_ = false;
+  bool latest_device_versions_valid_ = false;
+  bool imu_offset_measurement_active_ = false;
+};
+
+}  // namespace
+
+namespace prism_viewer {
+
+int runViewerApplication(int argc, char** argv) {
+  QApplication app(argc, argv);
+  app.setApplicationName(QStringLiteral("Prism Viewer"));
+  app.setOrganizationName(QStringLiteral("Prism"));
+  app.setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
+  const QStringList command_line = QCoreApplication::arguments();
+  const int dataset_self_test =
+      command_line.indexOf(QStringLiteral("--dataset-recorder-self-test"));
+  if (dataset_self_test >= 0 &&
+      dataset_self_test + 1 < command_line.size()) {
+    DatasetRecorder recorder;
+    std::string error;
+    if (!recorder.start(
+            toFilesystemPath(command_line[dataset_self_test + 1]), true,
+            &error)) {
+      std::cerr << "dataset recorder start failed: " << error << "\n";
+      return 10;
+    }
+    prism::ImuSample imu0;
+    imu0.sensor_id = 0;
+    imu0.timestamp_us = 1780000000000000ULL;
+    prism::ImuSample imu1 = imu0;
+    imu1.sensor_id = 1;
+    imu1.timestamp_us += 100;
+    recorder.appendImu(imu0);
+    recorder.appendImu(imu1);
+    std::array<std::vector<uint8_t>, 4> jpeg;
+    for (size_t camera = 0; camera < jpeg.size(); ++camera) {
+      QImage test_image(64, 48, QImage::Format_RGB888);
+      test_image.fill(QColor::fromHsv(static_cast<int>(camera) * 75, 220, 230));
+      QByteArray encoded;
+      QBuffer buffer(&encoded);
+      buffer.open(QIODevice::WriteOnly);
+      test_image.save(&buffer, "JPG", 90);
+      jpeg[camera].assign(encoded.begin(), encoded.end());
+    }
+    prism::VideoMeta metadata;
+    metadata.valid = true;
+    metadata.host_frame_id = 7;
+    metadata.trigger_time_ns = 1780000000000500000ULL;
+    metadata.exposure_us = {200u, 250u, 500u, 1000u};
+    recorder.appendFrameSet(
+        7, 1780000000000500ULL, metadata, jpeg);
+    const DatasetRecordingSummary summary = recorder.stop();
+    std::array<std::vector<DatasetImageEntry>, 4> loaded_images;
+    bool browser_load_ok = true;
+    for (size_t camera = 0; camera < loaded_images.size(); ++camera) {
+      browser_load_ok =
+          browser_load_ok &&
+          loadDatasetImageIndex(
+              toFilesystemPath(command_line[dataset_self_test + 1]), camera,
+              &loaded_images[camera], &error) &&
+          loaded_images[camera].size() == 1 &&
+          loaded_images[camera][0].timestamp_us == 1780000000000500ULL &&
+          loaded_images[camera][0].exposure_us ==
+              metadata.exposure_us[camera] &&
+          !loadDatasetImage(loaded_images[camera][0]).isNull();
+    }
+    const auto test_root =
+        toFilesystemPath(command_line[dataset_self_test + 1]);
+    const TumFileSummary loaded_imu0 =
+        summarizeTumFile(test_root / "imu0.tum");
+    const TumFileSummary loaded_imu1 =
+        summarizeTumFile(test_root / "imu1.tum");
+    browser_load_ok = browser_load_ok && loaded_imu0.rows == 1 &&
+                      loaded_imu1.rows == 1;
+    const bool success =
+        summary.success && summary.sample_count[0] == 1 &&
+        summary.sample_count[1] == 1 &&
+        std::all_of(summary.image_count.begin(), summary.image_count.end(),
+                    [](uint64_t count) { return count == 1; }) &&
+        browser_load_ok;
+    std::cout << "dataset_recorder_self_test=" << (success ? "PASS" : "FAIL")
+              << " imu=" << summary.sample_count[0] << "/"
+              << summary.sample_count[1] << " images="
+              << summary.image_count[0] << "/" << summary.image_count[1]
+              << "/" << summary.image_count[2] << "/"
+              << summary.image_count[3]
+              << " browser_load=" << (browser_load_ok ? "PASS" : "FAIL")
+              << " error=" << summary.error << "\n";
+    return success ? 0 : 11;
+  }
+  QSettings language_settings(QStringLiteral("DIBULI"),
+                              QStringLiteral("PrismViewer"));
+  QString language = qEnvironmentVariable("PRISM_VIEWER_LANG");
+  if (language.isEmpty()) {
+    language = language_settings.value(QStringLiteral("language")).toString();
+  }
+  if (language.isEmpty()) {
+    common::setChineseUi(
+        QLocale::system().language() == QLocale::Chinese);
+  } else {
+    common::setChineseUi(
+        language.startsWith(QStringLiteral("zh"), Qt::CaseInsensitive));
+  }
+  MainWindow window;
+  window.show();
+  return app.exec();
+}
+
+}  // namespace prism_viewer
