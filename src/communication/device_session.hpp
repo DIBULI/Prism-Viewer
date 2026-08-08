@@ -11,6 +11,7 @@ struct OpenedDevice {
   prism::HelloInfo hello;
   prism::DeviceVersions versions;
   prism::DeviceInfo device_info;
+  prism::DeviceConfiguration configuration;
   prism::ExposureConfiguration exposure;
   prism::NetworkInfo network;
   std::wstring serial_number;

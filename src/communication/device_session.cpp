@@ -23,6 +23,7 @@ OpenedDevice DeviceSession::open(size_t device_index) {
     opened.hello = client_.hello();
     opened.versions = client_.deviceVersions();
     opened.device_info = client_.deviceInfo();
+    opened.configuration = client_.deviceConfiguration();
     opened.exposure = client_.cameraExposure();
     opened.network = client_.networkInfo();
     opened.serial_number = client_.serialNumber();

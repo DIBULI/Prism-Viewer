@@ -6,6 +6,7 @@
 #include "dual_imu_offset_estimator.hpp"
 #include "imu_timestamp_policy.hpp"
 #include "transfer/camera_frame_assembler.hpp"
+#include "ui/camera_encoding_panel.hpp"
 #include "ui/camera_exposure_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
 #include "ui/device_info_panel.hpp"
@@ -51,6 +52,7 @@
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
@@ -60,6 +62,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSlider>
+#include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
 #include <QtWidgets/QTabWidget>
@@ -125,6 +128,7 @@ using prism_viewer::dataset::TumFileSummary;
 using prism_viewer::dataset::loadDatasetImage;
 using prism_viewer::dataset::loadDatasetImageIndex;
 using prism_viewer::dataset::summarizeTumFile;
+using prism_viewer::ui::CameraEncodingPanel;
 using prism_viewer::ui::CameraExposurePanel;
 using prism_viewer::ui::CameraZoomDialog;
 using prism_viewer::ui::DeviceInfoPanel;
@@ -1026,18 +1030,34 @@ class MainWindow : public QMainWindow {
     resize(1480, 940);
 
     auto* central = new QWidget(this);
+    central->setObjectName(QStringLiteral("appRoot"));
     auto* root = new QVBoxLayout(central);
-    root->setContentsMargins(12, 12, 12, 10);
-    root->setSpacing(10);
+    root->setContentsMargins(14, 14, 14, 12);
+    root->setSpacing(12);
 
     central->setStyleSheet(QStringLiteral(
-        "QWidget { background: #f4f7fb; color: #172033; font-size: 10pt; }"
-        "QGroupBox { background: #ffffff; border: 1px solid #d9e2ef; border-radius: 8px;"
-        "            margin-top: 12px; padding: 10px; font-weight: 600; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #4b5f7a; }"
-        "QPushButton { background: #ffffff; border: 1px solid #c6d2e1; border-radius: 6px;"
-        "              padding: 7px 12px; }"
-        "QPushButton:hover { background: #eef5ff; border-color: #8eb7ee; }"
+        "QWidget { color: #182230; font-size: 10pt; }"
+        "QWidget#appRoot { background: #f5f7fb; }"
+        "QFrame#headerCard { background: #ffffff; border: 1px solid #e1e7ef;"
+        "                    border-radius: 12px; }"
+        "QGroupBox { background: #ffffff; border: 1px solid #dfe6ef; border-radius: 10px;"
+        "            margin-top: 14px; padding: 11px; font-weight: 600; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px;"
+        "                   color: #52637a; }"
+        "QPushButton { background: #ffffff; border: 1px solid #c9d4e2; border-radius: 7px;"
+        "              padding: 7px 13px; }"
+        "QPushButton:hover { background: #edf4ff; border-color: #7ba7e7; }"
+        "QPushButton:pressed { background: #dbeafe; }"
+        "QComboBox, QSpinBox { background: #ffffff; border: 1px solid #c9d4e2;"
+        "                       border-radius: 7px; padding: 6px 9px; }"
+        "QComboBox:focus, QSpinBox:focus { border-color: #4b83d1; }"
+        "QTabWidget::pane { background: #f5f7fb; border: 1px solid #dfe6ef;"
+        "                   border-radius: 9px; top: -1px; }"
+        "QTabBar::tab { background: #e9eef5; color: #52637a; padding: 8px 16px;"
+        "               margin-right: 3px; border-top-left-radius: 7px;"
+        "               border-top-right-radius: 7px; font-weight: 600; }"
+        "QTabBar::tab:selected { background: #ffffff; color: #1557d2; }"
+        "QTabBar::tab:hover:!selected { background: #dfe7f2; }"
         "QPushButton#imuSelectButton { min-width: 72px; padding: 6px 14px;"
         "                              background: #ffffff; color: #344054;"
         "                              border: 1px solid #b8c7da; font-weight: 600; }"
@@ -1054,50 +1074,68 @@ class MainWindow : public QMainWindow {
         "QComboBox:disabled { background: #e4e7ec; color: #98a2b3;"
         "                     border-color: #d0d5dd; }"
         "QPlainTextEdit, QTableWidget { background: #ffffff; border: 1px solid #d9e2ef;"
-        "                              border-radius: 6px; }"));
+        "                              border-radius: 7px; }"
+        "QFrame#cameraTile { background: #ffffff; border: 1px solid #dfe6ef;"
+        "                    border-radius: 10px; }"
+        "QFrame#cameraTile:hover { border-color: #93b4df; }"
+        "QFrame#cameraTile QLabel { background: transparent; }"
+        "QLabel#cameraCaption { color: #24364d; font-weight: 700; font-size: 10.5pt; }"
+        "QLabel#cameraStats { color: #607089; font-size: 9pt; }"
+        "QLabel#cameraImage { background: #080d16; color: #a8b4c5;"
+        "                     border: 1px solid #202b3c; border-radius: 7px; }"
+        "QSplitter::handle { background: #e4e9f0; width: 8px; }"));
 
+    auto* header_card = new QFrame(central);
+    header_card->setObjectName(QStringLiteral("headerCard"));
+    auto* header_layout = new QVBoxLayout(header_card);
+    header_layout->setContentsMargins(16, 12, 16, 12);
+    header_layout->setSpacing(9);
     auto* header = new QHBoxLayout();
-    auto* brand_mark = new QLabel(central);
-    brand_mark->setFixedSize(58, 58);
+    auto* brand_mark = new QLabel(header_card);
+    brand_mark->setFixedSize(52, 52);
     brand_mark->setAlignment(Qt::AlignCenter);
     brand_mark->setPixmap(
         QPixmap(QStringLiteral(":/branding/prism-mark.png"))
-            .scaled(54, 54, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            .scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     brand_mark->setToolTip(QStringLiteral("Prism"));
     header->addWidget(brand_mark, 0, Qt::AlignVCenter);
     auto* title_stack = new QVBoxLayout();
-    auto* title = new QLabel(QStringLiteral("Prism Viewer"), central);
-    title->setStyleSheet(QStringLiteral("font-size: 22pt; font-weight: 700; color: #101828;"));
+    auto* title = new QLabel(QStringLiteral("Prism Viewer"), header_card);
+    title->setStyleSheet(QStringLiteral(
+        "font-size: 21pt; font-weight: 750; color: #101828;"));
     auto* subtitle = new QLabel(
         uiText("USB SDK based 4-channel MJPEG preview, metadata, and IMU monitor",
                "基于 USB SDK 的四路相机预览、元数据和 IMU 监视器"),
-        central);
+        header_card);
     subtitle->setStyleSheet(QStringLiteral("color: #667085;"));
     title_stack->addWidget(title);
     title_stack->addWidget(subtitle);
     header->addLayout(title_stack);
     header->addStretch(1);
 
-    header->addWidget(new QLabel(uiText("Device:", "设备："), central));
-    device_selector_ = new QComboBox(central);
-    device_selector_->setMinimumWidth(230);
+    auto* device_label = new QLabel(uiText("Device", "设备"), header_card);
+    device_label->setStyleSheet(QStringLiteral(
+        "color: #52637a; font-weight: 600;"));
+    header->addWidget(device_label);
+    device_selector_ = new QComboBox(header_card);
+    device_selector_->setMinimumWidth(250);
     device_selector_->setToolTip(
         uiText("Select a Prism USB serial number", "选择 Prism USB 序列号"));
-    refresh_devices_button_ = new QPushButton(uiText("Refresh", "刷新"), central);
-    open_device_button_ = new QPushButton(uiText("Open Device", "打开设备"), central);
-    close_device_button_ = new QPushButton(uiText("Close Device", "关闭设备"), central);
-    start_button_ = new QPushButton(uiText("Start Capture", "开始采集"), central);
-    stop_button_ = new QPushButton(uiText("Stop", "停止"), central);
+    refresh_devices_button_ = new QPushButton(uiText("Refresh", "刷新"), header_card);
+    open_device_button_ = new QPushButton(uiText("Open Device", "打开设备"), header_card);
+    close_device_button_ = new QPushButton(uiText("Close Device", "关闭设备"), header_card);
+    start_button_ = new QPushButton(uiText("Start Capture", "开始采集"), header_card);
+    stop_button_ = new QPushButton(uiText("Stop", "停止"), header_card);
     imu_record_start_button_ = new QPushButton(
-        uiText("Record Dataset...", "录制数据集..."), central);
+        uiText("Record Dataset...", "录制数据集..."), header_card);
     imu_record_stop_button_ = new QPushButton(
-        uiText("Stop Recording", "停止录制"), central);
+        uiText("Stop Recording", "停止录制"), header_card);
     host_time_sync_button_ = new QPushButton(
-        uiText("Set Device Time", "校准设备时间"), central);
+        uiText("Set Device Time", "校准设备时间"), header_card);
     system_upgrade_button_ = new QPushButton(
-        uiText("Upgrade System", "系统升级"), central);
-    log_button_ = new QPushButton(uiText("Open Log", "打开日志"), central);
-    language_selector_ = new QComboBox(central);
+        uiText("Upgrade System", "系统升级"), header_card);
+    log_button_ = new QPushButton(uiText("Open Log", "打开日志"), header_card);
+    language_selector_ = new QComboBox(header_card);
     language_selector_->addItem(QString::fromUtf8(u8"中文"), QStringLiteral("zh_CN"));
     language_selector_->addItem(QStringLiteral("English"), QStringLiteral("en"));
     language_selector_->setCurrentIndex(
@@ -1120,37 +1158,50 @@ class MainWindow : public QMainWindow {
     header->addWidget(refresh_devices_button_);
     header->addWidget(open_device_button_);
     header->addWidget(close_device_button_);
-    header->addWidget(start_button_);
-    header->addWidget(stop_button_);
-    header->addWidget(imu_record_start_button_);
-    header->addWidget(imu_record_stop_button_);
-    header->addWidget(host_time_sync_button_);
-    header->addWidget(system_upgrade_button_);
-    header->addWidget(log_button_);
-    header->addWidget(language_selector_);
-    root->addLayout(header);
+    header_layout->addLayout(header);
 
+    auto* actions = new QHBoxLayout();
+    actions->setSpacing(8);
+    actions->addWidget(start_button_);
+    actions->addWidget(stop_button_);
+    actions->addSpacing(8);
+    actions->addWidget(imu_record_start_button_);
+    actions->addWidget(imu_record_stop_button_);
+    actions->addStretch(1);
+    actions->addWidget(host_time_sync_button_);
+    actions->addWidget(system_upgrade_button_);
+    actions->addWidget(log_button_);
+    actions->addWidget(language_selector_);
+    header_layout->addLayout(actions);
+    root->addWidget(header_card);
+
+    auto* status_strip = new QHBoxLayout();
+    status_strip->setSpacing(8);
     status_label_ = new QLabel(uiText("Device closed", "设备已关闭"), central);
+    status_label_->setWordWrap(true);
     status_label_->setStyleSheet(QStringLiteral(
         "background: #ffffff; border: 1px solid #d9e2ef; border-radius: 6px;"
         "padding: 8px 10px; color: #344054;"));
-    root->addWidget(status_label_);
+    status_strip->addWidget(status_label_, 2);
 
     time_sync_label_ = new QLabel(
         uiText("Time sync: waiting for DeviceInfo", "时间同步：等待 DeviceInfo"), central);
+    time_sync_label_->setWordWrap(true);
     time_sync_label_->setStyleSheet(QStringLiteral(
         "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
-    root->addWidget(time_sync_label_);
+    status_strip->addWidget(time_sync_label_, 1);
 
     host_time_sync_label_ = new QLabel(
         uiText("Host/device clock: not measured",
                "主机/设备时钟：尚未测量"),
         central);
+    host_time_sync_label_->setWordWrap(true);
     host_time_sync_label_->setStyleSheet(QStringLiteral(
         "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
-    root->addWidget(host_time_sync_label_);
+    status_strip->addWidget(host_time_sync_label_, 1);
+    root->addLayout(status_strip);
 
     tabs_ = new QTabWidget(central);
 
@@ -1163,11 +1214,10 @@ class MainWindow : public QMainWindow {
     camera_layout->setSpacing(10);
     tabs_->addTab(camera_page_, uiText("Camera", "相机"));
 
-    camera_exposure_panel_ = new CameraExposurePanel(camera_page_);
-    camera_layout->addWidget(camera_exposure_panel_);
-    auto* camera_content_layout = new QHBoxLayout();
-    camera_content_layout->setSpacing(10);
-    camera_layout->addLayout(camera_content_layout, 1);
+    auto* camera_splitter = new QSplitter(Qt::Horizontal, camera_page_);
+    camera_splitter->setChildrenCollapsible(false);
+    camera_splitter->setHandleWidth(8);
+    camera_layout->addWidget(camera_splitter, 1);
 
     imu_page_ = new QWidget(tabs_);
     auto* imu_page_layout = new QVBoxLayout(imu_page_);
@@ -1186,23 +1236,30 @@ class MainWindow : public QMainWindow {
                   uiText("Local Datasets", "本地数据集"));
     root->addWidget(tabs_, 1);
 
-    auto* video_group = new QGroupBox(uiText("Video", "视频"), camera_page_);
+    auto* video_group = new QGroupBox(
+        uiText("Live cameras", "实时相机"), camera_splitter);
     auto* video_grid = new QGridLayout(video_group);
-    video_grid->setSpacing(8);
+    video_grid->setContentsMargins(10, 14, 10, 10);
+    video_grid->setHorizontalSpacing(10);
+    video_grid->setVerticalSpacing(10);
+    video_grid->setColumnStretch(0, 1);
+    video_grid->setColumnStretch(1, 1);
+    video_grid->setRowStretch(0, 1);
+    video_grid->setRowStretch(1, 1);
     for (int i = 0; i < 4; ++i) {
-      auto* tile = new QWidget(video_group);
+      auto* tile = new QFrame(video_group);
+      tile->setObjectName(QStringLiteral("cameraTile"));
       auto* tile_layout = new QVBoxLayout(tile);
-      tile_layout->setContentsMargins(0, 0, 0, 0);
-      tile_layout->setSpacing(4);
+      tile_layout->setContentsMargins(9, 8, 9, 9);
+      tile_layout->setSpacing(7);
 
       auto* caption = new QLabel(uiText("Camera %1", "相机 %1").arg(i), tile);
-      caption->setStyleSheet(QStringLiteral("font-weight: 600; color: #344054;"));
+      caption->setObjectName(QStringLiteral("cameraCaption"));
       image_labels_[i] = new ImageViewLabel(tile);
+      image_labels_[i]->setObjectName(QStringLiteral("cameraImage"));
       image_labels_[i]->setTransformationMode(Qt::FastTransformation);
-      image_labels_[i]->setMinimumSize(360, 230);
+      image_labels_[i]->setMinimumSize(280, 200);
       image_labels_[i]->setCursor(Qt::PointingHandCursor);
-      image_labels_[i]->setStyleSheet(QStringLiteral(
-          "background: #111827; border-radius: 6px; color: #d0d5dd;"));
       image_labels_[i]->clearImage(uiText("No frame", "无图像"));
       image_labels_[i]->setToolTip(
           uiText("Click to enlarge with four-camera thumbnails",
@@ -1222,7 +1279,7 @@ class MainWindow : public QMainWindow {
           uiText("RX complete sets=0 fps=0.00",
                  "接收完整帧组=0 帧率=0.00"),
           tile);
-      frame_labels_[i]->setStyleSheet(QStringLiteral("color: #667085;"));
+      frame_labels_[i]->setObjectName(QStringLiteral("cameraStats"));
       frame_labels_[i]->setToolTip(uiText(
           "Counts complete four-camera frame sets received and acknowledged. "
           "The low-latency preview may skip obsolete whole frame sets.",
@@ -1233,15 +1290,30 @@ class MainWindow : public QMainWindow {
       tile_layout->addWidget(frame_labels_[i]);
       video_grid->addWidget(tile, i / 2, i % 2);
     }
-    camera_content_layout->addWidget(video_group, 3);
+    camera_splitter->addWidget(video_group);
 
-    meta_text_ = new QPlainTextEdit(camera_page_);
+    auto* camera_tools = new QTabWidget(camera_splitter);
+    camera_tools->setObjectName(QStringLiteral("cameraTools"));
+    camera_tools->setMinimumWidth(340);
+    camera_encoding_panel_ = new CameraEncodingPanel(camera_tools);
+    camera_tools->addTab(
+        camera_encoding_panel_, uiText("Encoding", "编码"));
+    camera_exposure_panel_ = new CameraExposurePanel(camera_tools);
+    camera_tools->addTab(
+        camera_exposure_panel_, uiText("Exposure", "曝光"));
+
+    auto* metadata_page = new QWidget(camera_tools);
+    auto* metadata_layout = new QVBoxLayout(metadata_page);
+    metadata_layout->setContentsMargins(8, 8, 8, 8);
+    meta_text_ = new QPlainTextEdit(metadata_page);
     meta_text_->setReadOnly(true);
     meta_text_->setMaximumBlockCount(200);
-    auto* meta_group = new QGroupBox(uiText("Metadata", "元数据"), camera_page_);
-    auto* meta_layout = new QVBoxLayout(meta_group);
-    meta_layout->addWidget(meta_text_);
-    camera_content_layout->addWidget(meta_group, 1);
+    metadata_layout->addWidget(meta_text_);
+    camera_tools->addTab(metadata_page, uiText("Metadata", "元数据"));
+    camera_splitter->addWidget(camera_tools);
+    camera_splitter->setStretchFactor(0, 4);
+    camera_splitter->setStretchFactor(1, 1);
+    camera_splitter->setSizes({1040, 360});
 
     live_camera_zoom_dialog_ = new CameraZoomDialog(this);
     live_camera_zoom_dialog_->on_selected_camera_changed =
@@ -1293,17 +1365,26 @@ class MainWindow : public QMainWindow {
         uiText("Recorded camera frame set", "已记录的四路相机帧集"),
         dataset_page_);
     auto* dataset_images_grid = new QGridLayout(dataset_images_group);
+    dataset_images_grid->setHorizontalSpacing(10);
+    dataset_images_grid->setVerticalSpacing(10);
+    dataset_images_grid->setColumnStretch(0, 1);
+    dataset_images_grid->setColumnStretch(1, 1);
+    dataset_images_grid->setRowStretch(0, 1);
+    dataset_images_grid->setRowStretch(1, 1);
     for (int camera = 0; camera < 4; ++camera) {
-      auto* tile = new QWidget(dataset_images_group);
+      auto* tile = new QFrame(dataset_images_group);
+      tile->setObjectName(QStringLiteral("cameraTile"));
       auto* stack = new QVBoxLayout(tile);
-      stack->setContentsMargins(0, 0, 0, 0);
-      stack->addWidget(new QLabel(
-          uiText("Camera %1", "相机 %1").arg(camera), tile));
+      stack->setContentsMargins(9, 8, 9, 9);
+      stack->setSpacing(7);
+      auto* dataset_caption = new QLabel(
+          uiText("Camera %1", "相机 %1").arg(camera), tile);
+      dataset_caption->setObjectName(QStringLiteral("cameraCaption"));
+      stack->addWidget(dataset_caption);
       dataset_image_labels_[camera] = new ImageViewLabel(tile);
-      dataset_image_labels_[camera]->setMinimumSize(300, 190);
+      dataset_image_labels_[camera]->setObjectName(QStringLiteral("cameraImage"));
+      dataset_image_labels_[camera]->setMinimumSize(260, 180);
       dataset_image_labels_[camera]->setCursor(Qt::PointingHandCursor);
-      dataset_image_labels_[camera]->setStyleSheet(QStringLiteral(
-          "background: #111827; border-radius: 6px; color: #d0d5dd;"));
       dataset_image_labels_[camera]->clearImage(
           uiText("No dataset frame", "无数据集图像"));
       dataset_image_labels_[camera]->on_click =
@@ -1525,6 +1606,10 @@ class MainWindow : public QMainWindow {
         [this](const prism::ExposureConfiguration& configuration) {
           startCameraExposureOperation(configuration);
         };
+    camera_encoding_panel_->on_refresh =
+        [this]() { startCameraEncodingOperation(std::nullopt); };
+    camera_encoding_panel_->on_apply =
+        [this](uint32_t quality) { startCameraEncodingOperation(quality); };
     connect(log_button_, &QPushButton::clicked, this, [this]() {
       log_dialog_->show();
       log_dialog_->raise();
@@ -1666,6 +1751,89 @@ class MainWindow : public QMainWindow {
                "%1 不可用：请先打开设备").arg(section));
   }
 
+  void startCameraEncodingOperation(std::optional<uint32_t> quality) {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(uiText("Camera encoding", "相机编码"));
+      return;
+    }
+    if (camera_encoding_operation_running_) return;
+    if (worker_running_ || time_sync_running_ || wifi_operation_running_ ||
+        camera_exposure_operation_running_ || upgrade_running_ ||
+        client_.streamTransferActive()) {
+      QMessageBox::warning(
+          this,
+          uiText("MJPEG controls unavailable", "MJPEG 控制不可用"),
+          uiText("Stop camera and IMU transfer and wait for the current "
+                 "device operation to finish before changing MJPEG quality.",
+                 "请先停止相机和 IMU 传输，并等待当前设备操作完成后再修改 "
+                 "MJPEG 质量。"));
+      return;
+    }
+
+    operation_controller_.join();
+    camera_encoding_operation_running_ = true;
+    camera_encoding_panel_->setBusy(
+        true,
+        quality.has_value()
+            ? uiText("Saving persistent MJPEG quality...",
+                     "正在保存持久化 MJPEG 质量……")
+            : uiText("Reading persistent MJPEG quality...",
+                     "正在读取持久化 MJPEG 质量……"));
+    refreshControls();
+
+    operation_controller_.start([this, quality]() {
+      try {
+        prism::DeviceConfiguration configuration =
+            client_.deviceConfiguration();
+        if (quality.has_value()) {
+          configuration.mjpeg_quality = *quality;
+          configuration = client_.saveDeviceConfiguration(
+              configuration, prism::kDeviceConfigFieldMjpegQuality);
+        }
+        post([this, configuration, quality]() {
+          camera_encoding_operation_running_ = false;
+          camera_encoding_panel_->setConfiguration(configuration);
+          camera_encoding_panel_->setBusy(false);
+          setStatusAppearance(false);
+          status_label_->setText(
+              quality.has_value()
+                  ? uiText("MJPEG quality saved: %1",
+                           "MJPEG 质量已保存：%1")
+                        .arg(configuration.mjpeg_quality)
+                  : uiText("MJPEG quality refreshed: %1",
+                           "MJPEG 质量已刷新：%1")
+                        .arg(configuration.mjpeg_quality));
+          appendLogLine(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("HH:mm:ss.zzz ")) +
+              QStringLiteral("MJPEG quality %1 value=%2 generation=%3")
+                  .arg(quality.has_value() ? QStringLiteral("saved")
+                                           : QStringLiteral("refreshed"))
+                  .arg(configuration.mjpeg_quality)
+                  .arg(configuration.generation));
+          refreshControls();
+        });
+      } catch (const std::exception& ex) {
+        const QString error = toQString(ex.what());
+        post([this, error]() {
+          camera_encoding_operation_running_ = false;
+          camera_encoding_panel_->setBusy(false);
+          camera_encoding_panel_->setError(error);
+          setStatusAppearance(true);
+          status_label_->setText(
+              uiText("MJPEG configuration failed: %1",
+                     "MJPEG 配置失败：%1")
+                  .arg(error));
+          appendLogLine(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("HH:mm:ss.zzz ")) +
+              QStringLiteral("MJPEG configuration failed: %1").arg(error));
+          refreshControls();
+        });
+      }
+    });
+  }
+
   struct CameraExposureOperationRequest {
     bool apply = false;
     prism::ExposureConfiguration configuration;
@@ -1763,7 +1931,8 @@ class MainWindow : public QMainWindow {
       return;
     }
     if (camera_exposure_operation_running_) return;
-    if (time_sync_running_ || wifi_operation_running_ || upgrade_running_) {
+    if (time_sync_running_ || wifi_operation_running_ ||
+        camera_encoding_operation_running_ || upgrade_running_) {
       QMessageBox::warning(
           this,
           uiText("Camera exposure controls unavailable",
@@ -1813,6 +1982,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ ||
         upgrade_running_ ||
         client_.streamTransferActive()) {
       QMessageBox::warning(
@@ -1964,6 +2134,7 @@ class MainWindow : public QMainWindow {
       const auto& hello = opened.hello;
       const auto& versions = opened.versions;
       const auto& device_info = opened.device_info;
+      const auto& configuration = opened.configuration;
       const auto& network = opened.network;
       const QString serial = wideToQString(opened.serial_number);
       appendLog(QStringLiteral("Device serial=%1 path=%2")
@@ -1995,6 +2166,7 @@ class MainWindow : public QMainWindow {
                        : QStringLiteral("not-present")));
       updateDeviceInfo(device_info);
       updateDeviceVersions(versions);
+      camera_encoding_panel_->setConfiguration(configuration);
       camera_exposure_panel_->setConfiguration(opened.exposure);
       status_label_->setText(
           serial.isEmpty() ? uiText("Device open", "设备已打开")
@@ -2013,7 +2185,8 @@ class MainWindow : public QMainWindow {
 
   void closeDevice() {
     if (time_sync_running_ || wifi_operation_running_ ||
-        camera_exposure_operation_running_) {
+        camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_) {
       return;
     }
     if (worker_running_) {
@@ -2033,6 +2206,7 @@ class MainWindow : public QMainWindow {
     latest_device_versions_valid_ = false;
     latest_rk_heartbeat_time_us_ = 0;
     device_info_panel_->setDeviceOpen(false);
+    camera_encoding_panel_->setDeviceOpen(false);
     camera_exposure_panel_->setDeviceOpen(false);
     time_sync_label_->setText(uiText("Time sync: device closed", "时间同步：设备已关闭"));
     host_time_sync_label_->setText(
@@ -2051,6 +2225,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ ||
         upgrade_running_ ||
         client_.streamTransferActive()) {
       return;
@@ -2076,6 +2251,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ ||
         upgrade_running_ ||
         client_.streamTransferActive()) {
       return;
@@ -2099,6 +2275,7 @@ class MainWindow : public QMainWindow {
   void startCapture() {
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ ||
         !client_.isOpen()) {
       if (!client_.isOpen()) {
         showOpenDeviceHint(uiText("Capture", "采集"));
@@ -2129,6 +2306,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ ||
         client_.streamTransferActive()) {
       QMessageBox::warning(
           this, uiText("Time synchronization unavailable", "无法进行时间同步"),
@@ -2435,7 +2613,8 @@ class MainWindow : public QMainWindow {
 
   void startSystemUpgrade() {
     if (worker_running_ || wifi_operation_running_ ||
-        camera_exposure_operation_running_ || !client_.isOpen()) {
+        camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ || !client_.isOpen()) {
       if (!client_.isOpen()) {
         showOpenDeviceHint(uiText("system upgrade", "系统升级"));
       }
@@ -2647,7 +2826,9 @@ class MainWindow : public QMainWindow {
     const bool time_syncing = time_sync_running_;
     const bool wifi_busy = wifi_operation_running_;
     const bool exposure_busy = camera_exposure_operation_running_;
-    const bool busy = running || time_syncing || wifi_busy || exposure_busy;
+    const bool encoding_busy = camera_encoding_operation_running_;
+    const bool busy = running || time_syncing || wifi_busy || exposure_busy ||
+                      encoding_busy;
     const bool upgrading = upgrade_running_;
     const bool device_open = client_.isOpen();
     const bool selection_valid = device_selector_->currentIndex() >= 0 &&
@@ -2661,7 +2842,8 @@ class MainWindow : public QMainWindow {
       wifi_hotspot_panel_->setEnabled(device_open);
       wifi_hotspot_panel_->setDeviceOpen(device_open);
       wifi_hotspot_panel_->setControlsLocked(
-          running || time_syncing || upgrading ||
+          running || time_syncing || exposure_busy || encoding_busy ||
+          upgrading ||
           client_.streamTransferActive());
     }
     if (device_info_panel_ != nullptr) {
@@ -2673,14 +2855,21 @@ class MainWindow : public QMainWindow {
       camera_exposure_panel_->setDeviceOpen(device_open);
       camera_exposure_panel_->setCaptureActive(running && !upgrading);
       camera_exposure_panel_->setControlsLocked(
-          time_syncing || wifi_busy || upgrading);
+          time_syncing || wifi_busy || encoding_busy || upgrading);
+    }
+    if (camera_encoding_panel_ != nullptr) {
+      camera_encoding_panel_->setDeviceOpen(device_open);
+      camera_encoding_panel_->setCaptureActive(
+          running || client_.streamTransferActive());
+      camera_encoding_panel_->setControlsLocked(
+          time_syncing || wifi_busy || exposure_busy || upgrading);
     }
     if (imu0_selector_ != nullptr) imu0_selector_->setEnabled(device_open);
     if (imu1_selector_ != nullptr) imu1_selector_->setEnabled(device_open);
     open_device_button_->setEnabled(!busy && !device_open && selection_valid);
     close_device_button_->setEnabled(
         device_open && !upgrading && !time_syncing && !wifi_busy &&
-        !exposure_busy);
+        !exposure_busy && !encoding_busy);
     start_button_->setEnabled(!busy && device_open);
     stop_button_->setEnabled(running);
     host_time_sync_button_->setEnabled(
@@ -4160,6 +4349,7 @@ class MainWindow : public QMainWindow {
           latest_device_versions_valid_ = false;
           latest_rk_heartbeat_time_us_ = 0;
           device_info_panel_->setDeviceOpen(false);
+          camera_encoding_panel_->setDeviceOpen(false);
           camera_exposure_panel_->setDeviceOpen(false);
           wifi_hotspot_panel_->setDeviceOpen(false);
           time_sync_label_->setText(
@@ -4201,6 +4391,7 @@ class MainWindow : public QMainWindow {
   QTabWidget* tabs_ = nullptr;
   DeviceInfoPanel* device_info_panel_ = nullptr;
   QWidget* camera_page_ = nullptr;
+  CameraEncodingPanel* camera_encoding_panel_ = nullptr;
   CameraExposurePanel* camera_exposure_panel_ = nullptr;
   QWidget* imu_page_ = nullptr;
   WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
@@ -4256,6 +4447,7 @@ class MainWindow : public QMainWindow {
   std::atomic<bool> time_sync_running_{false};
   std::atomic<bool> wifi_operation_running_{false};
   std::atomic<bool> camera_exposure_operation_running_{false};
+  std::atomic<bool> camera_encoding_operation_running_{false};
   std::atomic<bool> imu_offset_measure_request_{false};
   std::atomic<bool> camera_preview_enabled_{false};
   std::atomic<bool> imu_ui_enabled_{false};

@@ -30,6 +30,7 @@ add_executable(prism-viewer
   src/main.cpp
   src/transfer/camera_frame_assembler.cpp
   src/ui/camera_zoom_dialog.cpp
+  src/ui/camera_encoding_panel.cpp
   src/ui/camera_exposure_panel.cpp
   src/ui/device_info_panel.cpp
   src/ui/main_window.cpp

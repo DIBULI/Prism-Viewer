@@ -32,7 +32,7 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
   root->setSpacing(8);
 
   auto* group =
-      new QGroupBox(uiText("Camera Exposure", "相机曝光"), this);
+      new QGroupBox(uiText("Runtime Exposure", "运行时曝光"), this);
   auto* group_layout = new QVBoxLayout(group);
   group_layout->setSpacing(8);
 
@@ -43,9 +43,29 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
   message_label_->setWordWrap(true);
   group_layout->addWidget(message_label_);
 
+  auto* target_row = new QHBoxLayout();
+  auto* target_label = new QLabel(
+      uiText("Shared target brightness", "统一目标亮度"), group);
+  target_brightness_ = new QSpinBox(group);
+  target_brightness_->setRange(
+      prism::kAutoExposureMinTargetBrightness,
+      prism::kAutoExposureMaxTargetBrightness);
+  target_brightness_->setValue(
+      prism::kAutoExposureDefaultTargetBrightness);
+  target_brightness_->setToolTip(
+      uiText("PL uses RAW8 mean brightness to adjust each automatic camera's "
+             "exposure time. All cameras share this target and gain stays "
+             "fixed.",
+             "PL 根据 RAW8 平均亮度闭环调整各路自动曝光时间；所有相机共用此"
+             "目标，增益保持固定。"));
+  target_row->addWidget(target_label);
+  target_row->addStretch(1);
+  target_row->addWidget(target_brightness_);
+  group_layout->addLayout(target_row);
+
   auto* settings = new QGridLayout();
-  settings->setHorizontalSpacing(12);
-  settings->setVerticalSpacing(6);
+  settings->setHorizontalSpacing(8);
+  settings->setVerticalSpacing(7);
   settings->addWidget(
       new QLabel(uiText("Camera", "相机"), group), 0, 0);
   settings->addWidget(
@@ -65,7 +85,7 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
         kAutomaticModeValue);
     camera_mode_[camera]->addItem(
         uiText("Manual", "手动"), kManualModeValue);
-    camera_mode_[camera]->setMinimumWidth(190);
+    camera_mode_[camera]->setMinimumWidth(150);
     settings->addWidget(camera_mode_[camera], camera + 1, 1);
 
     manual_exposure_us_[camera] = new QSpinBox(group);
@@ -77,29 +97,11 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
     manual_exposure_us_[camera]->setSuffix(
         uiText(" us", " 微秒"));
     manual_exposure_us_[camera]->setSingleStep(10);
-    manual_exposure_us_[camera]->setMinimumWidth(150);
+    manual_exposure_us_[camera]->setMinimumWidth(110);
     settings->addWidget(manual_exposure_us_[camera], camera + 1, 2);
   }
-
-  auto* target_label = new QLabel(
-      uiText("Shared automatic target brightness:",
-             "自动曝光统一目标亮度："),
-      group);
-  target_brightness_ = new QSpinBox(group);
-  target_brightness_->setRange(
-      prism::kAutoExposureMinTargetBrightness,
-      prism::kAutoExposureMaxTargetBrightness);
-  target_brightness_->setValue(
-      prism::kAutoExposureDefaultTargetBrightness);
-  target_brightness_->setToolTip(
-      uiText("PL uses RAW8 mean brightness to adjust each automatic camera's "
-             "exposure time. All cameras share this target and gain stays "
-             "fixed.",
-             "PL 根据 RAW8 平均亮度闭环调整各路自动曝光时间；所有相机共用此"
-             "目标，增益保持固定。"));
-  settings->addWidget(target_label, 1, 3);
-  settings->addWidget(target_brightness_, 1, 4);
-  settings->setColumnStretch(5, 1);
+  settings->setColumnStretch(1, 1);
+  settings->setColumnStretch(2, 1);
   group_layout->addLayout(settings);
 
   auto* actions = new QHBoxLayout();
@@ -107,8 +109,8 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       uiText("Refresh Exposure", "刷新曝光设置"), group);
   apply_button_ = new QPushButton(
       uiText("Apply Runtime Settings", "应用运行时设置"), group);
-  refresh_button_->setMinimumWidth(140);
-  apply_button_->setMinimumWidth(170);
+  refresh_button_->setMinimumWidth(120);
+  apply_button_->setMinimumWidth(150);
   apply_button_->setToolTip(
       uiText("Runtime-only: settings return to defaults after restart.",
              "仅在本次运行中生效，设备重启后恢复默认值。"));
