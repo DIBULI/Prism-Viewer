@@ -10,6 +10,7 @@
 #include "ui/camera_exposure_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
 #include "ui/device_info_panel.hpp"
+#include "ui/lidar_point_cloud_widget.hpp"
 #include "ui/main_window.hpp"
 #include "ui/preview_image_decoder.hpp"
 #include "ui/wifi_hotspot_panel.hpp"
@@ -1225,6 +1226,48 @@ class MainWindow : public QMainWindow {
     imu_page_layout->setSpacing(10);
     tabs_->addTab(imu_page_, QStringLiteral("IMU"));
 
+    lidar_page_ = new QWidget(tabs_);
+    auto* lidar_layout = new QVBoxLayout(lidar_page_);
+    lidar_layout->setContentsMargins(8, 8, 8, 8);
+    lidar_layout->setSpacing(10);
+    tabs_->addTab(lidar_page_, QStringLiteral("LiDAR"));
+
+    auto* lidar_controls = new QGroupBox(
+        uiText("Livox point cloud", "Livox 点云"), lidar_page_);
+    auto* lidar_controls_layout = new QHBoxLayout(lidar_controls);
+    lidar_enabled_checkbox_ = new QCheckBox(
+        uiText("Include LiDAR in capture", "采集时启用雷达"),
+        lidar_controls);
+    lidar_model_selector_ = new QComboBox(lidar_controls);
+    lidar_model_selector_->addItem(
+        uiText("Select model...", "请选择雷达型号……"),
+        static_cast<int>(prism::LidarModel::None));
+    lidar_model_selector_->addItem(
+        QStringLiteral("Mid-360"),
+        static_cast<int>(prism::LidarModel::Mid360));
+    lidar_model_selector_->addItem(
+        QStringLiteral("Mid-360S"),
+        static_cast<int>(prism::LidarModel::Mid360S));
+    lidar_model_selector_->setCurrentIndex(0);
+    lidar_model_selector_->setEnabled(false);
+    lidar_model_selector_->setMinimumWidth(180);
+    lidar_model_selector_->setToolTip(uiText(
+        "Model selection is mandatory; the Agent does not auto-detect it",
+        "必须明确选择型号，Agent 不会自动猜测"));
+    lidar_status_label_ = new QLabel(
+        uiText("LiDAR disabled", "雷达未启用"), lidar_controls);
+    lidar_status_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    lidar_status_label_->setWordWrap(true);
+    lidar_controls_layout->addWidget(lidar_enabled_checkbox_);
+    lidar_controls_layout->addWidget(lidar_model_selector_);
+    lidar_controls_layout->addWidget(lidar_status_label_, 1);
+    lidar_layout->addWidget(lidar_controls);
+    lidar_point_cloud_widget_ =
+        new prism_viewer::LidarPointCloudWidget(lidar_page_);
+    lidar_layout->addWidget(lidar_point_cloud_widget_, 1);
+
     wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);
     tabs_->addTab(wifi_hotspot_panel_, uiText("Network", "网络"));
 
@@ -1587,6 +1630,15 @@ class MainWindow : public QMainWindow {
             this, [this]() { closeDevice(); });
     connect(start_button_, &QPushButton::clicked, this, [this]() { startCapture(); });
     connect(stop_button_, &QPushButton::clicked, this, [this]() { stopCapture(); });
+    connect(lidar_enabled_checkbox_, &QCheckBox::toggled,
+            this, [this](bool enabled) {
+              lidar_model_selector_->setEnabled(
+                  enabled && client_.isOpen() && !worker_running_);
+              if (!enabled) {
+                lidar_status_label_->setText(
+                    uiText("LiDAR disabled", "雷达未启用"));
+              }
+            });
     connect(host_time_sync_button_, &QPushButton::clicked,
             this, [this]() { startHostTimeSync(); });
     connect(system_upgrade_button_, &QPushButton::clicked,
@@ -1647,13 +1699,16 @@ class MainWindow : public QMainWindow {
     connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
       QWidget* page = tabs_->widget(index);
       if (!client_.isOpen() &&
-          (page == camera_page_ || page == imu_page_ ||
+          (page == camera_page_ || page == imu_page_ || page == lidar_page_ ||
            page == wifi_hotspot_panel_)) {
         const QString section =
             page == camera_page_
                 ? uiText("Camera", "相机")
-                : (page == imu_page_ ? QStringLiteral("IMU")
-                                     : uiText("Network", "网络"));
+                : (page == imu_page_
+                       ? QStringLiteral("IMU")
+                       : (page == lidar_page_
+                              ? QStringLiteral("LiDAR")
+                              : uiText("Network", "网络")));
         showOpenDeviceHint(section);
       }
     });
@@ -1704,7 +1759,7 @@ class MainWindow : public QMainWindow {
  private:
   void updateVisualizationActivity() {
     if (tabs_ == nullptr || camera_page_ == nullptr ||
-        imu_page_ == nullptr) {
+        imu_page_ == nullptr || lidar_page_ == nullptr) {
       return;
     }
     const bool window_active = !isMinimized();
@@ -1731,6 +1786,9 @@ class MainWindow : public QMainWindow {
         window_active && tabs_->currentWidget() == imu_page_;
     imu_ui_enabled_.store(imu_active, std::memory_order_release);
     if (imu_plot_ != nullptr) imu_plot_->setActive(imu_active);
+    lidar_ui_enabled_.store(
+        window_active && tabs_->currentWidget() == lidar_page_,
+        std::memory_order_release);
   }
 
   void setStatusAppearance(bool warning) {
@@ -2168,6 +2226,12 @@ class MainWindow : public QMainWindow {
       updateDeviceVersions(versions);
       camera_encoding_panel_->setConfiguration(configuration);
       camera_exposure_panel_->setConfiguration(opened.exposure);
+      try {
+        updateLidarStatus(client_.lidarStatus());
+      } catch (const std::exception& lidar_error) {
+        appendLog(QStringLiteral("LiDAR status query failed: %1")
+                      .arg(lidar_error.what()));
+      }
       status_label_->setText(
           serial.isEmpty() ? uiText("Device open", "设备已打开")
                            : uiText("Device open: %1", "设备已打开：%1").arg(serial));
@@ -2205,6 +2269,9 @@ class MainWindow : public QMainWindow {
     latest_device_info_valid_ = false;
     latest_device_versions_valid_ = false;
     latest_rk_heartbeat_time_us_ = 0;
+    requested_lidar_model_.store(
+        static_cast<int>(prism::LidarModel::None),
+        std::memory_order_release);
     device_info_panel_->setDeviceOpen(false);
     camera_encoding_panel_->setDeviceOpen(false);
     camera_exposure_panel_->setDeviceOpen(false);
@@ -2215,6 +2282,13 @@ class MainWindow : public QMainWindow {
     setStatusAppearance(false);
     status_label_->setText(uiText("Device closed", "设备已关闭"));
     wifi_hotspot_panel_->setDeviceOpen(false);
+    if (lidar_point_cloud_widget_ != nullptr) {
+      lidar_point_cloud_widget_->clearPoints();
+    }
+    if (lidar_status_label_ != nullptr) {
+      lidar_status_label_->setText(
+          uiText("LiDAR: device closed", "雷达：设备已关闭"));
+    }
     refreshControls();
   }
 
@@ -2282,6 +2356,23 @@ class MainWindow : public QMainWindow {
       }
       return;
     }
+    prism::LidarModel requested_lidar_model = prism::LidarModel::None;
+    if (lidar_enabled_checkbox_->isChecked()) {
+      requested_lidar_model = static_cast<prism::LidarModel>(
+          lidar_model_selector_->currentData().toInt());
+      if (requested_lidar_model != prism::LidarModel::Mid360 &&
+          requested_lidar_model != prism::LidarModel::Mid360S) {
+        QMessageBox::warning(
+            this, uiText("LiDAR model required", "需要选择雷达型号"),
+            uiText("Select Mid-360 or Mid-360S before starting capture. "
+                   "The Agent will not choose a model automatically.",
+                   "开始采集前请选择 Mid-360 或 Mid-360S。Agent 不会自动选择型号。"));
+        tabs_->setCurrentWidget(lidar_page_);
+        return;
+      }
+    }
+    requested_lidar_model_.store(
+        static_cast<int>(requested_lidar_model), std::memory_order_release);
     operation_controller_.join();
 
     stop_requested_ = false;
@@ -2295,6 +2386,12 @@ class MainWindow : public QMainWindow {
     appendLog(QStringLiteral(
         "Capture requested; waiting for DeviceInfo to report an online sensor-board before "
         "starting camera or IMU streams"));
+    if (requested_lidar_model != prism::LidarModel::None) {
+      appendLog(QStringLiteral("LiDAR requested with explicit model=%1")
+                    .arg(requested_lidar_model == prism::LidarModel::Mid360
+                             ? QStringLiteral("Mid-360")
+                             : QStringLiteral("Mid-360S")));
+    }
 
     operation_controller_.start([this]() { workerMain(); });
   }
@@ -2803,6 +2900,16 @@ class MainWindow : public QMainWindow {
           "border-radius: 5px; padding: 6px 9px; font-weight: 600;"));
     }
     if (imu_plot_ != nullptr) imu_plot_->clear();
+    if (lidar_point_cloud_widget_ != nullptr) {
+      lidar_point_cloud_widget_->clearPoints();
+    }
+    if (lidar_status_label_ != nullptr) {
+      lidar_status_label_->setText(
+          lidar_enabled_checkbox_->isChecked()
+              ? uiText("Waiting to start selected LiDAR",
+                       "等待启动所选雷达")
+              : uiText("LiDAR disabled", "雷达未启用"));
+    }
     for (int i = 0; i < 4; ++i) {
       image_labels_[i]->clearImage(uiText("Waiting", "等待数据"));
       frame_labels_[i]->setText(
@@ -2838,6 +2945,15 @@ class MainWindow : public QMainWindow {
     refresh_devices_button_->setEnabled(!busy && !device_open);
     if (camera_page_ != nullptr) camera_page_->setEnabled(device_open);
     if (imu_page_ != nullptr) imu_page_->setEnabled(device_open);
+    if (lidar_page_ != nullptr) lidar_page_->setEnabled(device_open);
+    if (lidar_enabled_checkbox_ != nullptr) {
+      lidar_enabled_checkbox_->setEnabled(device_open && !busy && !upgrading);
+    }
+    if (lidar_model_selector_ != nullptr) {
+      lidar_model_selector_->setEnabled(
+          device_open && !busy && !upgrading &&
+          lidar_enabled_checkbox_->isChecked());
+    }
     if (wifi_hotspot_panel_ != nullptr) {
       wifi_hotspot_panel_->setEnabled(device_open);
       wifi_hotspot_panel_->setDeviceOpen(device_open);
@@ -2919,6 +3035,80 @@ class MainWindow : public QMainWindow {
     post([this, text]() {
       setStatusAppearance(false);
       status_label_->setText(text);
+    });
+  }
+
+  void updateLidarStatus(const prism::LidarStatus& status) {
+    post([this, status]() {
+      if (lidar_status_label_ == nullptr) return;
+      const QString model =
+          status.model == prism::LidarModel::Mid360
+              ? QStringLiteral("Mid-360")
+              : (status.model == prism::LidarModel::Mid360S
+                     ? QStringLiteral("Mid-360S")
+                     : uiText("not selected", "未选择"));
+      QString text;
+      QString style;
+      if (!status.available) {
+        text = uiText("Livox SDK2 is unavailable: %1",
+                      "Livox SDK2 不可用：%1")
+                   .arg(toQString(status.error));
+        style = QStringLiteral(
+            "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      } else if (!status.enabled) {
+        text = uiText("LiDAR stopped", "雷达已停止");
+        style = QStringLiteral(
+            "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      } else if (!status.connected || !status.receiving) {
+        const QString detail = status.error.empty()
+                                   ? uiText("waiting for Ethernet data",
+                                            "等待以太网数据")
+                                   : toQString(status.error);
+        text = uiText("%1 enabled; %2", "%1 已启用；%2")
+                   .arg(model, detail);
+        style = QStringLiteral(
+            "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      } else {
+        text = uiText("%1 receiving from %2 | points %3 | dropped %4",
+                      "%1 正在接收 %2 | 点数 %3 | 丢弃 %4")
+                   .arg(model,
+                        status.lidar_ip.empty()
+                            ? QStringLiteral("-")
+                            : toQString(status.lidar_ip))
+                   .arg(status.point_count)
+                   .arg(status.dropped_point_count);
+        style = QStringLiteral(
+            "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      }
+      lidar_status_label_->setText(text);
+      lidar_status_label_->setStyleSheet(style);
+    });
+  }
+
+  void queueLidarPreview(std::vector<prism::LidarPoint> points,
+                         prism::LidarModel model, uint64_t total_points,
+                         uint32_t batch_id) {
+    if (!lidar_ui_enabled_.load(std::memory_order_acquire)) return;
+    post([this, points = std::move(points), model, total_points, batch_id]() {
+      if (lidar_point_cloud_widget_ == nullptr) return;
+      lidar_point_cloud_widget_->appendPoints(points);
+      const QString model_name = model == prism::LidarModel::Mid360
+                                     ? QStringLiteral("Mid-360")
+                                     : QStringLiteral("Mid-360S");
+      lidar_status_label_->setText(
+          uiText("%1 point cloud | received %2 | batch %3 | displayed %4",
+                 "%1 点云 | 已接收 %2 | 批次 %3 | 显示 %4")
+              .arg(model_name)
+              .arg(total_points)
+              .arg(batch_id)
+              .arg(lidar_point_cloud_widget_->pointCount()));
+      lidar_status_label_->setStyleSheet(QStringLiteral(
+          "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
     });
   }
 
@@ -3883,6 +4073,13 @@ class MainWindow : public QMainWindow {
       };
       std::array<TimestampCheck, 2> timestamp_checks{};
       prism_viewer::DualImuOffsetEstimator imu_offset_estimator;
+      const prism::LidarModel requested_lidar_model =
+          static_cast<prism::LidarModel>(requested_lidar_model_.load(
+              std::memory_order_acquire));
+      std::vector<prism::LidarPoint> pending_lidar_preview;
+      pending_lidar_preview.reserve(8192u);
+      uint64_t received_lidar_points = 0;
+      auto last_lidar_preview_post = std::chrono::steady_clock::now();
       prism::ImuStream imu_stream(
           client_, [this, &last_imu_post, &last_imu_plot_post,
                    &imu_rate_samples, &received_imu_samples,
@@ -4038,6 +4235,34 @@ class MainWindow : public QMainWindow {
                                last_fsync_delay_valid[sensor]);
             }
           });
+      prism::LidarStream lidar_stream(
+          client_, [this, requested_lidar_model, &pending_lidar_preview,
+                   &received_lidar_points, &last_lidar_preview_post](
+                       const prism::LidarPointBatch& batch) {
+            if (batch.model != requested_lidar_model) {
+              throw std::runtime_error(
+                  "received LiDAR points for a model other than the explicit selection");
+            }
+            received_lidar_points += batch.points.size();
+            const auto now = std::chrono::steady_clock::now();
+            if (!lidar_ui_enabled_.load(std::memory_order_acquire)) {
+              pending_lidar_preview.clear();
+              last_lidar_preview_post = now;
+              return;
+            }
+            pending_lidar_preview.insert(pending_lidar_preview.end(),
+                                         batch.points.begin(),
+                                         batch.points.end());
+            if (now - last_lidar_preview_post <
+                std::chrono::milliseconds(50)) {
+              return;
+            }
+            last_lidar_preview_post = now;
+            queueLidarPreview(std::move(pending_lidar_preview), batch.model,
+                              received_lidar_points, batch.batch_id);
+            pending_lidar_preview.clear();
+            pending_lidar_preview.reserve(8192u);
+          });
       try {
         imu_stream.start();
       } catch (...) {
@@ -4055,6 +4280,27 @@ class MainWindow : public QMainWindow {
         throw;
       }
       appendLog(QStringLiteral("IMU started through agent SDK ImuStream"));
+      if (requested_lidar_model != prism::LidarModel::None) {
+        try {
+          lidar_stream.start(requested_lidar_model);
+          updateLidarStatus(client_.lidarStatus());
+          appendLog(QStringLiteral("LiDAR started model=%1")
+                        .arg(requested_lidar_model == prism::LidarModel::Mid360
+                                 ? QStringLiteral("Mid-360")
+                                 : QStringLiteral("Mid-360S")));
+        } catch (...) {
+          try {
+            aggregate_stream_stop_attempted = true;
+            imu_stream.stop();
+            video_started = false;
+          } catch (const std::exception& stop_error) {
+            appendLog(QStringLiteral(
+                          "Capture rollback failed after LiDAR start error: %1")
+                          .arg(stop_error.what()));
+          }
+          throw;
+        }
+      }
       updateStatus(uiText("Running", "运行中"));
 
       const auto capture_started_at = std::chrono::steady_clock::now();
@@ -4202,6 +4448,14 @@ class MainWindow : public QMainWindow {
                 stop_requested_ = true;
                 continue;
               }
+              if (requested_lidar_model != prism::LidarModel::None) {
+                try {
+                  updateLidarStatus(client_.lidarStatus());
+                } catch (const std::exception& lidar_error) {
+                  appendLog(QStringLiteral("LiDAR status refresh failed: %1")
+                                .arg(lidar_error.what()));
+                }
+              }
             } catch (const std::exception& ex) {
               appendLog(QStringLiteral("DeviceInfo refresh failed: %1")
                             .arg(ex.what()));
@@ -4237,6 +4491,9 @@ class MainWindow : public QMainWindow {
           last_usb_frame_at = std::chrono::steady_clock::now();
 
           if (imu_stream.handleFrame(frame)) {
+            continue;
+          }
+          if (lidar_stream.handleFrame(frame)) {
             continue;
           }
 
@@ -4284,6 +4541,12 @@ class MainWindow : public QMainWindow {
         capture_error = std::current_exception();
       }
 
+      std::exception_ptr lidar_stop_error;
+      try {
+        lidar_stream.stop();
+      } catch (...) {
+        lidar_stop_error = std::current_exception();
+      }
       std::exception_ptr stop_error;
       aggregate_stream_stop_attempted = true;
       try {
@@ -4294,6 +4557,15 @@ class MainWindow : public QMainWindow {
         stop_error = std::current_exception();
       }
       if (capture_error) {
+        if (lidar_stop_error) {
+          try {
+            std::rethrow_exception(lidar_stop_error);
+          } catch (const std::exception& ex) {
+            appendLog(QStringLiteral(
+                          "Capture error cleanup could not confirm LiDAR stop: %1")
+                          .arg(ex.what()));
+          }
+        }
         if (stop_error) {
           try {
             std::rethrow_exception(stop_error);
@@ -4306,6 +4578,7 @@ class MainWindow : public QMainWindow {
         }
         std::rethrow_exception(capture_error);
       }
+      if (lidar_stop_error) std::rethrow_exception(lidar_stop_error);
       if (stop_error) std::rethrow_exception(stop_error);
       appendLog(QStringLiteral("Streams stopped"));
       updateStatus(uiText("Stopped", "已停止"));
@@ -4394,6 +4667,11 @@ class MainWindow : public QMainWindow {
   CameraEncodingPanel* camera_encoding_panel_ = nullptr;
   CameraExposurePanel* camera_exposure_panel_ = nullptr;
   QWidget* imu_page_ = nullptr;
+  QWidget* lidar_page_ = nullptr;
+  QCheckBox* lidar_enabled_checkbox_ = nullptr;
+  QComboBox* lidar_model_selector_ = nullptr;
+  QLabel* lidar_status_label_ = nullptr;
+  prism_viewer::LidarPointCloudWidget* lidar_point_cloud_widget_ = nullptr;
   WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
   QWidget* dataset_page_ = nullptr;
   std::array<ImageViewLabel*, 4> image_labels_{};
@@ -4451,6 +4729,9 @@ class MainWindow : public QMainWindow {
   std::atomic<bool> imu_offset_measure_request_{false};
   std::atomic<bool> camera_preview_enabled_{false};
   std::atomic<bool> imu_ui_enabled_{false};
+  std::atomic<bool> lidar_ui_enabled_{false};
+  std::atomic<int> requested_lidar_model_{
+      static_cast<int>(prism::LidarModel::None)};
   std::atomic<bool> live_camera_zoom_visible_{false};
   std::atomic<int> live_camera_zoom_camera_{0};
   std::atomic<uint64_t> camera_preview_generation_{0};

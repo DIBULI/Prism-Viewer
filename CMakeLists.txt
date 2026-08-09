@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(prism_viewer VERSION 0.8.0 LANGUAGES CXX)
+project(prism_viewer VERSION 0.9.0 LANGUAGES CXX)
 
 set(CMAKE_AUTOMOC OFF)
 set(CMAKE_AUTORCC OFF)
@@ -33,6 +33,7 @@ add_executable(prism-viewer
   src/ui/camera_encoding_panel.cpp
   src/ui/camera_exposure_panel.cpp
   src/ui/device_info_panel.cpp
+  src/ui/lidar_point_cloud_widget.cpp
   src/ui/main_window.cpp
   src/ui/preview_image_decoder.cpp
   src/ui/wifi_hotspot_panel.cpp
