@@ -3,6 +3,7 @@
 #include "communication/device_session.hpp"
 #include "control/operation_controller.hpp"
 #include "dataset/dataset_browser.hpp"
+#include "dataset/rosbag_exporter.hpp"
 #include "dual_imu_offset_estimator.hpp"
 #include "imu_timestamp_policy.hpp"
 #include "transfer/camera_frame_assembler.hpp"
@@ -60,6 +61,7 @@
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QProgressDialog>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSlider>
@@ -274,13 +276,17 @@ struct DatasetRecordingSummary {
   std::array<uint64_t, 2> sample_count{};
   std::array<uint64_t, 4> image_count{};
   uint64_t dropped_frame_sets = 0;
+  uint64_t lidar_batch_count = 0;
+  uint64_t lidar_point_count = 0;
+  uint64_t dropped_lidar_batches = 0;
+  uint64_t dropped_lidar_points = 0;
   std::string error;
 };
 
-// Records a complete dataset: two TUM-style IMU streams plus four TUM-style
-// image indexes. All JPEG payloads are appended to large sequential container
-// files so exFAT does not allocate a 256-KiB cluster for every small JPEG.
-// The writer stays off the USB receive thread.
+// Records a complete dataset: two TUM-style IMU streams, four TUM-style image
+// indexes, and an optional Livox point-batch index. Large binary payloads are
+// appended to sequential containers so exFAT does not allocate a 256-KiB
+// cluster for every message. The writer stays off the USB receive thread.
 class DatasetRecorder {
  public:
   bool start(const std::filesystem::path& root, bool overwrite,
@@ -299,10 +305,10 @@ class DatasetRecorder {
         return false;
       }
       root_ = root;
-      const std::array<std::filesystem::path, 7> known_outputs = {
+      const std::array<std::filesystem::path, 8> known_outputs = {
           root_ / "imu0.tum", root_ / "imu1.tum", root_ / "cam0.tum",
           root_ / "cam1.tum", root_ / "cam2.tum", root_ / "cam3.tum",
-          root_ / "dataset.info"};
+          root_ / "lidar.tum", root_ / "dataset.info"};
       bool existing_dataset = false;
       for (const auto& path : known_outputs) {
         const bool exists = std::filesystem::exists(path, filesystem_error);
@@ -325,7 +331,7 @@ class DatasetRecorder {
         }
         existing_dataset = existing_dataset || exists;
       }
-      std::vector<std::filesystem::path> old_camera_containers;
+      std::vector<std::filesystem::path> old_data_containers;
       std::filesystem::directory_iterator iterator(root_, filesystem_error);
       const std::filesystem::directory_iterator end;
       if (filesystem_error) {
@@ -335,9 +341,9 @@ class DatasetRecorder {
         return false;
       }
       while (iterator != end) {
-        if (isCameraDataContainer(iterator->path())) {
+        if (isDatasetDataContainer(iterator->path())) {
           existing_dataset = true;
-          old_camera_containers.push_back(iterator->path());
+          old_data_containers.push_back(iterator->path());
         }
         iterator.increment(filesystem_error);
         if (filesystem_error) {
@@ -362,11 +368,11 @@ class DatasetRecorder {
             return false;
           }
         }
-        for (const auto& path : old_camera_containers) {
+        for (const auto& path : old_data_containers) {
           std::filesystem::remove(path, filesystem_error);
           if (filesystem_error) {
             if (error != nullptr) {
-              *error = "cannot replace an old camera data container";
+              *error = "cannot replace an old dataset data container";
             }
             return false;
           }
@@ -376,15 +382,23 @@ class DatasetRecorder {
       imu_counts_.fill(0);
       image_counts_.fill(0);
       dropped_frame_sets_ = 0;
+      lidar_batch_count_ = 0;
+      lidar_point_count_ = 0;
+      dropped_lidar_batches_ = 0;
+      dropped_lidar_points_ = 0;
       write_failed_ = false;
       write_error_.clear();
       frame_jobs_.clear();
-      queued_frame_bytes_ = 0;
+      lidar_jobs_.clear();
+      queued_payload_bytes_ = 0;
       stop_writer_ = false;
       start_unix_us_ = wallClockUs();
       camera_chunk_index_ = 0;
       camera_chunk_size_ = 0;
       camera_chunk_name_.clear();
+      lidar_chunk_index_ = 0;
+      lidar_chunk_size_ = 0;
+      lidar_chunk_name_.clear();
 
       for (size_t sensor = 0; sensor < imu_files_.size(); ++sensor) {
         imu_files_[sensor].open(
@@ -421,6 +435,18 @@ class DatasetRecorder {
             << "# timestamp[s] container_path byte_offset byte_size "
                "actual_exposure_us\n";
       }
+      lidar_index_file_.open(root_ / "lidar.tum",
+                             std::ios::out | std::ios::trunc);
+      lidar_index_file_.imbue(std::locale::classic());
+      if (!lidar_index_file_.is_open()) {
+        closeFiles();
+        if (error != nullptr) *error = "cannot open LiDAR index file";
+        return false;
+      }
+      lidar_index_file_
+          << "# Prism Livox point-batch stream\n"
+          << "# timestamp[s] container_path byte_offset byte_size point_count "
+             "model device_type time_type batch_id timestamp_raw\n";
 
       session_open_ = true;
       active_.store(true, std::memory_order_release);
@@ -431,7 +457,8 @@ class DatasetRecorder {
       stop_writer_ = true;
       session_open_ = false;
       frame_jobs_.clear();
-      queued_frame_bytes_ = 0;
+      lidar_jobs_.clear();
+      queued_payload_bytes_ = 0;
       closeFiles();
       if (error != nullptr) {
         try {
@@ -447,7 +474,8 @@ class DatasetRecorder {
       stop_writer_ = true;
       session_open_ = false;
       frame_jobs_.clear();
-      queued_frame_bytes_ = 0;
+      lidar_jobs_.clear();
+      queued_payload_bytes_ = 0;
       closeFiles();
       if (error != nullptr) {
         try {
@@ -539,7 +567,7 @@ class DatasetRecorder {
       constexpr size_t kMaximumQueuedFrameSets = 256;
       if (frame_jobs_.size() >= kMaximumQueuedFrameSets ||
           frame_set_bytes > kMaximumQueuedFrameBytes ||
-          queued_frame_bytes_ >
+          queued_payload_bytes_ >
               kMaximumQueuedFrameBytes - frame_set_bytes) {
         ++dropped_frame_sets_;
         return;
@@ -551,10 +579,68 @@ class DatasetRecorder {
       job.payload_bytes = frame_set_bytes;
       job.jpeg = jpeg_set;
       frame_jobs_.push_back(std::move(job));
-      queued_frame_bytes_ += frame_set_bytes;
+      queued_payload_bytes_ += frame_set_bytes;
       writer_wakeup_.notify_one();
     } catch (...) {
       markWriteFailedNoThrow("camera dataset queue allocation failed");
+    }
+  }
+
+  void appendLidar(const prism::LidarPointBatch& batch) {
+    try {
+      if (!active_.load(std::memory_order_acquire) || batch.points.empty()) {
+        return;
+      }
+      if (batch.points.size() >
+          std::numeric_limits<uint32_t>::max() / 16u) {
+        markWriteFailedNoThrow("LiDAR dataset batch is too large");
+        return;
+      }
+      LidarJob job;
+      job.timestamp_us = wallClockUs();
+      job.timestamp_raw = batch.timestamp_raw;
+      job.batch_id = batch.batch_id;
+      job.model = static_cast<uint8_t>(batch.model);
+      job.device_type = batch.device_type;
+      job.time_type = batch.time_type;
+      job.point_count = static_cast<uint32_t>(batch.points.size());
+      job.points.reserve(batch.points.size() * 16u);
+      auto append_le32 = [&job](uint32_t value) {
+        for (unsigned byte = 0; byte < 4u; ++byte) {
+          job.points.push_back(
+              static_cast<uint8_t>((value >> (byte * 8u)) & 0xffu));
+        }
+      };
+      for (const auto& point : batch.points) {
+        append_le32(static_cast<uint32_t>(point.x_mm));
+        append_le32(static_cast<uint32_t>(point.y_mm));
+        append_le32(static_cast<uint32_t>(point.z_mm));
+        job.points.push_back(point.reflectivity);
+        job.points.push_back(point.tag);
+        job.points.push_back(0u);
+        job.points.push_back(0u);
+      }
+      job.payload_bytes = job.points.size();
+
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_) {
+        return;
+      }
+      constexpr size_t kMaximumQueuedLidarBatches = 512u;
+      if (lidar_jobs_.size() >= kMaximumQueuedLidarBatches ||
+          job.payload_bytes > kMaximumQueuedFrameBytes ||
+          queued_payload_bytes_ >
+              kMaximumQueuedFrameBytes - job.payload_bytes) {
+        ++dropped_lidar_batches_;
+        dropped_lidar_points_ += job.point_count;
+        return;
+      }
+      queued_payload_bytes_ += job.payload_bytes;
+      lidar_jobs_.push_back(std::move(job));
+      writer_wakeup_.notify_one();
+    } catch (...) {
+      markWriteFailedNoThrow("LiDAR dataset queue allocation failed");
     }
   }
 
@@ -573,6 +659,10 @@ class DatasetRecorder {
     summary.sample_count = imu_counts_;
     summary.image_count = image_counts_;
     summary.dropped_frame_sets = dropped_frame_sets_;
+    summary.lidar_batch_count = lidar_batch_count_;
+    summary.lidar_point_count = lidar_point_count_;
+    summary.dropped_lidar_batches = dropped_lidar_batches_;
+    summary.dropped_lidar_points = dropped_lidar_points_;
     if (!session_open_) return summary;
 
     writeManifest();
@@ -599,13 +689,29 @@ class DatasetRecorder {
     std::array<std::vector<uint8_t>, 4> jpeg;
   };
 
-  static bool isCameraDataContainer(const std::filesystem::path& path) {
+  struct LidarJob {
+    uint64_t timestamp_us = 0;
+    uint64_t timestamp_raw = 0;
+    uint64_t payload_bytes = 0;
+    uint32_t batch_id = 0;
+    uint32_t point_count = 0;
+    uint8_t model = 0;
+    uint8_t device_type = 0;
+    uint8_t time_type = 0;
+    std::vector<uint8_t> points;
+  };
+
+  static bool isDatasetDataContainer(const std::filesystem::path& path) {
     if (path.extension() != std::filesystem::path(".bin")) return false;
     const auto stem = path.stem().native();
-    const auto prefix =
+    const auto camera_prefix =
         std::filesystem::path("camera-data-").native();
-    return stem.size() >= prefix.size() &&
-           std::equal(prefix.begin(), prefix.end(), stem.begin());
+    const auto lidar_prefix = std::filesystem::path("lidar-data-").native();
+    const auto starts_with = [&stem](const auto& prefix) {
+      return stem.size() >= prefix.size() &&
+             std::equal(prefix.begin(), prefix.end(), stem.begin());
+    };
+    return starts_with(camera_prefix) || starts_with(lidar_prefix);
   }
 
   static uint64_t wallClockUs() {
@@ -625,75 +731,136 @@ class DatasetRecorder {
     try {
       writerLoopImpl();
     } catch (...) {
-      markWriteFailedNoThrow("camera dataset writer failed");
+      markWriteFailedNoThrow("dataset writer failed");
     }
   }
 
   void writerLoopImpl() {
     for (;;) {
-      FrameSetJob job;
+      std::optional<FrameSetJob> frame_job;
+      std::optional<LidarJob> lidar_job;
       {
         std::unique_lock<std::mutex> lock(mutex_);
         writer_wakeup_.wait(lock, [this]() {
-          return stop_writer_ || !frame_jobs_.empty();
+          return stop_writer_ || !frame_jobs_.empty() ||
+                 !lidar_jobs_.empty();
         });
-        if (frame_jobs_.empty()) {
+        if (frame_jobs_.empty() && lidar_jobs_.empty()) {
           if (stop_writer_) return;
           continue;
         }
-        job = std::move(frame_jobs_.front());
-        frame_jobs_.pop_front();
-        queued_frame_bytes_ =
-            queued_frame_bytes_ >= job.payload_bytes
-                ? queued_frame_bytes_ - job.payload_bytes
-                : 0;
-      }
-
-      uint64_t frame_set_bytes = 0;
-      for (const auto& jpeg : job.jpeg) frame_set_bytes += jpeg.size();
-      if (!camera_chunk_file_.is_open() ||
-          (camera_chunk_size_ != 0 &&
-           camera_chunk_size_ + frame_set_bytes > kCameraChunkTargetBytes)) {
-        if (!openNextCameraChunk()) {
-          markWriteFailedNoThrow("cannot open camera data container");
-          continue;
+        const bool take_frame =
+            lidar_jobs_.empty() ||
+            (!frame_jobs_.empty() &&
+             frame_jobs_.front().timestamp_us <=
+                 lidar_jobs_.front().timestamp_us);
+        if (take_frame) {
+          frame_job.emplace(std::move(frame_jobs_.front()));
+          frame_jobs_.pop_front();
+          queued_payload_bytes_ =
+              queued_payload_bytes_ >= frame_job->payload_bytes
+                  ? queued_payload_bytes_ - frame_job->payload_bytes
+                  : 0;
+        } else {
+          lidar_job.emplace(std::move(lidar_jobs_.front()));
+          lidar_jobs_.pop_front();
+          queued_payload_bytes_ =
+              queued_payload_bytes_ >= lidar_job->payload_bytes
+                  ? queued_payload_bytes_ - lidar_job->payload_bytes
+                  : 0;
         }
       }
-
-      std::array<uint64_t, 4> offsets{};
-      bool payload_ok = true;
-      for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
-        offsets[camera] = camera_chunk_size_;
-        camera_chunk_file_.write(
-            reinterpret_cast<const char*>(job.jpeg[camera].data()),
-            static_cast<std::streamsize>(job.jpeg[camera].size()));
-        if (!camera_chunk_file_.good()) {
-          payload_ok = false;
-          break;
-        }
-        camera_chunk_size_ += job.jpeg[camera].size();
-      }
-      if (!payload_ok) {
-        markWriteFailedNoThrow("camera data container write failed");
-        continue;
-      }
-
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (write_failed_) continue;
-      for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
-        writeTumTimestamp(camera_index_files_[camera], job.timestamp_us);
-        camera_index_files_[camera]
-            << ' ' << camera_chunk_name_ << ' ' << offsets[camera] << ' '
-            << job.jpeg[camera].size() << ' '
-            << job.exposure_us[camera] << '\n';
-        if (!camera_index_files_[camera].good()) {
-          write_failed_ = true;
-          write_error_ = "camera index write failed";
-          break;
-        }
-        ++image_counts_[camera];
+      if (frame_job.has_value()) {
+        writeFrameJob(*frame_job);
+      } else if (lidar_job.has_value()) {
+        writeLidarJob(*lidar_job);
       }
     }
+  }
+
+  void writeFrameJob(const FrameSetJob& job) {
+    uint64_t frame_set_bytes = 0;
+    for (const auto& jpeg : job.jpeg) frame_set_bytes += jpeg.size();
+    if (!camera_chunk_file_.is_open() ||
+        (camera_chunk_size_ != 0 &&
+         camera_chunk_size_ + frame_set_bytes > kCameraChunkTargetBytes)) {
+      if (!openNextCameraChunk()) {
+        markWriteFailedNoThrow("cannot open camera data container");
+        return;
+      }
+    }
+
+    std::array<uint64_t, 4> offsets{};
+    bool payload_ok = true;
+    for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
+      offsets[camera] = camera_chunk_size_;
+      camera_chunk_file_.write(
+          reinterpret_cast<const char*>(job.jpeg[camera].data()),
+          static_cast<std::streamsize>(job.jpeg[camera].size()));
+      if (!camera_chunk_file_.good()) {
+        payload_ok = false;
+        break;
+      }
+      camera_chunk_size_ += job.jpeg[camera].size();
+    }
+    if (!payload_ok) {
+      markWriteFailedNoThrow("camera data container write failed");
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (write_failed_) return;
+    for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
+      writeTumTimestamp(camera_index_files_[camera], job.timestamp_us);
+      camera_index_files_[camera]
+          << ' ' << camera_chunk_name_ << ' ' << offsets[camera] << ' '
+          << job.jpeg[camera].size() << ' ' << job.exposure_us[camera]
+          << '\n';
+      if (!camera_index_files_[camera].good()) {
+        write_failed_ = true;
+        write_error_ = "camera index write failed";
+        break;
+      }
+      ++image_counts_[camera];
+    }
+  }
+
+  void writeLidarJob(const LidarJob& job) {
+    if (!lidar_chunk_file_.is_open() ||
+        (lidar_chunk_size_ != 0 &&
+         lidar_chunk_size_ + job.points.size() >
+             kCameraChunkTargetBytes)) {
+      if (!openNextLidarChunk()) {
+        markWriteFailedNoThrow("cannot open LiDAR data container");
+        return;
+      }
+    }
+    const uint64_t offset = lidar_chunk_size_;
+    lidar_chunk_file_.write(
+        reinterpret_cast<const char*>(job.points.data()),
+        static_cast<std::streamsize>(job.points.size()));
+    if (!lidar_chunk_file_.good()) {
+      markWriteFailedNoThrow("LiDAR data container write failed");
+      return;
+    }
+    lidar_chunk_size_ += job.points.size();
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (write_failed_) return;
+    writeTumTimestamp(lidar_index_file_, job.timestamp_us);
+    lidar_index_file_ << ' ' << lidar_chunk_name_ << ' ' << offset << ' '
+                      << job.points.size() << ' ' << job.point_count << ' '
+                      << static_cast<unsigned>(job.model) << ' '
+                      << static_cast<unsigned>(job.device_type) << ' '
+                      << static_cast<unsigned>(job.time_type) << ' '
+                      << job.batch_id << ' ' << job.timestamp_raw << '\n';
+    if (!lidar_index_file_.good()) {
+      write_failed_ = true;
+      write_error_ = "LiDAR index write failed";
+      return;
+    }
+    ++lidar_batch_count_;
+    lidar_point_count_ += job.point_count;
   }
 
   bool openNextCameraChunk() {
@@ -710,6 +877,22 @@ class DatasetRecorder {
                                 std::ios::trunc);
     camera_chunk_size_ = 0;
     return camera_chunk_file_.is_open();
+  }
+
+  bool openNextLidarChunk() {
+    if (lidar_chunk_file_.is_open()) {
+      lidar_chunk_file_.flush();
+      lidar_chunk_file_.close();
+    }
+    std::ostringstream name;
+    name << "lidar-data-" << std::setw(4) << std::setfill('0')
+         << lidar_chunk_index_++ << ".bin";
+    lidar_chunk_name_ = name.str();
+    lidar_chunk_file_.open(root_ / lidar_chunk_name_,
+                           std::ios::out | std::ios::binary |
+                               std::ios::trunc);
+    lidar_chunk_size_ = 0;
+    return lidar_chunk_file_.is_open();
   }
 
   void markWriteFailedNoThrow(const char* error) noexcept {
@@ -730,15 +913,20 @@ class DatasetRecorder {
       write_error_ = "cannot write dataset manifest";
       return;
     }
-    manifest << "format=prism-dataset-v3\n"
+    manifest << "format=prism-dataset-v4\n"
              << "image_storage=chunk-v1\n"
              << "camera_index=chunk-v2-with-actual-exposure\n"
+             << "lidar_storage=cartesian-mm-chunk-v1\n"
              << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
              << "start_unix_us=" << start_unix_us_ << "\n"
              << "end_unix_us=" << wallClockUs() << "\n"
              << "imu0_samples=" << imu_counts_[0] << "\n"
              << "imu1_samples=" << imu_counts_[1] << "\n"
-             << "dropped_frame_sets=" << dropped_frame_sets_ << "\n";
+             << "dropped_frame_sets=" << dropped_frame_sets_ << "\n"
+             << "lidar_batches=" << lidar_batch_count_ << "\n"
+             << "lidar_points=" << lidar_point_count_ << "\n"
+             << "dropped_lidar_batches=" << dropped_lidar_batches_ << "\n"
+             << "dropped_lidar_points=" << dropped_lidar_points_ << "\n";
     for (size_t camera = 0; camera < image_counts_.size(); ++camera) {
       manifest << "camera" << camera << "_images=" << image_counts_[camera]
                << "\n";
@@ -768,6 +956,16 @@ class DatasetRecorder {
       if (!camera_chunk_file_.good()) write_failed_ = true;
       camera_chunk_file_.close();
     }
+    if (lidar_index_file_.is_open()) {
+      lidar_index_file_.flush();
+      if (!lidar_index_file_.good()) write_failed_ = true;
+      lidar_index_file_.close();
+    }
+    if (lidar_chunk_file_.is_open()) {
+      lidar_chunk_file_.flush();
+      if (!lidar_chunk_file_.good()) write_failed_ = true;
+      lidar_chunk_file_.close();
+    }
   }
 
   static constexpr uint64_t kCameraChunkTargetBytes =
@@ -778,18 +976,28 @@ class DatasetRecorder {
   std::condition_variable writer_wakeup_;
   std::thread writer_;
   std::deque<FrameSetJob> frame_jobs_;
+  std::deque<LidarJob> lidar_jobs_;
   std::array<std::ofstream, 2> imu_files_;
   std::array<std::ofstream, 4> camera_index_files_;
   std::ofstream camera_chunk_file_;
+  std::ofstream lidar_index_file_;
+  std::ofstream lidar_chunk_file_;
   std::filesystem::path root_;
   std::string camera_chunk_name_;
   uint64_t camera_chunk_size_ = 0;
   uint32_t camera_chunk_index_ = 0;
+  std::string lidar_chunk_name_;
+  uint64_t lidar_chunk_size_ = 0;
+  uint32_t lidar_chunk_index_ = 0;
   std::array<uint64_t, 2> imu_counts_{};
   std::array<uint64_t, 4> image_counts_{};
+  uint64_t lidar_batch_count_ = 0;
+  uint64_t lidar_point_count_ = 0;
+  uint64_t dropped_lidar_batches_ = 0;
+  uint64_t dropped_lidar_points_ = 0;
   uint64_t start_unix_us_ = 0;
   uint64_t dropped_frame_sets_ = 0;
-  uint64_t queued_frame_bytes_ = 0;
+  uint64_t queued_payload_bytes_ = 0;
   std::atomic<bool> active_{false};
   bool session_open_ = false;
   bool stop_writer_ = false;
@@ -1372,6 +1580,9 @@ class MainWindow : public QMainWindow {
     auto* dataset_controls = new QHBoxLayout();
     dataset_open_button_ = new QPushButton(
         uiText("Open Dataset...", "打开数据集..."), dataset_page_);
+    dataset_export_rosbag_button_ = new QPushButton(
+        uiText("Export ROS Bag...", "导出 ROS Bag..."), dataset_page_);
+    dataset_export_rosbag_button_->setEnabled(false);
     dataset_path_label_ = new QLabel(
         uiText("No dataset loaded", "尚未加载数据集"), dataset_page_);
     dataset_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -1379,6 +1590,7 @@ class MainWindow : public QMainWindow {
         "background: #ffffff; border: 1px solid #d9e2ef; border-radius: 6px;"
         "padding: 7px 10px; color: #344054;"));
     dataset_controls->addWidget(dataset_open_button_);
+    dataset_controls->addWidget(dataset_export_rosbag_button_);
     dataset_controls->addWidget(dataset_path_label_, 1);
     dataset_layout->addLayout(dataset_controls);
 
@@ -1692,6 +1904,8 @@ class MainWindow : public QMainWindow {
             this, [this]() { stopImuRecording(); });
     connect(dataset_open_button_, &QPushButton::clicked,
             this, [this]() { openRecordedDataset(); });
+    connect(dataset_export_rosbag_button_, &QPushButton::clicked,
+            this, [this]() { exportLoadedDatasetRosbag(); });
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) { showDatasetFrame(frame); });
     connect(close_offset_button, &QPushButton::clicked,
@@ -2567,7 +2781,14 @@ class MainWindow : public QMainWindow {
         QFileInfo::exists(
             output_directory.filePath(QStringLiteral("imu1.tum"))) ||
         QFileInfo::exists(
-            output_directory.filePath(QStringLiteral("dataset.info")));
+            output_directory.filePath(QStringLiteral("lidar.tum"))) ||
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("dataset.info"))) ||
+        !output_directory.entryList(
+             {QStringLiteral("camera-data-*.bin"),
+              QStringLiteral("lidar-data-*.bin")},
+             QDir::Files)
+             .isEmpty();
     for (int camera = 0; camera < 4; ++camera) {
       existing_dataset =
           existing_dataset ||
@@ -2582,9 +2803,9 @@ class MainWindow : public QMainWindow {
       const auto answer = QMessageBox::question(
           this, uiText("Overwrite dataset?", "覆盖数据集？"),
           uiText("This directory already contains a Prism dataset. Replace "
-                 "imu0.tum, imu1.tum, cam0...cam3 images and indexes?\n%1",
+                 "IMU, camera, and LiDAR data and indexes?\n%1",
                  "该目录已经包含 Prism 数据集。是否替换 imu0.tum、imu1.tum、"
-                 "cam0...cam3 图像及索引？\n%1")
+                 "cam0...cam3 图像、LiDAR 数据及索引？\n%1")
               .arg(selected_directory),
           QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
       if (answer != QMessageBox::Yes) return;
@@ -2602,7 +2823,8 @@ class MainWindow : public QMainWindow {
     }
     recorded_dataset_root_ = selected_directory;
     imu_record_status_label_->setText(
-        uiText("Recording IMU + 4 cameras", "正在录制 IMU + 四路图像"));
+        uiText("Recording IMU + 4 cameras + enabled LiDAR",
+               "正在录制 IMU + 四路图像 + 已启用的 LiDAR"));
     imu_record_status_label_->setToolTip(selected_directory);
     imu_record_status_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
@@ -2618,19 +2840,24 @@ class MainWindow : public QMainWindow {
 
     if (summary.success) {
       imu_record_status_label_->setText(
-          uiText("Saved: IMU %1/%2, images %3x4, dropped sets %4",
-                 "已保存：IMU %1/%2，图像 %3×4，丢弃帧集 %4")
+          uiText("Saved: IMU %1/%2, images %3x4, LiDAR %4 batches, "
+                 "dropped sets %5",
+                 "已保存：IMU %1/%2，图像 %3×4，LiDAR %4 批，"
+                 "丢弃帧集 %5")
               .arg(summary.sample_count[0])
               .arg(summary.sample_count[1])
               .arg(*std::min_element(summary.image_count.begin(),
                                      summary.image_count.end()))
+              .arg(summary.lidar_batch_count)
               .arg(summary.dropped_frame_sets));
       imu_record_status_label_->setStyleSheet(QStringLiteral(
           "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
           "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
       appendLog(QStringLiteral(
                     "Dataset saved: root=%1 imu0=%2 imu1=%3 "
-                    "camera_images=%4/%5/%6/%7 dropped_sets=%8")
+                    "camera_images=%4/%5/%6/%7 dropped_sets=%8 "
+                    "lidar_batches=%9 lidar_points=%10 "
+                    "dropped_lidar_batches=%11 dropped_lidar_points=%12")
                     .arg(recorded_dataset_root_)
                     .arg(summary.sample_count[0])
                     .arg(summary.sample_count[1])
@@ -2638,7 +2865,11 @@ class MainWindow : public QMainWindow {
                     .arg(summary.image_count[1])
                     .arg(summary.image_count[2])
                     .arg(summary.image_count[3])
-                    .arg(summary.dropped_frame_sets));
+                    .arg(summary.dropped_frame_sets)
+                    .arg(summary.lidar_batch_count)
+                    .arg(summary.lidar_point_count)
+                    .arg(summary.dropped_lidar_batches)
+                    .arg(summary.dropped_lidar_points));
       loadRecordedDataset(recorded_dataset_root_, false);
     } else {
       imu_record_status_label_->setText(
@@ -2998,6 +3229,11 @@ class MainWindow : public QMainWindow {
     if (imu_record_stop_button_ != nullptr) {
       imu_record_stop_button_->setEnabled(imu_recording);
     }
+    if (dataset_export_rosbag_button_ != nullptr) {
+      dataset_export_rosbag_button_->setEnabled(
+          !loaded_dataset_root_.isEmpty() && !imu_recording &&
+          !worker_running_ && !rosbag_export_running_);
+    }
     updateImuOffsetControls();
   }
 
@@ -3284,6 +3520,115 @@ class MainWindow : public QMainWindow {
     if (!directory.isEmpty()) loadRecordedDataset(directory, true);
   }
 
+  void exportLoadedDatasetRosbag() {
+    if (loaded_dataset_root_.isEmpty() || worker_running_ ||
+        rosbag_export_running_ ||
+        dataset_recorder_.isActive()) {
+      return;
+    }
+    const QFileInfo dataset_info(loaded_dataset_root_);
+    const QString suggested =
+        dataset_info.dir().filePath(dataset_info.fileName() +
+                                    QStringLiteral(".bag"));
+    QString output = QFileDialog::getSaveFileName(
+        this, uiText("Export Prism dataset to ROS1 bag",
+                     "将 Prism 数据集导出为 ROS1 Bag"),
+        suggested, uiText("ROS1 bag (*.bag)", "ROS1 Bag (*.bag)"), nullptr,
+        QFileDialog::DontUseNativeDialog);
+    if (output.isEmpty()) return;
+    if (QFileInfo(output).suffix().isEmpty()) output += QStringLiteral(".bag");
+    if (worker_running_) {
+      appendLog(QStringLiteral(
+          "ROS1 bag export cancelled because live capture started"));
+      refreshControls();
+      return;
+    }
+
+    const bool output_exists = QFileInfo::exists(output);
+    if (output_exists) {
+      const auto answer = QMessageBox::question(
+          this, uiText("Replace ROS bag?", "替换 ROS Bag？"),
+          uiText("The output already exists. Replace it after conversion "
+                 "finishes successfully?\n%1",
+                 "输出文件已经存在。转换成功后是否替换？\n%1")
+              .arg(output),
+          QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+      if (answer != QMessageBox::Yes) return;
+    }
+
+    QProgressDialog progress(
+        uiText("Preparing ROS1 bag...", "正在准备 ROS1 Bag……"),
+        uiText("Cancel", "取消"), 0, 1000, this);
+    progress.setWindowTitle(
+        uiText("Export ROS Bag", "导出 ROS Bag"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.show();
+
+    rosbag_export_running_ = true;
+    refreshControls();
+    appendLog(QStringLiteral("ROS1 bag export started: dataset=%1 output=%2")
+                  .arg(loaded_dataset_root_, output));
+    const auto result = prism_viewer::dataset::exportDatasetToRosbag(
+        toFilesystemPath(loaded_dataset_root_), toFilesystemPath(output),
+        output_exists,
+        [&progress](const prism_viewer::dataset::RosbagExportProgress& state) {
+          const uint64_t scaled =
+              state.total_records == 0
+                  ? 0
+                  : std::min<uint64_t>(
+                        1000u, state.completed_records * 1000u /
+                                   state.total_records);
+          progress.setValue(static_cast<int>(scaled));
+          progress.setLabelText(
+              toQString(state.stage) + QStringLiteral("\n%1 / %2")
+                                           .arg(state.completed_records)
+                                           .arg(state.total_records));
+          QApplication::processEvents();
+        },
+        [&progress]() {
+          QApplication::processEvents();
+          return progress.wasCanceled();
+        });
+    rosbag_export_running_ = false;
+    progress.close();
+    refreshControls();
+
+    if (result.success) {
+      appendLog(
+          QStringLiteral("ROS1 bag export complete: %1 camera=%2 imu=%3 "
+                         "lidar_batches=%4 lidar_points=%5 bytes=%6")
+              .arg(output)
+              .arg(result.camera_messages)
+              .arg(result.imu_messages)
+              .arg(result.lidar_messages)
+              .arg(result.lidar_points)
+              .arg(result.output_bytes));
+      QMessageBox::information(
+          this, uiText("ROS bag exported", "ROS Bag 已导出"),
+          uiText("Saved ROS1 bag:\n%1\n\nCamera messages: %2\n"
+                 "IMU messages: %3\nLiDAR clouds: %4 (%5 points)",
+                 "已保存 ROS1 Bag：\n%1\n\n相机消息：%2\nIMU 消息：%3\n"
+                 "LiDAR 点云：%4 批（%5 点）")
+              .arg(output)
+              .arg(result.camera_messages)
+              .arg(result.imu_messages)
+              .arg(result.lidar_messages)
+              .arg(result.lidar_points));
+      return;
+    }
+    if (result.cancelled) {
+      appendLog(QStringLiteral("ROS1 bag export cancelled: %1").arg(output));
+      return;
+    }
+    const QString error = toQString(result.error);
+    appendLog(QStringLiteral("ROS1 bag export failed: %1").arg(error));
+    QMessageBox::critical(
+        this, uiText("ROS bag export failed", "ROS Bag 导出失败"), error);
+  }
+
   void loadRecordedDataset(const QString& directory, bool show_errors) {
     const auto root = toFilesystemPath(directory);
     std::array<std::vector<DatasetImageEntry>, 4> camera_entries;
@@ -3322,14 +3667,16 @@ class MainWindow : public QMainWindow {
 
     const TumFileSummary imu0 = summarizeTumFile(root / "imu0.tum");
     const TumFileSummary imu1 = summarizeTumFile(root / "imu1.tum");
+    const TumFileSummary lidar = summarizeTumFile(root / "lidar.tum");
     dataset_summary_label_->setText(
         uiText("Loaded %1 complete four-camera frame sets | "
-               "IMU0 %2 samples | IMU1 %3 samples",
+               "IMU0 %2 samples | IMU1 %3 samples | LiDAR %4 batches",
                "已加载 %1 个完整四路帧集 | IMU0 %2 个样本 | "
-               "IMU1 %3 个样本")
+               "IMU1 %3 个样本 | LiDAR %4 批")
             .arg(dataset_frame_count_)
             .arg(imu0.rows)
-            .arg(imu1.rows));
+            .arg(imu1.rows)
+            .arg(lidar.rows));
     dataset_summary_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
         "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
@@ -3346,10 +3693,14 @@ class MainWindow : public QMainWindow {
                    .arg(imu0.rows)
                    .arg(imu0.first_timestamp_us)
                    .arg(imu0.last_timestamp_us);
-    details += QStringLiteral("imu1: samples=%1 first=%2 last=%3")
+    details += QStringLiteral("imu1: samples=%1 first=%2 last=%3\n")
                    .arg(imu1.rows)
                    .arg(imu1.first_timestamp_us)
                    .arg(imu1.last_timestamp_us);
+    details += QStringLiteral("lidar: batches=%1 first=%2 last=%3")
+                   .arg(lidar.rows)
+                   .arg(lidar.first_timestamp_us)
+                   .arg(lidar.last_timestamp_us);
     dataset_details_->setPlainText(details);
 
     {
@@ -4243,6 +4594,7 @@ class MainWindow : public QMainWindow {
               throw std::runtime_error(
                   "received LiDAR points for a model other than the explicit selection");
             }
+            dataset_recorder_.appendLidar(batch);
             received_lidar_points += batch.points.size();
             const auto now = std::chrono::steady_clock::now();
             if (!lidar_ui_enabled_.load(std::memory_order_acquire)) {
@@ -4680,6 +5032,7 @@ class MainWindow : public QMainWindow {
   std::array<QImage, 4> latest_camera_images_{};
   uint32_t latest_camera_frame_id_ = 0;
   QPushButton* dataset_open_button_ = nullptr;
+  QPushButton* dataset_export_rosbag_button_ = nullptr;
   QLabel* dataset_path_label_ = nullptr;
   QLabel* dataset_summary_label_ = nullptr;
   QLabel* dataset_frame_label_ = nullptr;
@@ -4692,6 +5045,7 @@ class MainWindow : public QMainWindow {
   size_t dataset_frame_count_ = 0;
   int dataset_current_frame_ = 0;
   QString loaded_dataset_root_;
+  bool rosbag_export_running_ = false;
   QPlainTextEdit* meta_text_ = nullptr;
   QPlainTextEdit* log_text_ = nullptr;
   QDialog* log_dialog_ = nullptr;
@@ -4815,6 +5169,17 @@ int runViewerApplication(int argc, char** argv) {
     metadata.exposure_us = {200u, 250u, 500u, 1000u};
     recorder.appendFrameSet(
         7, 1780000000000500ULL, metadata, jpeg);
+    prism::LidarPointBatch lidar;
+    lidar.model = prism::LidarModel::Mid360S;
+    lidar.device_type = 35u;
+    lidar.time_type = 1u;
+    lidar.batch_id = 9u;
+    lidar.timestamp_raw = 1780000000000700000ULL;
+    lidar.points.push_back(
+        prism::LidarPoint{1000, -2000, 3000, 77u, 4u});
+    lidar.points.push_back(
+        prism::LidarPoint{-4000, 5000, 6000, 88u, 5u});
+    recorder.appendLidar(lidar);
     const DatasetRecordingSummary summary = recorder.stop();
     std::array<std::vector<DatasetImageEntry>, 4> loaded_images;
     bool browser_load_ok = true;
@@ -4836,11 +5201,14 @@ int runViewerApplication(int argc, char** argv) {
         summarizeTumFile(test_root / "imu0.tum");
     const TumFileSummary loaded_imu1 =
         summarizeTumFile(test_root / "imu1.tum");
+    const TumFileSummary loaded_lidar =
+        summarizeTumFile(test_root / "lidar.tum");
     browser_load_ok = browser_load_ok && loaded_imu0.rows == 1 &&
-                      loaded_imu1.rows == 1;
+                      loaded_imu1.rows == 1 && loaded_lidar.rows == 1;
     const bool success =
         summary.success && summary.sample_count[0] == 1 &&
         summary.sample_count[1] == 1 &&
+        summary.lidar_batch_count == 1 && summary.lidar_point_count == 2 &&
         std::all_of(summary.image_count.begin(), summary.image_count.end(),
                     [](uint64_t count) { return count == 1; }) &&
         browser_load_ok;
@@ -4849,7 +5217,9 @@ int runViewerApplication(int argc, char** argv) {
               << summary.sample_count[1] << " images="
               << summary.image_count[0] << "/" << summary.image_count[1]
               << "/" << summary.image_count[2] << "/"
-              << summary.image_count[3]
+              << summary.image_count[3] << " lidar="
+              << summary.lidar_batch_count << "/"
+              << summary.lidar_point_count
               << " browser_load=" << (browser_load_ok ? "PASS" : "FAIL")
               << " error=" << summary.error << "\n";
     return success ? 0 : 11;

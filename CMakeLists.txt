@@ -26,6 +26,7 @@ add_executable(prism-viewer
   src/communication/device_session.cpp
   src/control/operation_controller.cpp
   src/dataset/dataset_browser.cpp
+  src/dataset/rosbag_exporter.cpp
   src/dual_imu_offset_estimator.cpp
   src/main.cpp
   src/transfer/camera_frame_assembler.cpp
@@ -126,5 +127,20 @@ if(BUILD_TESTING)
         "PATH=$<TARGET_FILE_DIR:${QT_PACKAGE}::Core>\;$ENV{PATH}"
     )
   endif()
+
+  add_executable(rosbag-exporter-test
+    src/dataset/rosbag_exporter.cpp
+    tests/rosbag_exporter_test.cpp
+  )
+  target_include_directories(rosbag-exporter-test PRIVATE src)
+  target_compile_features(rosbag-exporter-test PRIVATE cxx_std_17)
+  if(MSVC)
+    target_compile_options(
+      rosbag-exporter-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(
+      rosbag-exporter-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME rosbag-exporter COMMAND rosbag-exporter-test)
 
 endif()
