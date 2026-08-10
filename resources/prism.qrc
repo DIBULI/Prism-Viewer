@@ -1,5 +1,5 @@
 <RCC>
   <qresource prefix="/branding">
-    <file alias="prism-mark.png">../../branding/prism-mark-256.png</file>
+    <file alias="prism-mark.png">../branding/prism-mark-256.png</file>
   </qresource>
 </RCC>

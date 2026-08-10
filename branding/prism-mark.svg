@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img"
+     aria-labelledby="title desc">
+  <title id="title">Prism product mark</title>
+  <desc id="desc">A beam enters a triangular prism and exits as four colored sensor rays.</desc>
+
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#0B1830"/>
+
+  <path d="M30 128H82" fill="none" stroke="#35D0C5" stroke-width="14"
+        stroke-linecap="round"/>
+  <circle cx="30" cy="128" r="7" fill="#35D0C5"/>
+
+  <path d="M151 112L224 74" fill="none" stroke="#2DD4BF" stroke-width="12"
+        stroke-linecap="round"/>
+  <path d="M157 122L229 108" fill="none" stroke="#38BDF8" stroke-width="12"
+        stroke-linecap="round"/>
+  <path d="M157 134L229 148" fill="none" stroke="#6366F1" stroke-width="12"
+        stroke-linecap="round"/>
+  <path d="M151 144L224 182" fill="none" stroke="#A855F7" stroke-width="12"
+        stroke-linecap="round"/>
+
+  <path d="M87 57L165 128L87 199Z" fill="#F8FAFC"/>
+  <path d="M87 57L126 128L87 199Z" fill="#DFF8F5"/>
+  <path d="M87 57L165 128H126Z" fill="#CBE7FF"/>
+  <path d="M126 128H165L87 199Z" fill="#D8D8FF"/>
+  <path d="M87 57L165 128L87 199Z" fill="none" stroke="#FFFFFF"
+        stroke-width="6" stroke-linejoin="round"/>
+</svg>

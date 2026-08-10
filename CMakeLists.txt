@@ -2,14 +2,19 @@ cmake_minimum_required(VERSION 3.20)
 
 project(prism_viewer VERSION 0.9.0 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_AUTOMOC OFF)
 set(CMAKE_AUTORCC OFF)
 set(CMAKE_AUTOUIC OFF)
 
-if(NOT TARGET prism_usb_sdk)
-  set(PRISM_USB_SDK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../usb-sdk"
-                   "${CMAKE_CURRENT_BINARY_DIR}/usb-sdk")
+set(PRISM_USB_SDK_ROOT "" CACHE PATH
+    "Installed Prism Host SDK prefix containing lib/cmake/PrismUsbSdk")
+if(PRISM_USB_SDK_ROOT)
+  list(PREPEND CMAKE_PREFIX_PATH "${PRISM_USB_SDK_ROOT}")
+endif()
+if(NOT TARGET Prism::UsbSdk)
+  find_package(PrismUsbSdk 0.9.0 EXACT CONFIG REQUIRED)
 endif()
 
 find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql)
@@ -57,11 +62,32 @@ target_compile_features(prism-viewer PRIVATE cxx_std_17)
 target_include_directories(prism-viewer PRIVATE src)
 
 target_link_libraries(prism-viewer PRIVATE
-  prism_usb_sdk
+  Prism::UsbSdk
   ${QT_PACKAGE}::Widgets
   ${QT_PACKAGE}::Charts
   ${QT_PACKAGE}::Sql
 )
+
+# Keep the SDK runtime beside development/test executables. Prism-Viewer only
+# consumes the installed public SDK target; it never compiles SDK sources.
+function(prism_copy_sdk_runtime target)
+  if(NOT APPLE)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+              "$<TARGET_FILE:Prism::UsbSdk>"
+              "$<TARGET_FILE_DIR:${target}>"
+      VERBATIM
+    )
+  endif()
+endfunction()
+prism_copy_sdk_runtime(prism-viewer)
+
+if(UNIX AND NOT APPLE)
+  set_target_properties(prism-viewer PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+  )
+endif()
 
 if(MSVC)
   target_compile_options(prism-viewer PRIVATE /W4 /permissive- /utf-8)
@@ -71,30 +97,36 @@ endif()
 
 if(WIN32)
   target_sources(prism-viewer PRIVATE
-    "${CMAKE_CURRENT_LIST_DIR}/../branding/prism-viewer.rc"
+    "${CMAKE_CURRENT_LIST_DIR}/branding/prism-viewer.rc"
   )
   set_property(SOURCE
-    "${CMAKE_CURRENT_LIST_DIR}/../branding/prism-viewer.rc"
+    "${CMAKE_CURRENT_LIST_DIR}/branding/prism-viewer.rc"
     APPEND PROPERTY OBJECT_DEPENDS
-    "${CMAKE_CURRENT_LIST_DIR}/../branding/prism-viewer.ico"
+    "${CMAKE_CURRENT_LIST_DIR}/branding/prism-viewer.ico"
   )
   set_target_properties(prism-viewer PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
-include(GNUInstallDirs)
 install(TARGETS prism-viewer
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   BUNDLE DESTINATION .
 )
+if(WIN32)
+  install(FILES "$<TARGET_FILE:Prism::UsbSdk>"
+    DESTINATION ${CMAKE_INSTALL_BINDIR})
+elseif(UNIX AND NOT APPLE)
+  install(FILES "$<TARGET_FILE:Prism::UsbSdk>"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
 if(UNIX AND NOT APPLE)
   install(FILES packaging/prism-viewer.desktop
     DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
   )
-  install(FILES ../branding/prism-mark-256.png
+  install(FILES branding/prism-mark-256.png
     DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps
     RENAME prism-viewer.png
   )
-  install(FILES ../branding/prism-mark.svg
+  install(FILES branding/prism-mark.svg
     DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
     RENAME prism-viewer.svg
   )
@@ -123,7 +155,8 @@ if(BUILD_TESTING)
   )
   target_include_directories(camera-frame-assembler-test PRIVATE src)
   target_compile_features(camera-frame-assembler-test PRIVATE cxx_std_17)
-  target_link_libraries(camera-frame-assembler-test PRIVATE prism_usb_sdk)
+  target_link_libraries(camera-frame-assembler-test PRIVATE Prism::UsbSdk)
+  prism_copy_sdk_runtime(camera-frame-assembler-test)
   add_test(NAME camera-frame-assembler COMMAND camera-frame-assembler-test)
 
   add_executable(preview-image-decoder-test
@@ -165,9 +198,10 @@ if(BUILD_TESTING)
   target_include_directories(camera-encoding-panel-test PRIVATE src)
   target_compile_features(camera-encoding-panel-test PRIVATE cxx_std_17)
   target_link_libraries(camera-encoding-panel-test PRIVATE
-    prism_usb_sdk
+    Prism::UsbSdk
     ${QT_PACKAGE}::Widgets
   )
+  prism_copy_sdk_runtime(camera-encoding-panel-test)
   add_test(NAME camera-encoding-panel COMMAND camera-encoding-panel-test)
   if(UNIX)
     set_tests_properties(camera-encoding-panel PROPERTIES
