@@ -4,7 +4,6 @@
 #include "control/operation_controller.hpp"
 #include "dataset/dataset_browser.hpp"
 #include "dataset/rosbag_exporter.hpp"
-#include "dual_imu_offset_estimator.hpp"
 #include "imu_timestamp_policy.hpp"
 #include "transfer/camera_frame_assembler.hpp"
 #include "ui/camera_encoding_panel.hpp"
@@ -1914,11 +1913,6 @@ class MainWindow : public QMainWindow {
     imu0_selector_->setChecked(true);
     imu_plot_controls->addWidget(imu0_selector_);
     imu_plot_controls->addWidget(imu1_selector_);
-    imu_offset_button_ = new QPushButton(
-        uiText("IMU Offset...", "IMU 时间偏移..."), imu_group);
-    imu_offset_button_->setMinimumWidth(140);
-    imu_offset_button_->setEnabled(false);
-    imu_plot_controls->addWidget(imu_offset_button_);
     imu_plot_controls->addStretch(1);
     imu_record_status_label_ = new QLabel(
         uiText("Not recording", "未录制"), imu_group);
@@ -1937,63 +1931,6 @@ class MainWindow : public QMainWindow {
     imu_plot_ = new ImuPlotWidget(imu_group);
     imu_layout->addWidget(imu_plot_, 1);
     imu_page_layout->addWidget(imu_group, 4);
-
-    imu_offset_dialog_ = new QDialog(this);
-    imu_offset_dialog_->setWindowTitle(
-        uiText("Dual IMU Time Offset Measurement", "双 IMU 时间偏移测量"));
-    imu_offset_dialog_->setMinimumSize(640, 320);
-    imu_offset_dialog_->resize(780, 420);
-    auto* offset_dialog_layout = new QVBoxLayout(imu_offset_dialog_);
-    offset_dialog_layout->setContentsMargins(18, 18, 18, 18);
-    offset_dialog_layout->setSpacing(12);
-    auto* offset_title = new QLabel(
-        uiText("Dual IMU Time Offset Measurement", "双 IMU 时间偏移测量"),
-        imu_offset_dialog_);
-    offset_title->setStyleSheet(QStringLiteral(
-        "font-size: 16pt; font-weight: 700; color: #101828;"));
-    offset_dialog_layout->addWidget(offset_title);
-    auto* offset_help = new QLabel(
-        uiText(
-            "After both IMUs are detected, collect 10 seconds of gyroscope data. "
-            "Rotate the device irregularly around multiple axes. The viewer jointly "
-            "estimates the fixed IMU1-to-IMU0 mounting rotation and time offset.",
-            "检测到两个 IMU 后采集 10 秒陀螺仪数据。采集期间请不规则地转动设备，"
-            "并尽量覆盖多个旋转轴；Viewer 将同时估算 IMU1 到 IMU0 的固定装配方向和时间偏移。"),
-        imu_offset_dialog_);
-    offset_help->setWordWrap(true);
-    offset_help->setStyleSheet(QStringLiteral("color: #475467; padding: 2px 0;"));
-    offset_dialog_layout->addWidget(offset_help);
-    imu_offset_detection_label_ = new QLabel(
-        uiText("IMU detection: waiting for IMU0 and IMU1",
-               "IMU 检测：等待 IMU0 和 IMU1"),
-        imu_offset_dialog_);
-    imu_offset_detection_label_->setStyleSheet(QStringLiteral(
-        "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
-        "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
-    offset_dialog_layout->addWidget(imu_offset_detection_label_);
-    imu_offset_label_ = new QLabel(
-        uiText("Ready after both IMUs are detected", "检测到两个 IMU 后即可开始"),
-        imu_offset_dialog_);
-    imu_offset_label_->setWordWrap(true);
-    imu_offset_label_->setMinimumHeight(72);
-    imu_offset_label_->setStyleSheet(QStringLiteral(
-        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
-        "border-radius: 6px; padding: 10px 12px; font-weight: 600;"));
-    imu_offset_label_->setToolTip(uiText(
-        "Positive t(IMU1)-t(IMU0) means the reported offset must be subtracted "
-        "from IMU1 timestamps.",
-        "正的 t(IMU1)-t(IMU0) 表示应从 IMU1 时间戳中减去报告的偏移。"));
-    offset_dialog_layout->addWidget(imu_offset_label_, 1);
-    auto* offset_actions = new QHBoxLayout();
-    imu_offset_start_button_ = new QPushButton(
-        uiText("Start 10-second Measurement", "开始 10 秒测量"), imu_offset_dialog_);
-    imu_offset_start_button_->setEnabled(false);
-    auto* close_offset_button = new QPushButton(
-        uiText("Close", "关闭"), imu_offset_dialog_);
-    offset_actions->addWidget(imu_offset_start_button_);
-    offset_actions->addStretch(1);
-    offset_actions->addWidget(close_offset_button);
-    offset_dialog_layout->addLayout(offset_actions);
 
     log_dialog_ = new QDialog(this);
     log_dialog_->setWindowTitle(uiText("Prism Viewer Log", "Prism Viewer 日志"));
@@ -2104,22 +2041,12 @@ class MainWindow : public QMainWindow {
             this, [this](int sensor, bool checked) {
               if (checked && imu_plot_ != nullptr) imu_plot_->setSensor(sensor);
             });
-    connect(imu_offset_button_, &QPushButton::clicked,
-            this, [this]() {
-              imu_offset_dialog_->show();
-              imu_offset_dialog_->raise();
-              imu_offset_dialog_->activateWindow();
-            });
-    connect(imu_offset_start_button_, &QPushButton::clicked,
-            this, [this]() { startImuOffsetMeasurement(); });
     connect(imu_record_stop_button_, &QPushButton::clicked,
             this, [this]() { stopImuRecording(); });
     connect(dataset_open_button_, &QPushButton::clicked,
             this, [this]() { openRecordedDataset(); });
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) { showDatasetFrame(frame); });
-    connect(close_offset_button, &QPushButton::clicked,
-            imu_offset_dialog_, &QDialog::hide);
     connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
       QWidget* page = tabs_->widget(index);
       if (!client_.isOpen() &&
@@ -2710,8 +2637,6 @@ class MainWindow : public QMainWindow {
       client_.closeDevice();
       appendLog(QStringLiteral("USB device closed"));
     }
-    imu_detected_.fill(false);
-    imu_offset_measurement_active_ = false;
     latest_device_info_valid_ = false;
     latest_device_versions_valid_ = false;
     latest_rk_heartbeat_time_us_ = 0;
@@ -2954,7 +2879,6 @@ class MainWindow : public QMainWindow {
 
   void stopCapture() {
     stop_requested_ = true;
-    imu_offset_measure_request_ = false;
     appendLog(QStringLiteral("Stopping streams"));
     /*
      * Let the USB worker begin quiescing camera and IMU immediately. Dataset
@@ -3174,60 +3098,6 @@ class MainWindow : public QMainWindow {
     refreshControls();
   }
 
-  bool bothImusDetected() const {
-    return imu_detected_[0] && imu_detected_[1];
-  }
-
-  void updateImuOffsetControls() {
-    const bool running = worker_running_;
-    const bool both_detected = bothImusDetected();
-    const bool can_measure = running && both_detected;
-    imu_offset_button_->setEnabled(can_measure);
-    imu_offset_start_button_->setEnabled(
-        can_measure && !imu_offset_measurement_active_);
-
-    QStringList detected;
-    if (imu_detected_[0]) detected.push_back(QStringLiteral("IMU0"));
-    if (imu_detected_[1]) detected.push_back(QStringLiteral("IMU1"));
-    if (both_detected) {
-      imu_offset_detection_label_->setText(
-          uiText("IMU detection: IMU0 and IMU1 detected",
-                 "IMU 检测：已检测到 IMU0 和 IMU1"));
-      imu_offset_detection_label_->setStyleSheet(QStringLiteral(
-          "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
-          "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
-    } else {
-      const QString suffix = detected.empty()
-          ? uiText("waiting for IMU0 and IMU1", "等待 IMU0 和 IMU1")
-          : uiText("%1 detected; waiting for the other IMU",
-                   "已检测到 %1，等待另一个 IMU")
-                .arg(detected.join(QStringLiteral(" + ")));
-      imu_offset_detection_label_->setText(
-          uiText("IMU detection: %1", "IMU 检测：%1").arg(suffix));
-      imu_offset_detection_label_->setStyleSheet(QStringLiteral(
-          "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
-          "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
-    }
-  }
-
-  void startImuOffsetMeasurement() {
-    if (!worker_running_ || !bothImusDetected() ||
-        imu_offset_measurement_active_) {
-      return;
-    }
-    imu_offset_measurement_active_ = true;
-    imu_offset_measure_request_ = true;
-    updateImuOffsetControls();
-    imu_offset_label_->setText(
-        uiText("IMU time offset: preparing 10-second collection",
-               "IMU 时间偏移：准备进行 10 秒采集"));
-    imu_offset_label_->setStyleSheet(QStringLiteral(
-        "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
-        "border-radius: 5px; padding: 6px 9px; font-weight: 600;"));
-    appendLog(QStringLiteral(
-        "Dual IMU time-offset collection requested; move/rotate the device"));
-  }
-
   void startSystemUpgrade() {
     if (worker_running_ || wifi_operation_running_ ||
         camera_exposure_operation_running_ ||
@@ -3282,11 +3152,8 @@ class MainWindow : public QMainWindow {
     worker_running_ = true;
     upgrade_running_ = true;
     stop_requested_ = false;
-    imu_detected_.fill(false);
-    imu_offset_measurement_active_ = false;
     setRunningUi(true);
     stop_button_->setEnabled(false);
-    updateImuOffsetControls();
     updateStatus(uiText("Validating Prism system update package",
                         "正在验证 Prism 系统升级包"));
     appendLog(
@@ -3355,7 +3222,6 @@ class MainWindow : public QMainWindow {
       upgrade_running_ = false;
       worker_running_ = false;
       post([this]() {
-        imu_offset_measurement_active_ = false;
         refreshControls();
       });
     });
@@ -3383,9 +3249,6 @@ class MainWindow : public QMainWindow {
     imu_fsync_events_.fill(0);
     imu_timestamp_alarm_.fill(false);
     imu_timestamp_alarm_detail_.fill(QString());
-    imu_detected_.fill(false);
-    imu_offset_measure_request_ = false;
-    imu_offset_measurement_active_ = false;
     latest_device_info_valid_ = false;
     latest_rk_heartbeat_time_us_ = 0;
     if (imu_alarm_label_ != nullptr) {
@@ -3411,13 +3274,6 @@ class MainWindow : public QMainWindow {
           "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
       host_time_sync_label_->setToolTip(QString());
-    }
-    if (imu_offset_label_ != nullptr) {
-      imu_offset_label_->setText(
-          uiText("Ready after both IMUs are detected", "检测到两个 IMU 后即可开始"));
-      imu_offset_label_->setStyleSheet(QStringLiteral(
-          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
-          "border-radius: 5px; padding: 6px 9px; font-weight: 600;"));
     }
     if (imu_plot_ != nullptr) imu_plot_->clear();
     if (lidar_point_cloud_widget_ != nullptr) {
@@ -3445,7 +3301,6 @@ class MainWindow : public QMainWindow {
     }
     meta_text_->clear();
     log_text_->clear();
-    updateImuOffsetControls();
   }
 
   void refreshControls() {
@@ -3542,13 +3397,10 @@ class MainWindow : public QMainWindow {
           !loaded_dataset_root_.isEmpty() && !imu_recording &&
           !worker_running_ && !rosbag_export_running_);
     }
-    updateImuOffsetControls();
   }
 
   void setRunningUi(bool running) {
     refreshControls();
-    if (!running) imu_offset_measurement_active_ = false;
-    updateImuOffsetControls();
     status_label_->setText(
         running ? uiText("Running", "正在运行")
                 : (client_.isOpen() ? uiText("Device open", "设备已打开")
@@ -3905,13 +3757,6 @@ class MainWindow : public QMainWindow {
       latest_device_info_valid_ = true;
       if (device_info_panel_ != nullptr) {
         device_info_panel_->setInfo(info);
-      }
-      const std::array<bool, 2> detected = {
-          (info.imu_present_mask & 0x01u) != 0u,
-          (info.imu_present_mask & 0x02u) != 0u};
-      if (detected != imu_detected_) {
-        imu_detected_ = detected;
-        updateImuOffsetControls();
       }
       renderDeviceInfoStatus();
     });
@@ -4613,9 +4458,6 @@ class MainWindow : public QMainWindow {
           snapshot.last_fsync_sample_us;
       const bool last_fsync_delay_valid =
           snapshot.last_fsync_delay_valid;
-      const bool newly_detected = !imu_detected_[sensor];
-      imu_detected_[sensor] = true;
-      if (newly_detected) updateImuOffsetControls();
       imu_samples_[sensor] = received_count;
       imu_table_->item(sensor, 1)->setText(QString::number(imu_samples_[sensor]));
       imu_table_->item(sensor, 2)->setText(QString::number(sample_rate_hz, 'f', 1));
@@ -4752,96 +4594,6 @@ class MainWindow : public QMainWindow {
           QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
           (active ? QStringLiteral("ALARM: IMU%1 timestamp interval %2").arg(sensor).arg(detail)
                   : QStringLiteral("RECOVERED: IMU%1 timestamp interval stable").arg(sensor)));
-    });
-  }
-
-  void updateImuOffsetEstimate(
-      const prism_viewer::ImuOffsetEstimate& result) {
-    if (!result.updated) return;
-    post([this, result]() {
-      QString text;
-      QString style = QStringLiteral(
-          "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
-          "border-radius: 5px; padding: 6px 9px; font-weight: 600;");
-      switch (result.state) {
-        case prism_viewer::ImuOffsetState::Idle:
-          text = uiText("IMU time offset: idle", "IMU 时间偏移：空闲");
-          style = QStringLiteral(
-              "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
-              "border-radius: 5px; padding: 6px 9px; font-weight: 600;");
-          break;
-        case prism_viewer::ImuOffsetState::WaitingForBothImus:
-          text = uiText("IMU time offset: waiting for both IMU streams",
-                        "IMU 时间偏移：等待两个 IMU 数据流");
-          break;
-        case prism_viewer::ImuOffsetState::WaitingForTimeSync:
-          text = uiText("IMU time offset: waiting for synchronized timestamps",
-                        "IMU 时间偏移：等待时间戳同步");
-          break;
-        case prism_viewer::ImuOffsetState::Collecting:
-          text = uiText("IMU time offset: collecting %1% (%2 / 10.0 s) | "
-                        "samples=%3/%4 | rotate the device",
-                        "IMU 时间偏移：采集中 %1%（%2 / 10.0 秒）| "
-                        "样本=%3/%4 | 请转动设备")
-                     .arg(result.progress * 100.0, 0, 'f', 0)
-                     .arg(result.duration_s, 0, 'f', 1)
-                     .arg(result.sample_count[0])
-                     .arg(result.sample_count[1]);
-          style = QStringLiteral(
-              "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
-              "border-radius: 5px; padding: 6px 9px; font-weight: 600;");
-          break;
-        case prism_viewer::ImuOffsetState::Complete:
-          text = uiText("IMU time offset result: t(IMU1)-t(IMU0)=%1 us | "
-                        "apply %2 us to IMU1 | r=%3 | peak width=%4 us | %5 s | "
-                        "mount IMU1->IMU0 RPY=(%6, %7, %8) deg",
-                        "IMU 时间偏移结果：t(IMU1)-t(IMU0)=%1 us | "
-                        "IMU1 应修正 %2 us | r=%3 | 峰宽=%4 us | %5 秒 | "
-                        "装配 IMU1->IMU0 RPY=(%6, %7, %8) 度")
-                     .arg(result.offset_us, 0, 'f', 1)
-                     .arg(-result.offset_us, 0, 'f', 1)
-                     .arg(result.correlation, 0, 'f', 4)
-                     .arg(result.correlation_peak_width_us, 0, 'f', 0)
-                     .arg(result.duration_s, 0, 'f', 1)
-                     .arg(result.mounting_rpy_degrees[0], 0, 'f', 1)
-                     .arg(result.mounting_rpy_degrees[1], 0, 'f', 1)
-                     .arg(result.mounting_rpy_degrees[2], 0, 'f', 1);
-          style = QStringLiteral(
-              "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
-              "border-radius: 5px; padding: 6px 9px; font-weight: 700;");
-          break;
-        case prism_viewer::ImuOffsetState::InsufficientMotion:
-          text = uiText("IMU time offset: insufficient multi-axis rotation | gyro std=%1 "
-                        "deg/s, span=%2 deg/s, axis excitation=%3 | collect again",
-                        "IMU 时间偏移：转动不足 | 陀螺仪标准差=%1 度/秒，"
-                        "范围=%2 度/秒，多轴激励=%3 | 请绕多个轴转动设备后重新采集")
-                     .arg(result.motion_stddev_dps, 0, 'f', 1)
-                     .arg(result.motion_peak_to_peak_dps, 0, 'f', 1)
-                     .arg(result.orientation_excitation_ratio, 0, 'f', 2);
-          break;
-        case prism_viewer::ImuOffsetState::LowConfidence:
-          text = uiText("IMU time offset: result not reliable | r=%1, peak width=%2 us | "
-                        "collect again with irregular rotation",
-                        "IMU 时间偏移：结果不可靠 | r=%1，峰宽=%2 us | "
-                        "请不规则转动设备后重新采集")
-                     .arg(result.correlation, 0, 'f', 4)
-                     .arg(result.correlation_peak_width_us, 0, 'f', 0);
-          break;
-      }
-      imu_offset_label_->setText(text);
-      imu_offset_label_->setStyleSheet(style);
-
-      const bool finished =
-          result.state == prism_viewer::ImuOffsetState::Complete ||
-          result.state == prism_viewer::ImuOffsetState::InsufficientMotion ||
-          result.state == prism_viewer::ImuOffsetState::LowConfidence;
-      if (finished) {
-        imu_offset_measurement_active_ = false;
-        updateImuOffsetControls();
-        appendLogLine(
-            QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
-            text);
-      }
     });
   }
 
@@ -4997,7 +4749,6 @@ class MainWindow : public QMainWindow {
         uint32_t good_streak = 0;
       };
       std::array<TimestampCheck, 2> timestamp_checks{};
-      prism_viewer::DualImuOffsetEstimator imu_offset_estimator;
       const prism::LidarModel requested_lidar_model =
           static_cast<prism::LidarModel>(requested_lidar_model_.load(
               std::memory_order_acquire));
@@ -5010,8 +4761,7 @@ class MainWindow : public QMainWindow {
                    &imu_rate_samples, &received_imu_samples,
                    &received_fsync_events, &last_fsync_sample_us,
                    &last_fsync_delay_valid,
-                   &timestamp_checks,
-                   &imu_offset_estimator](
+                   &timestamp_checks](
                       const prism::ImuSample& sample) {
             const int sensor = static_cast<int>(sample.sensor_id);
             if (sensor < 0 || sensor >= static_cast<int>(received_imu_samples.size())) {
@@ -5138,18 +4888,6 @@ class MainWindow : public QMainWindow {
             } else {
               timestamp_check.initialized = false;
             }
-
-            if (imu_offset_measure_request_.exchange(false)) {
-              imu_offset_estimator.start();
-              updateImuOffsetEstimate(imu_offset_estimator.latest());
-            }
-            prism_viewer::ImuOffsetInput offset_input;
-            offset_input.sensor_id = sample.sensor_id;
-            offset_input.timestamp_us = sample.timestamp_us;
-            offset_input.timestamp_synced = sample.timestamp_synced;
-            offset_input.gyro_mdps = sample.gyro_mdps;
-            const auto offset_result = imu_offset_estimator.add(offset_input);
-            if (offset_result.updated) updateImuOffsetEstimate(offset_result);
 
             if (now - last_imu_post[sensor] >= kImuUiPeriod) {
               last_imu_post[sensor] = now;
@@ -5550,8 +5288,6 @@ class MainWindow : public QMainWindow {
                             "error to discard queued stream frames; reopen the "
                             "device before retrying"));
         post([this]() {
-          imu_detected_.fill(false);
-          imu_offset_measurement_active_ = false;
           latest_device_info_valid_ = false;
           latest_device_versions_valid_ = false;
           latest_rk_heartbeat_time_us_ = 0;
@@ -5644,14 +5380,9 @@ class MainWindow : public QMainWindow {
   QButtonGroup* imu_selector_group_ = nullptr;
   QPushButton* imu0_selector_ = nullptr;
   QPushButton* imu1_selector_ = nullptr;
-  QPushButton* imu_offset_button_ = nullptr;
   QPushButton* imu_record_start_button_ = nullptr;
   QPushButton* imu_record_stop_button_ = nullptr;
-  QDialog* imu_offset_dialog_ = nullptr;
-  QPushButton* imu_offset_start_button_ = nullptr;
-  QLabel* imu_offset_detection_label_ = nullptr;
   QLabel* imu_alarm_label_ = nullptr;
-  QLabel* imu_offset_label_ = nullptr;
   QLabel* imu_record_status_label_ = nullptr;
   ImuPlotWidget* imu_plot_ = nullptr;
   QTimer* imu_ui_timer_ = nullptr;
@@ -5671,7 +5402,6 @@ class MainWindow : public QMainWindow {
   std::atomic<bool> camera_exposure_operation_running_{false};
   std::atomic<bool> camera_encoding_operation_running_{false};
   std::atomic<bool> lidar_network_operation_running_{false};
-  std::atomic<bool> imu_offset_measure_request_{false};
   std::atomic<bool> camera_preview_enabled_{false};
   std::atomic<bool> imu_ui_enabled_{false};
   std::atomic<bool> lidar_ui_enabled_{false};
@@ -5702,7 +5432,6 @@ class MainWindow : public QMainWindow {
   uint64_t camera_frame_sets_ = 0;
   std::array<uint64_t, 2> imu_samples_{};
   std::array<uint64_t, 2> imu_fsync_events_{};
-  std::array<bool, 2> imu_detected_{};
   std::array<bool, 2> imu_timestamp_alarm_{};
   std::array<QString, 2> imu_timestamp_alarm_detail_{};
   prism::DeviceInfo latest_device_info_;
@@ -5710,7 +5439,6 @@ class MainWindow : public QMainWindow {
   uint64_t latest_rk_heartbeat_time_us_ = 0;
   bool latest_device_info_valid_ = false;
   bool latest_device_versions_valid_ = false;
-  bool imu_offset_measurement_active_ = false;
 };
 
 }  // namespace

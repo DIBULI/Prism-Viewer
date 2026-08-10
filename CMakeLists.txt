@@ -76,7 +76,6 @@ add_executable(prism-viewer
   src/control/operation_controller.cpp
   src/dataset/dataset_browser.cpp
   src/dataset/rosbag_exporter.cpp
-  src/dual_imu_offset_estimator.cpp
   src/main.cpp
   src/transfer/camera_frame_assembler.cpp
   src/ui/camera_zoom_dialog.cpp
@@ -171,14 +170,6 @@ if(BUILD_TESTING)
   target_include_directories(imu-timestamp-policy-test PRIVATE src)
   target_compile_features(imu-timestamp-policy-test PRIVATE cxx_std_17)
   add_test(NAME imu-timestamp-policy COMMAND imu-timestamp-policy-test)
-
-  add_executable(dual-imu-offset-estimator-test
-    src/dual_imu_offset_estimator.cpp
-    tests/dual_imu_offset_estimator_test.cpp
-  )
-  target_include_directories(dual-imu-offset-estimator-test PRIVATE src)
-  target_compile_features(dual-imu-offset-estimator-test PRIVATE cxx_std_17)
-  add_test(NAME dual-imu-offset-estimator COMMAND dual-imu-offset-estimator-test)
 
   add_executable(camera-frame-assembler-test
     src/transfer/camera_frame_assembler.cpp

@@ -24,7 +24,6 @@ src/
     preview_image_decoder.*        bounded JPEG decode for live presentation
     wifi_hotspot_panel.*           Wi-Fi hotspot status and idle-only controls
     zoomable_image_view.*          image zoom, pan, fit and 1:1 presentation
-  dual_imu_offset_estimator.*      IMU domain algorithm
   imu_timestamp_policy.hpp         IMU timestamp-domain policy
 ```
 
