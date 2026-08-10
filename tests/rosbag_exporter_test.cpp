@@ -319,6 +319,18 @@ int main(int argc, char** argv) {
               "# imu\n1780000000.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
     writeText(root / "imu1.tum",
               "# imu\n1780000000.000100 0.4 0.5 9.7 0.04 0.05 0.06\n");
+    writeText(root / "dataset.info",
+              "format=prism-dataset-v6\n"
+              "complete=1\n"
+              "recording_mode=full\n"
+              "image_storage=chunk-v1\n"
+              "camera_index=chunk-v2-with-actual-exposure\n"
+              "lidar_storage=cartesian-mm-chunk-v2-with-time-source\n"
+              "lidar_imu_storage=tum-si-v2-with-time-source\n"
+              "time_domain=rk-clock-realtime\n"
+              "timestamp_epoch=unix\n"
+              "alignment=common-device-time-domain\n"
+              "timestamp_policy=strict-synchronized-sensor-time\n");
 
     Bytes lidar_points;
     const std::array<std::array<int32_t, 3>, 2> coordinates = {
@@ -336,11 +348,11 @@ int main(int argc, char** argv) {
     writeBytes(root / "lidar-data-0000.bin", lidar_points);
     writeText(root / "lidar.tum",
               "# lidar\n1780000000.000700 lidar-data-0000.bin 0 32 2 2 35 "
-              "1 9 1780000037000700000\n");
+              "1 9 1780000037000700000 100 1 1\n");
     writeText(root / "lidar_imu.tum",
               "# lidar imu: SI units plus optional provenance\n"
               "1780000000.000800 1.25 -2.5 9.80665 0.125 -0.25 0.5 "
-              "2 35 1 10 1780000037000800000 1\n");
+              "2 35 1 10 1780000037000800000 1 1\n");
 
     const std::filesystem::path bag = root / "dataset.bag";
     const auto result = prism_viewer::dataset::exportDatasetToRosbag(
@@ -456,7 +468,7 @@ int main(int argc, char** argv) {
         ros1_lidar_nanoseconds != 700000u ||
         ros1_lidar_frame != "livox_mid360s") {
       throw std::runtime_error(
-          "ROS1 LiDAR did not use the normalized host UTC timestamp");
+          "ROS1 LiDAR did not preserve the normalized RK measurement time");
     }
     Ros1Reader ros1_lidar_imu(first_messages.at(7u));
     if (ros1_lidar_imu.readU32() != 0u ||
@@ -793,8 +805,143 @@ int main(int argc, char** argv) {
       throw std::runtime_error("successful ROS2 bag replacement failed");
     }
 
+    // v5 keeps the original ten-column point index and six-field LiDAR IMU
+    // provenance suffix. It must remain exportable after v6 adds strict source
+    // flags and the point time interval.
+    const std::filesystem::path legacy_v5_root = root / "legacy-v5";
+    std::filesystem::create_directories(legacy_v5_root);
+    writeText(legacy_v5_root / "dataset.info",
+              "format=prism-dataset-v5\nrecording_mode=full\n");
+    writeText(legacy_v5_root / "imu0.tum",
+              "1780000000.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
+    writeText(legacy_v5_root / "imu1.tum",
+              "1780000000.000100 0.4 0.5 9.7 0.04 0.05 0.06\n");
+    writeBytes(legacy_v5_root / "lidar-data-0000.bin", lidar_points);
+    writeText(legacy_v5_root / "lidar.tum",
+              "1780000000.000700 lidar-data-0000.bin 0 32 2 2 35 1 9 "
+              "1780000037000700000\n");
+    writeText(legacy_v5_root / "lidar_imu.tum",
+              "1780000000.000800 1.25 -2.5 9.80665 0.125 -0.25 0.5 "
+              "2 35 1 10 1780000037000800000 1\n");
+    const std::filesystem::path legacy_v5_bag = root / "legacy-v5.bag";
+    const auto legacy_v5_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            legacy_v5_root, legacy_v5_bag,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (!legacy_v5_result.success || legacy_v5_result.imu_messages != 2u ||
+        legacy_v5_result.lidar_messages != 1u ||
+        legacy_v5_result.lidar_imu_messages != 1u ||
+        legacy_v5_result.lidar_points != 2u) {
+      throw std::runtime_error("v5 LiDAR dataset compatibility failed: " +
+                               legacy_v5_result.error);
+    }
+
+    // A v6 index is authoritative: an unsynchronized point row must not be
+    // converted into a bag that claims a common RK measurement-time domain.
+    const std::filesystem::path invalid_v6_root = root / "invalid-v6";
+    std::filesystem::create_directories(invalid_v6_root);
+    writeText(invalid_v6_root / "dataset.info",
+              "format=prism-dataset-v6\ncomplete=1\n"
+              "recording_mode=full\n"
+              "image_storage=chunk-v1\n"
+              "camera_index=chunk-v2-with-actual-exposure\n"
+              "lidar_storage=cartesian-mm-chunk-v2-with-time-source\n"
+              "lidar_imu_storage=tum-si-v2-with-time-source\n"
+              "time_domain=rk-clock-realtime\n"
+              "timestamp_epoch=unix\n"
+              "alignment=common-device-time-domain\n");
+    writeBytes(invalid_v6_root / "camera-data-0000.bin", camera_container);
+    for (uint8_t camera = 0; camera < 4u; ++camera) {
+      writeText(invalid_v6_root /
+                    ("cam" + std::to_string(camera) + ".tum"),
+                "1780000000.000500 camera-data-0000.bin " +
+                    std::to_string(camera * 5u) + " 5 200\n");
+    }
+    writeText(invalid_v6_root / "imu0.tum",
+              "1780000000.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
+    writeText(invalid_v6_root / "imu1.tum",
+              "1780000000.000100 0.4 0.5 9.7 0.04 0.05 0.06\n");
+    writeBytes(invalid_v6_root / "lidar-data-0000.bin", lidar_points);
+    writeText(invalid_v6_root / "lidar.tum",
+              "1780000000.000700 lidar-data-0000.bin 0 32 2 2 35 1 9 "
+              "1780000037000700000 100 0 0\n");
+    writeText(invalid_v6_root / "lidar_imu.tum",
+              "1780000000.000800 1.25 -2.5 9.80665 0.125 -0.25 0.5 "
+              "2 35 1 10 1780000037000800000 1 1\n");
+    const std::filesystem::path invalid_v6_bag = root / "invalid-v6.bag";
+    const auto invalid_v6_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            invalid_v6_root, invalid_v6_bag,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (invalid_v6_result.success ||
+        invalid_v6_result.error.find("requires a synchronized RK time source") ==
+            std::string::npos ||
+        std::filesystem::exists(invalid_v6_bag)) {
+      throw std::runtime_error(
+          "v6 unsynchronized LiDAR row was not rejected");
+    }
+
+    const std::filesystem::path incomplete_v6_root =
+        root / "incomplete-v6";
+    std::filesystem::create_directories(incomplete_v6_root);
+    writeText(incomplete_v6_root / "dataset.info",
+              "format=prism-dataset-v6\ncomplete=0\n"
+              "time_domain=rk-clock-realtime\n");
+    writeText(incomplete_v6_root / "imu0.tum",
+              "1780000000.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
+    writeText(incomplete_v6_root / "imu1.tum",
+              "1780000000.000100 0.4 0.5 9.7 0.04 0.05 0.06\n");
+    const std::filesystem::path incomplete_v6_bag =
+        root / "incomplete-v6.bag";
+    const auto incomplete_v6_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            incomplete_v6_root, incomplete_v6_bag,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (incomplete_v6_result.success ||
+        incomplete_v6_result.error.find("dataset is incomplete") ==
+            std::string::npos ||
+        std::filesystem::exists(incomplete_v6_bag)) {
+      throw std::runtime_error("incomplete v6 dataset was not rejected");
+    }
+
+    // A completed v6 manifest is a contract. Declaring a full camera dataset
+    // without the four camera indexes must fail instead of silently exporting
+    // it as IMU-only.
+    const std::filesystem::path missing_declared_v6_root =
+        root / "missing-declared-v6";
+    std::filesystem::create_directories(missing_declared_v6_root);
+    writeText(missing_declared_v6_root / "dataset.info",
+              "format=prism-dataset-v6\ncomplete=1\n"
+              "recording_mode=full\n"
+              "image_storage=chunk-v1\n"
+              "camera_index=chunk-v2-with-actual-exposure\n"
+              "lidar_storage=none\n"
+              "lidar_imu_storage=none\n"
+              "time_domain=rk-clock-realtime\n"
+              "timestamp_epoch=unix\n"
+              "alignment=common-device-time-domain\n");
+    writeText(missing_declared_v6_root / "imu0.tum",
+              "1780000000.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
+    writeText(missing_declared_v6_root / "imu1.tum",
+              "1780000000.000100 0.4 0.5 9.7 0.04 0.05 0.06\n");
+    const std::filesystem::path missing_declared_v6_bag =
+        root / "missing-declared-v6.bag";
+    const auto missing_declared_v6_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            missing_declared_v6_root, missing_declared_v6_bag,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (missing_declared_v6_result.success ||
+        missing_declared_v6_result.error.find(
+            "camera indexes do not match") == std::string::npos ||
+        std::filesystem::exists(missing_declared_v6_bag)) {
+      throw std::runtime_error(
+          "v6 manifest camera declaration was silently downgraded");
+    }
+
     // Existing full v3/v4 datasets have no lidar_imu.tum. They must retain
     // their original seven ROS connections and result accounting.
+    writeText(root / "dataset.info",
+              "format=prism-dataset-v4\nrecording_mode=full\n");
     std::filesystem::remove(root / "lidar_imu.tum");
     const std::filesystem::path legacy_full_ros1 = root / "legacy-full.bag";
     const auto legacy_full_result =

@@ -42,8 +42,8 @@ jobs:
       - name: Verify bundled Windows SDK
         shell: pwsh
         run: |
-          $dll = "vendor/prism-host-sdk/0.9.0/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "5e88232f3117515689f7ab2be14c94b33a8d9be0b874387eb3b03e98d2a73b83"
+          $dll = "vendor/prism-host-sdk/0.10.0/runtime/windows-x64/prism_usb_sdk.dll"
+          $expected = "1d92ac9a1f60f85e71bb16d9e55968c47d8bd113dbc679d9b07f5e18ef1aec92"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -71,18 +71,18 @@ jobs:
             --release --no-translations --compiler-runtime `
             --dir (Join-Path $stage "bin") $exe
           $package = Join-Path $env:RUNNER_TEMP `
-            "Prism-Viewer-0.9.0-windows-x64"
+            "Prism-Viewer-0.10.0-windows-x64"
           New-Item -ItemType Directory -Path $package | Out-Null
           Copy-Item (Join-Path $stage "bin\*") $package -Recurse
           Compress-Archive -Path $package `
-            -DestinationPath "Prism-Viewer-0.9.0-windows-x64.zip"
+            -DestinationPath "Prism-Viewer-0.10.0-windows-x64.zip"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-0.9.0-windows-x64
+          name: prism-viewer-0.10.0-windows-x64
           if-no-files-found: error
-          path: Prism-Viewer-0.9.0-windows-x64.zip
+          path: Prism-Viewer-0.10.0-windows-x64.zip
 
   linux-x64:
     runs-on: ubuntu-24.04
@@ -103,7 +103,7 @@ jobs:
 
       - name: Verify bundled Linux SDK
         run: |
-          echo "5b1092f62b24c7fd36456de337dac078208b2134e278a559a17ffd65460667dc  vendor/prism-host-sdk/0.9.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
+          echo "e6512bf415007ed67d0c9703602f898e589997ba6d653eb02cee78ece625409e  vendor/prism-host-sdk/0.10.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
 
       - name: Configure and build Viewer
         run: |
@@ -118,7 +118,7 @@ jobs:
       - name: Package Viewer
         run: |
           stage="$RUNNER_TEMP/prism-viewer-stage"
-          package="$RUNNER_TEMP/Prism-Viewer-0.9.0-linux-x64"
+          package="$RUNNER_TEMP/Prism-Viewer-0.10.0-linux-x64"
           cmake --install build-linux-ci --prefix "$stage"
           mkdir -p "$package"
           cp -a "$stage"/. "$package"/
@@ -127,15 +127,15 @@ jobs:
             exit 1
           fi
           tar -C "$RUNNER_TEMP" -czf \
-            "$GITHUB_WORKSPACE/Prism-Viewer-0.9.0-linux-x64.tar.gz" \
-            Prism-Viewer-0.9.0-linux-x64
+            "$GITHUB_WORKSPACE/Prism-Viewer-0.10.0-linux-x64.tar.gz" \
+            Prism-Viewer-0.10.0-linux-x64
 
       - name: Upload Linux package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-0.9.0-linux-x64
+          name: prism-viewer-0.10.0-linux-x64
           if-no-files-found: error
-          path: Prism-Viewer-0.9.0-linux-x64.tar.gz
+          path: Prism-Viewer-0.10.0-linux-x64.tar.gz
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -147,7 +147,7 @@ jobs:
       - name: Download release packages
         uses: actions/download-artifact@v8
         with:
-          pattern: prism-viewer-0.9.0-*
+          pattern: prism-viewer-0.10.0-*
           path: release-assets
           merge-multiple: true
 

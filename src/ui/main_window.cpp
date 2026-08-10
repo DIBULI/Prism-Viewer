@@ -24,6 +24,7 @@
 #include <QtCore/QMetaObject>
 #include <QtCore/QLocale>
 #include <QtCore/QProcess>
+#include <QtCore/QSaveFile>
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
@@ -285,6 +286,13 @@ enum class DatasetRecordingMode {
   ImuOnly,
 };
 
+bool shouldTakeFrameJob(bool frame_available, bool lidar_available,
+                        uint64_t frame_timestamp_us,
+                        uint64_t lidar_timestamp_us) {
+  return frame_available &&
+         (!lidar_available || frame_timestamp_us <= lidar_timestamp_us);
+}
+
 struct DatasetRecordingSummary {
   DatasetRecordingMode mode = DatasetRecordingMode::Full;
   bool had_session = false;
@@ -297,7 +305,20 @@ struct DatasetRecordingSummary {
   uint64_t dropped_lidar_batches = 0;
   uint64_t dropped_lidar_points = 0;
   uint64_t lidar_imu_sample_count = 0;
+  std::array<uint64_t, 2> unsynced_imu_samples_dropped{};
+  uint64_t unsynced_camera_frame_sets_dropped = 0;
+  uint64_t unsynced_lidar_batches_dropped = 0;
+  uint64_t unsynced_lidar_points_dropped = 0;
+  uint64_t unsynced_lidar_imu_samples_dropped = 0;
   std::string error;
+
+  uint64_t unsyncedDropCount() const {
+    return unsynced_imu_samples_dropped[0] +
+           unsynced_imu_samples_dropped[1] +
+           unsynced_camera_frame_sets_dropped +
+           unsynced_lidar_batches_dropped +
+           unsynced_lidar_imu_samples_dropped;
+  }
 };
 
 // Records either a complete dataset or IMU-only data. imu0/imu1 always mean
@@ -416,6 +437,11 @@ class DatasetRecorder {
       dropped_lidar_batches_ = 0;
       dropped_lidar_points_ = 0;
       lidar_imu_sample_count_ = 0;
+      unsynced_imu_samples_dropped_.fill(0);
+      unsynced_camera_frame_sets_dropped_ = 0;
+      unsynced_lidar_batches_dropped_ = 0;
+      unsynced_lidar_points_dropped_ = 0;
+      unsynced_lidar_imu_samples_dropped_ = 0;
       write_failed_ = false;
       write_error_.clear();
       frame_jobs_.clear();
@@ -482,7 +508,8 @@ class DatasetRecorder {
               << "# Prism Livox point-batch stream\n"
               << "# timestamp[s] container_path byte_offset byte_size "
                  "point_count model device_type time_type batch_id "
-                 "timestamp_raw\n";
+                 "timestamp_raw time_interval_100ns timestamp_synced "
+                 "tai_offset_applied\n";
         }
       }
       if (record_lidar_streams) {
@@ -498,7 +525,19 @@ class DatasetRecorder {
             << "# Prism Livox IMU stream (separate from onboard imu0/imu1)\n"
             << "# timestamp[s] ax[m/s^2] ay[m/s^2] az[m/s^2] "
                "gx[rad/s] gy[rad/s] gz[rad/s] model device_type "
-               "time_type sample_id timestamp_raw timestamp_synced\n";
+               "time_type sample_id timestamp_raw timestamp_synced "
+               "tai_offset_applied\n";
+      }
+
+      writeManifest(false);
+      if (write_failed_) {
+        closeFiles();
+        if (error != nullptr) {
+          *error = write_error_.empty()
+                       ? "cannot write in-progress dataset manifest"
+                       : write_error_;
+        }
+        return false;
       }
 
       session_open_ = true;
@@ -551,6 +590,11 @@ class DatasetRecorder {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
           write_failed_) {
+        return;
+      }
+      if (!sample.timestamp_synced ||
+          !isPlausibleRkClockRealtimeUs(sample.timestamp_us)) {
+        ++unsynced_imu_samples_dropped_[sample.sensor_id];
         return;
       }
 
@@ -619,6 +663,15 @@ class DatasetRecorder {
         ++dropped_frame_sets_;
         return;
       }
+      const uint64_t trigger_timestamp_us =
+          metadata.trigger_time_ns / 1000ULL;
+      if (metadata.trigger_time_ns == 0 ||
+          !isPlausibleRkClockRealtimeUs(trigger_timestamp_us) ||
+          timestamp_us != trigger_timestamp_us) {
+        ++dropped_frame_sets_;
+        ++unsynced_camera_frame_sets_dropped_;
+        return;
+      }
       /*
        * Bound both job count and payload bytes. A slow/removable destination
        * must drop frame sets instead of exhausting Viewer memory.
@@ -633,7 +686,7 @@ class DatasetRecorder {
       }
       FrameSetJob job;
       job.frame_id = frame_id;
-      job.timestamp_us = timestamp_us != 0 ? timestamp_us : wallClockUs();
+      job.timestamp_us = timestamp_us;
       job.exposure_us = metadata.exposure_us;
       job.payload_bytes = frame_set_bytes;
       job.jpeg = jpeg_set;
@@ -659,9 +712,25 @@ class DatasetRecorder {
         markWriteFailedNoThrow("LiDAR dataset batch is too large");
         return;
       }
+      if (!batch.timestamp_synced ||
+          !isPlausibleRkClockRealtimeUs(batch.timestamp_utc_us) ||
+          (batch.tai_offset_applied && !batch.timestamp_synced)) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_.load(std::memory_order_relaxed) && session_open_ &&
+            !write_failed_) {
+          ++dropped_lidar_batches_;
+          dropped_lidar_points_ += batch.points.size();
+          ++unsynced_lidar_batches_dropped_;
+          unsynced_lidar_points_dropped_ += batch.points.size();
+        }
+        return;
+      }
       LidarJob job;
-      job.timestamp_us = wallClockUs();
+      job.timestamp_us = batch.timestamp_utc_us;
       job.timestamp_raw = batch.timestamp_raw;
+      job.time_interval_100ns = batch.time_interval_100ns;
+      job.timestamp_synced = batch.timestamp_synced;
+      job.tai_offset_applied = batch.tai_offset_applied;
       job.batch_id = batch.batch_id;
       job.model = static_cast<uint8_t>(batch.model);
       job.device_type = batch.device_type;
@@ -718,9 +787,13 @@ class DatasetRecorder {
           write_failed_ || !lidar_imu_file_.is_open()) {
         return;
       }
-      writeTumTimestamp(lidar_imu_file_,
-                        sample.timestamp_utc_us != 0 ? sample.timestamp_utc_us
-                                                     : wallClockUs());
+      if (!sample.timestamp_synced ||
+          !isPlausibleRkClockRealtimeUs(sample.timestamp_utc_us) ||
+          (sample.tai_offset_applied && !sample.timestamp_synced)) {
+        ++unsynced_lidar_imu_samples_dropped_;
+        return;
+      }
+      writeTumTimestamp(lidar_imu_file_, sample.timestamp_utc_us);
       lidar_imu_file_ << std::fixed << std::setprecision(9);
       for (double value : sample.accel_m_s2) lidar_imu_file_ << ' ' << value;
       for (double value : sample.gyro_rad_s) lidar_imu_file_ << ' ' << value;
@@ -729,7 +802,8 @@ class DatasetRecorder {
                       << static_cast<unsigned>(sample.time_type) << ' '
                       << sample.sample_id << ' ' << sample.timestamp_raw_ns
                       << ' '
-                      << (sample.timestamp_synced ? 1 : 0) << '\n';
+                      << (sample.timestamp_synced ? 1 : 0) << ' '
+                      << (sample.tai_offset_applied ? 1 : 0) << '\n';
       if (!lidar_imu_file_.good()) {
         write_failed_ = true;
         write_error_ = "LiDAR IMU dataset write failed";
@@ -762,10 +836,21 @@ class DatasetRecorder {
     summary.dropped_lidar_batches = dropped_lidar_batches_;
     summary.dropped_lidar_points = dropped_lidar_points_;
     summary.lidar_imu_sample_count = lidar_imu_sample_count_;
+    summary.unsynced_imu_samples_dropped =
+        unsynced_imu_samples_dropped_;
+    summary.unsynced_camera_frame_sets_dropped =
+        unsynced_camera_frame_sets_dropped_;
+    summary.unsynced_lidar_batches_dropped =
+        unsynced_lidar_batches_dropped_;
+    summary.unsynced_lidar_points_dropped =
+        unsynced_lidar_points_dropped_;
+    summary.unsynced_lidar_imu_samples_dropped =
+        unsynced_lidar_imu_samples_dropped_;
     if (!session_open_) return summary;
 
-    writeManifest();
+    validateRequiredStreams();
     closeFiles();
+    writeManifest(!write_failed_);
     summary.success = !write_failed_;
     summary.error = write_error_;
     if (!summary.success && summary.error.empty()) {
@@ -797,6 +882,9 @@ class DatasetRecorder {
     uint8_t model = 0;
     uint8_t device_type = 0;
     uint8_t time_type = 0;
+    uint16_t time_interval_100ns = 0;
+    bool timestamp_synced = false;
+    bool tai_offset_applied = false;
     std::vector<uint8_t> points;
   };
 
@@ -818,6 +906,13 @@ class DatasetRecorder {
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::system_clock::now().time_since_epoch())
             .count());
+  }
+
+  static bool isPlausibleRkClockRealtimeUs(uint64_t timestamp_us) {
+    // Reject local/monotonic counters while allowing archived RK
+    // CLOCK_REALTIME values from well before the product release.
+    constexpr uint64_t kMinimumRkClockRealtimeUs = 100000000000000ULL;
+    return timestamp_us >= kMinimumRkClockRealtimeUs;
   }
 
   static void writeTumTimestamp(std::ostream& stream, uint64_t timestamp_us) {
@@ -848,11 +943,10 @@ class DatasetRecorder {
           if (stop_writer_) return;
           continue;
         }
-        const bool take_frame =
-            lidar_jobs_.empty() ||
-            (!frame_jobs_.empty() &&
-             frame_jobs_.front().timestamp_us <=
-                 lidar_jobs_.front().timestamp_us);
+        const bool take_frame = shouldTakeFrameJob(
+            !frame_jobs_.empty(), !lidar_jobs_.empty(),
+            frame_jobs_.empty() ? 0 : frame_jobs_.front().timestamp_us,
+            lidar_jobs_.empty() ? 0 : lidar_jobs_.front().timestamp_us);
         if (take_frame) {
           frame_job.emplace(std::move(frame_jobs_.front()));
           frame_jobs_.pop_front();
@@ -952,7 +1046,10 @@ class DatasetRecorder {
                       << static_cast<unsigned>(job.model) << ' '
                       << static_cast<unsigned>(job.device_type) << ' '
                       << static_cast<unsigned>(job.time_type) << ' '
-                      << job.batch_id << ' ' << job.timestamp_raw << '\n';
+                      << job.batch_id << ' ' << job.timestamp_raw << ' '
+                      << job.time_interval_100ns << ' '
+                      << (job.timestamp_synced ? 1 : 0) << ' '
+                      << (job.tai_offset_applied ? 1 : 0) << '\n';
     if (!lidar_index_file_.good()) {
       write_failed_ = true;
       write_error_ = "LiDAR index write failed";
@@ -1004,19 +1101,54 @@ class DatasetRecorder {
     }
   }
 
-  void writeManifest() {
-    std::ofstream manifest(root_ / "dataset.info",
-                           std::ios::out | std::ios::trunc);
-    if (!manifest.is_open()) {
-      write_failed_ = true;
-      write_error_ = "cannot write dataset manifest";
-      return;
+  void validateRequiredStreams() {
+    std::vector<std::string> missing;
+    for (size_t sensor = 0; sensor < imu_counts_.size(); ++sensor) {
+      if (imu_counts_[sensor] == 0) {
+        missing.push_back("synchronized onboard IMU" +
+                          std::to_string(sensor));
+      }
     }
+    const bool imu_only = mode_.load(std::memory_order_relaxed) ==
+                          DatasetRecordingMode::ImuOnly;
+    if (!imu_only &&
+        std::any_of(image_counts_.begin(), image_counts_.end(),
+                    [](uint64_t count) { return count == 0; })) {
+      missing.push_back("synchronized four-camera frame sets");
+    }
+    const bool has_lidar_streams =
+        record_lidar_streams_.load(std::memory_order_relaxed);
+    if (has_lidar_streams && !imu_only && lidar_batch_count_ == 0) {
+      missing.push_back("synchronized LiDAR point batches");
+    }
+    if (has_lidar_streams && lidar_imu_sample_count_ == 0) {
+      missing.push_back("synchronized LiDAR IMU samples");
+    }
+    if (missing.empty()) return;
+
+    write_failed_ = true;
+    if (write_error_.empty()) {
+      std::ostringstream detail;
+      detail << "aligned dataset contains no ";
+      for (size_t index = 0; index < missing.size(); ++index) {
+        if (index != 0) detail << (index + 1 == missing.size() ? " or " : ", ");
+        detail << missing[index];
+      }
+      detail << "; unsynchronized samples are never recorded";
+      write_error_ = detail.str();
+    }
+  }
+
+  void writeManifest(bool complete) {
+    std::ostringstream manifest;
+    manifest.imbue(std::locale::classic());
     const bool imu_only = mode_.load(std::memory_order_relaxed) ==
                           DatasetRecordingMode::ImuOnly;
     const bool has_lidar_streams =
         record_lidar_streams_.load(std::memory_order_relaxed);
-    manifest << "format=prism-dataset-v5\n"
+    const uint64_t recording_host_end_unix_us = wallClockUs();
+    manifest << "format=prism-dataset-v6\n"
+             << "complete=" << (complete ? 1 : 0) << "\n"
              << "recording_mode="
              << (imu_only ? "imu-only" : "full")
              << "\n"
@@ -1026,32 +1158,72 @@ class DatasetRecorder {
              << "camera_index="
              << (imu_only ? "none" : "chunk-v2-with-actual-exposure")
              << "\n"
+             << "time_domain=rk-clock-realtime\n"
+             << "timestamp_epoch=unix\n"
+             << "timestamp_policy=strict-synchronized-sensor-time\n"
+             << "alignment=common-device-time-domain\n"
+             << "timestamp_resolution_us=1\n"
+             << "camera_timestamp_reference=trig0-rising-edge\n"
+             << "lidar_timestamp_reference=batch-base\n"
+             << "point_deskew=none\n"
              << "lidar_storage="
              << (!imu_only && has_lidar_streams
-                     ? "cartesian-mm-chunk-v1"
+                     ? "cartesian-mm-chunk-v2-with-time-source"
                      : "none")
              << "\n"
              << "lidar_imu_storage="
-             << (has_lidar_streams ? "tum-si-v1" : "none") << "\n"
+             << (has_lidar_streams ? "tum-si-v2-with-time-source" : "none")
+             << "\n"
              << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
              << "start_unix_us=" << start_unix_us_ << "\n"
-             << "end_unix_us=" << wallClockUs() << "\n"
+             << "end_unix_us=" << recording_host_end_unix_us << "\n"
+             << "recording_host_start_unix_us=" << start_unix_us_ << "\n"
+             << "recording_host_end_unix_us="
+             << recording_host_end_unix_us << "\n"
              << "imu0_samples=" << imu_counts_[0] << "\n"
              << "imu1_samples=" << imu_counts_[1] << "\n"
+             << "unsynced_imu0_samples_dropped="
+             << unsynced_imu_samples_dropped_[0] << "\n"
+             << "unsynced_imu1_samples_dropped="
+             << unsynced_imu_samples_dropped_[1] << "\n"
              << "dropped_frame_sets=" << dropped_frame_sets_ << "\n"
+             << "unsynced_camera_frame_sets_dropped="
+             << unsynced_camera_frame_sets_dropped_ << "\n"
              << "lidar_batches=" << lidar_batch_count_ << "\n"
              << "lidar_points=" << lidar_point_count_ << "\n"
              << "dropped_lidar_batches=" << dropped_lidar_batches_ << "\n"
              << "dropped_lidar_points=" << dropped_lidar_points_ << "\n"
-             << "lidar_imu_samples=" << lidar_imu_sample_count_ << "\n";
+             << "unsynced_lidar_batches_dropped="
+             << unsynced_lidar_batches_dropped_ << "\n"
+             << "unsynced_lidar_points_dropped="
+             << unsynced_lidar_points_dropped_ << "\n"
+             << "lidar_imu_samples=" << lidar_imu_sample_count_ << "\n"
+             << "unsynced_lidar_imu_samples_dropped="
+             << unsynced_lidar_imu_samples_dropped_ << "\n";
     for (size_t camera = 0; camera < image_counts_.size(); ++camera) {
       manifest << "camera" << camera << "_images=" << image_counts_[camera]
                << "\n";
     }
-    manifest.flush();
     if (!manifest.good()) {
       write_failed_ = true;
-      write_error_ = "dataset manifest write failed";
+      if (write_error_.empty()) write_error_ = "dataset manifest write failed";
+      return;
+    }
+    const std::string contents = manifest.str();
+    QSaveFile output(fromFilesystemPath(root_ / "dataset.info"));
+    output.setDirectWriteFallback(false);
+    if (!output.open(QIODevice::WriteOnly)) {
+      write_failed_ = true;
+      if (write_error_.empty()) write_error_ = "cannot write dataset manifest";
+      return;
+    }
+    const qint64 expected_size = static_cast<qint64>(contents.size());
+    if (output.write(contents.data(), expected_size) != expected_size ||
+        !output.commit()) {
+      write_failed_ = true;
+      if (write_error_.empty()) {
+        write_error_ = "cannot commit dataset manifest";
+      }
     }
   }
 
@@ -1119,6 +1291,11 @@ class DatasetRecorder {
   uint64_t dropped_lidar_batches_ = 0;
   uint64_t dropped_lidar_points_ = 0;
   uint64_t lidar_imu_sample_count_ = 0;
+  std::array<uint64_t, 2> unsynced_imu_samples_dropped_{};
+  uint64_t unsynced_camera_frame_sets_dropped_ = 0;
+  uint64_t unsynced_lidar_batches_dropped_ = 0;
+  uint64_t unsynced_lidar_points_dropped_ = 0;
+  uint64_t unsynced_lidar_imu_samples_dropped_ = 0;
   uint64_t start_unix_us_ = 0;
   uint64_t dropped_frame_sets_ = 0;
   uint64_t queued_payload_bytes_ = 0;
@@ -2952,6 +3129,33 @@ class MainWindow : public QMainWindow {
   void startImuRecordingImpl(DatasetRecordingMode mode) {
     if (!worker_running_ || dataset_recorder_.isActive()) return;
 
+    const bool sensor_board_synced =
+        latest_device_info_valid_ &&
+        latest_device_info_.sensor_board_time_synced;
+    const bool both_onboard_imus_synced =
+        latest_device_info_valid_ &&
+        (latest_device_info_.imu_time_synced_mask & 0x03u) == 0x03u;
+    if (!sensor_board_synced || !both_onboard_imus_synced) {
+      const QString detail = uiText(
+          "Recording requires the sensor-board and both onboard IMUs to be "
+          "synchronized to the RK device time domain. Wait until IMU0 and "
+          "IMU1 both show synced before recording.",
+          "录制要求 sensor-board 与两路板载 IMU 均同步到 RK 设备时间域。"
+          "请等待 IMU0、IMU1 均显示“已同步”后再录制。");
+      appendLog(QStringLiteral(
+                    "Dataset recording rejected: sensor_board_synced=%1 "
+                    "imu_time_synced_mask=0x%2")
+                    .arg(sensor_board_synced ? 1 : 0)
+                    .arg(latest_device_info_valid_
+                             ? latest_device_info_.imu_time_synced_mask
+                             : 0u,
+                         2, 16, QLatin1Char('0')));
+      QMessageBox::warning(
+          this, uiText("Time synchronization required", "需要先完成时间同步"),
+          detail);
+      return;
+    }
+
     const QString selected_directory = QFileDialog::getExistingDirectory(
         this,
         mode == DatasetRecordingMode::ImuOnly
@@ -3077,24 +3281,29 @@ class MainWindow : public QMainWindow {
     if (summary.success) {
       if (summary.mode == DatasetRecordingMode::ImuOnly) {
         imu_record_status_label_->setText(
-            uiText("Saved IMU only: onboard %1/%2, LiDAR %3 samples",
-                   "仅 IMU 已保存：板载 %1/%2，雷达 %3 个样本")
+            uiText("Saved IMU only: onboard %1/%2, LiDAR %3 samples, "
+                   "unsynced dropped %4",
+                   "仅 IMU 已保存：板载 %1/%2，雷达 %3 个样本，"
+                   "未同步丢弃 %4")
                 .arg(summary.sample_count[0])
                 .arg(summary.sample_count[1])
-                .arg(summary.lidar_imu_sample_count));
+                .arg(summary.lidar_imu_sample_count)
+                .arg(summary.unsyncedDropCount()));
       } else {
         imu_record_status_label_->setText(
             uiText("Saved: onboard IMU %1/%2, images %3x4, LiDAR %4 "
-                   "batches + %5 IMU samples, dropped sets %6",
+                   "batches + %5 IMU samples, dropped sets %6, "
+                   "unsynced dropped %7",
                    "已保存：板载 IMU %1/%2，图像 %3×4，雷达 %4 批点云 + "
-                   "%5 个 IMU 样本，丢弃帧集 %6")
+                   "%5 个 IMU 样本，丢弃帧集 %6，未同步丢弃 %7")
                 .arg(summary.sample_count[0])
                 .arg(summary.sample_count[1])
                 .arg(*std::min_element(summary.image_count.begin(),
                                        summary.image_count.end()))
                 .arg(summary.lidar_batch_count)
                 .arg(summary.lidar_imu_sample_count)
-                .arg(summary.dropped_frame_sets));
+                .arg(summary.dropped_frame_sets)
+                .arg(summary.unsyncedDropCount()));
       }
       imu_record_status_label_->setStyleSheet(QStringLiteral(
           "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
@@ -3104,7 +3313,9 @@ class MainWindow : public QMainWindow {
                     "camera_images=%5/%6/%7/%8 dropped_sets=%9 "
                     "lidar_batches=%10 lidar_points=%11 "
                     "dropped_lidar_batches=%12 dropped_lidar_points=%13 "
-                    "lidar_imu_samples=%14")
+                    "lidar_imu_samples=%14 unsynced_drops="
+                    "imu0:%15/imu1:%16 camera:%17 lidar:%18/%19 "
+                    "lidar_imu:%20")
                     .arg(summary.mode == DatasetRecordingMode::ImuOnly
                              ? QStringLiteral("imu-only")
                              : QStringLiteral("full"))
@@ -3120,7 +3331,13 @@ class MainWindow : public QMainWindow {
                     .arg(summary.lidar_point_count)
                     .arg(summary.dropped_lidar_batches)
                     .arg(summary.dropped_lidar_points)
-                    .arg(summary.lidar_imu_sample_count));
+                    .arg(summary.lidar_imu_sample_count)
+                    .arg(summary.unsynced_imu_samples_dropped[0])
+                    .arg(summary.unsynced_imu_samples_dropped[1])
+                    .arg(summary.unsynced_camera_frame_sets_dropped)
+                    .arg(summary.unsynced_lidar_batches_dropped)
+                    .arg(summary.unsynced_lidar_points_dropped)
+                    .arg(summary.unsynced_lidar_imu_samples_dropped));
       loadRecordedDataset(recorded_dataset_root_, false);
     } else {
       imu_record_status_label_->setText(
@@ -3680,24 +3897,39 @@ class MainWindow : public QMainWindow {
 
   void queueLidarPreview(std::vector<prism::LidarPoint> points,
                          prism::LidarModel model, uint64_t total_points,
-                         uint32_t batch_id) {
+                         uint32_t batch_id, bool timestamp_synced) {
     if (!lidar_ui_enabled_.load(std::memory_order_acquire)) return;
-    post([this, points = std::move(points), model, total_points, batch_id]() {
+    post([this, points = std::move(points), model, total_points, batch_id,
+          timestamp_synced]() {
       if (lidar_point_cloud_widget_ == nullptr) return;
       lidar_point_cloud_widget_->appendPoints(points);
       const QString model_name = model == prism::LidarModel::Mid360
                                      ? QStringLiteral("Mid-360")
                                      : QStringLiteral("Mid-360S");
-      lidar_status_label_->setText(
+      const QString status =
           uiText("%1 point cloud | received %2 | batch %3 | displayed %4",
                  "%1 点云 | 已接收 %2 | 批次 %3 | 显示 %4")
               .arg(model_name)
               .arg(total_points)
               .arg(batch_id)
-              .arg(lidar_point_cloud_widget_->pointCount()));
-      lidar_status_label_->setStyleSheet(QStringLiteral(
-          "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
-          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+              .arg(lidar_point_cloud_widget_->pointCount());
+      lidar_status_label_->setText(
+          timestamp_synced
+              ? status + uiText(" | RK time synced", " | RK 时间已同步")
+              : status +
+                    uiText(" | time unsynced: preview only; recording waits "
+                           "for a timestamp-capable Agent",
+                           " | 时间未同步：仅预览；录制等待支持时间戳的 Agent"));
+      lidar_status_label_->setStyleSheet(
+          timestamp_synced
+              ? QStringLiteral(
+                    "background: #ecfdf3; color: #027a48; border: 1px solid "
+                    "#abefc6; border-radius: 6px; padding: 7px 10px; "
+                    "font-weight: 600;")
+              : QStringLiteral(
+                    "background: #fffaeb; color: #b54708; border: 1px solid "
+                    "#fedf89; border-radius: 6px; padding: 7px 10px; "
+                    "font-weight: 600;"));
     });
   }
 
@@ -4961,7 +5193,8 @@ class MainWindow : public QMainWindow {
             }
             last_lidar_preview_post = now;
             queueLidarPreview(std::move(pending_lidar_preview), batch.model,
-                              received_lidar_points, batch.batch_id);
+                              received_lidar_points, batch.batch_id,
+                              batch.timestamp_synced);
             pending_lidar_preview.clear();
             pending_lidar_preview.reserve(8192u);
           },
@@ -5540,12 +5773,28 @@ int runViewerApplication(int argc, char** argv) {
       std::cerr << "dataset recorder start failed: " << error << "\n";
       return 10;
     }
+    bool in_progress_manifest_ok = false;
+    {
+      std::ifstream in_progress_manifest(test_root / "dataset.info");
+      for (std::string line;
+           std::getline(in_progress_manifest, line);) {
+        in_progress_manifest_ok =
+            in_progress_manifest_ok || line == "complete=0";
+      }
+    }
     prism::ImuSample imu0;
     imu0.sensor_id = 0;
     imu0.timestamp_us = 1780000000000000ULL;
+    imu0.timestamp_synced = true;
     prism::ImuSample imu1 = imu0;
     imu1.sensor_id = 1;
     imu1.timestamp_us += 100;
+    prism::ImuSample unsynced_imu0 = imu0;
+    unsynced_imu0.timestamp_synced = false;
+    prism::ImuSample unsynced_imu1 = imu1;
+    unsynced_imu1.timestamp_synced = false;
+    recorder.appendImu(unsynced_imu0);
+    recorder.appendImu(unsynced_imu1);
     recorder.appendImu(imu0);
     recorder.appendImu(imu1);
     std::array<std::vector<uint8_t>, 4> jpeg;
@@ -5563,6 +5812,10 @@ int runViewerApplication(int argc, char** argv) {
     metadata.host_frame_id = 7;
     metadata.trigger_time_ns = 1780000000000500000ULL;
     metadata.exposure_us = {200u, 250u, 500u, 1000u};
+    prism::VideoMeta unsynced_metadata = metadata;
+    unsynced_metadata.host_frame_id = 6;
+    unsynced_metadata.trigger_time_ns = 0;
+    recorder.appendFrameSet(6, 0, unsynced_metadata, jpeg);
     recorder.appendFrameSet(
         7, 1780000000000500ULL, metadata, jpeg);
     prism::LidarPointBatch lidar;
@@ -5571,10 +5824,21 @@ int runViewerApplication(int argc, char** argv) {
     lidar.time_type = 1u;
     lidar.batch_id = 9u;
     lidar.timestamp_raw = 1780000000000700000ULL;
+    lidar.timestamp_utc_us = 1780000000000700ULL;
+    lidar.time_interval_100ns = 100u;
+    lidar.flags = 0x03u;
+    lidar.timestamp_synced = true;
+    lidar.tai_offset_applied = true;
     lidar.points.push_back(
         prism::LidarPoint{1000, -2000, 3000, 77u, 4u});
     lidar.points.push_back(
         prism::LidarPoint{-4000, 5000, 6000, 88u, 5u});
+    prism::LidarPointBatch unsynced_lidar = lidar;
+    unsynced_lidar.flags = 0u;
+    unsynced_lidar.timestamp_synced = false;
+    unsynced_lidar.tai_offset_applied = false;
+    unsynced_lidar.timestamp_utc_us = 0;
+    recorder.appendLidar(unsynced_lidar);
     recorder.appendLidar(lidar);
     prism::LidarImuSample lidar_imu;
     lidar_imu.model = prism::LidarModel::Mid360S;
@@ -5584,8 +5848,14 @@ int runViewerApplication(int argc, char** argv) {
     lidar_imu.timestamp_raw_ns = 1780000000000800000ULL;
     lidar_imu.timestamp_utc_us = 1780000000000800ULL;
     lidar_imu.timestamp_synced = true;
+    lidar_imu.tai_offset_applied = true;
     lidar_imu.accel_m_s2 = {0.1f, -0.2f, 9.7f};
     lidar_imu.gyro_rad_s = {0.01f, -0.02f, 0.03f};
+    prism::LidarImuSample unsynced_lidar_imu = lidar_imu;
+    unsynced_lidar_imu.timestamp_synced = false;
+    unsynced_lidar_imu.tai_offset_applied = false;
+    unsynced_lidar_imu.timestamp_utc_us = 0;
+    recorder.appendLidarImu(unsynced_lidar_imu);
     recorder.appendLidarImu(lidar_imu);
     const DatasetRecordingSummary summary = recorder.stop();
     std::array<std::vector<DatasetImageEntry>, 4> loaded_images;
@@ -5611,8 +5881,74 @@ int runViewerApplication(int argc, char** argv) {
         summarizeTumFile(test_root / "lidar.tum");
     const TumFileSummary loaded_lidar_imu =
         summarizeTumFile(test_root / "lidar_imu.tum");
-    browser_load_ok = browser_load_ok && loaded_imu0.rows == 1 &&
-                      loaded_imu1.rows == 1 && loaded_lidar_imu.rows == 1;
+    const auto firstDataLine = [](const std::filesystem::path& path) {
+      std::ifstream input(path);
+      for (std::string line; std::getline(input, line);) {
+        if (!line.empty() && line[0] != '#') return line;
+      }
+      return std::string();
+    };
+    bool lidar_v6_source_ok = test_imu_only;
+    if (!test_imu_only) {
+      std::istringstream parser(firstDataLine(test_root / "lidar.tum"));
+      std::string timestamp;
+      std::string container;
+      uint64_t offset = 0;
+      uint64_t byte_size = 0;
+      uint64_t point_count = 0;
+      uint32_t model = 0;
+      uint32_t device_type = 0;
+      uint32_t time_type = 0;
+      uint32_t batch_id = 0;
+      uint64_t timestamp_raw = 0;
+      uint32_t time_interval_100ns = 0;
+      uint32_t timestamp_synced = 0;
+      uint32_t tai_offset_applied = 0;
+      std::string trailing;
+      lidar_v6_source_ok =
+          static_cast<bool>(
+              parser >> timestamp >> container >> offset >> byte_size >>
+              point_count >> model >> device_type >> time_type >> batch_id >>
+              timestamp_raw >> time_interval_100ns >> timestamp_synced >>
+              tai_offset_applied) &&
+          !(parser >> trailing) && timestamp == "1780000000.000700" &&
+          time_interval_100ns == 100u && timestamp_synced == 1u &&
+          tai_offset_applied == 1u;
+    }
+    std::istringstream lidar_imu_parser(
+        firstDataLine(test_root / "lidar_imu.tum"));
+    std::array<std::string, 7> lidar_imu_values;
+    uint32_t lidar_imu_model = 0;
+    uint32_t lidar_imu_device_type = 0;
+    uint32_t lidar_imu_time_type = 0;
+    uint32_t lidar_imu_sample_id = 0;
+    uint64_t lidar_imu_timestamp_raw = 0;
+    uint32_t lidar_imu_timestamp_synced = 0;
+    uint32_t lidar_imu_tai_offset_applied = 0;
+    std::string lidar_imu_trailing;
+    bool lidar_imu_v6_source_ok = true;
+    for (auto& value : lidar_imu_values) {
+      lidar_imu_v6_source_ok =
+          lidar_imu_v6_source_ok && static_cast<bool>(lidar_imu_parser >> value);
+    }
+    lidar_imu_v6_source_ok =
+        lidar_imu_v6_source_ok &&
+        static_cast<bool>(lidar_imu_parser >> lidar_imu_model >>
+                          lidar_imu_device_type >> lidar_imu_time_type >>
+                          lidar_imu_sample_id >> lidar_imu_timestamp_raw >>
+                          lidar_imu_timestamp_synced >>
+                          lidar_imu_tai_offset_applied) &&
+        !(lidar_imu_parser >> lidar_imu_trailing) &&
+        lidar_imu_values[0] == "1780000000.000800" &&
+        lidar_imu_timestamp_synced == 1u &&
+        lidar_imu_tai_offset_applied == 1u;
+    browser_load_ok =
+        browser_load_ok && loaded_imu0.rows == 1 &&
+        loaded_imu0.first_timestamp_us == 1780000000000000ULL &&
+        loaded_imu1.rows == 1 &&
+        loaded_imu1.first_timestamp_us == 1780000000000100ULL &&
+        loaded_lidar_imu.rows == 1 &&
+        loaded_lidar_imu.first_timestamp_us == 1780000000000800ULL;
     bool auxiliary_streams_ok = true;
     if (test_imu_only) {
       auxiliary_streams_ok = loaded_lidar.rows == 0 &&
@@ -5636,19 +5972,52 @@ int runViewerApplication(int argc, char** argv) {
       }
     } else {
       auxiliary_streams_ok =
-          loaded_lidar.rows == 1 && summary.lidar_batch_count == 1 &&
+          loaded_lidar.rows == 1 &&
+          loaded_lidar.first_timestamp_us == 1780000000000700ULL &&
+          summary.lidar_batch_count == 1 &&
           summary.lidar_point_count == 2 &&
           summary.lidar_imu_sample_count == 1 &&
           std::all_of(summary.image_count.begin(), summary.image_count.end(),
                       [](uint64_t count) { return count == 1; });
     }
     bool manifest_mode_ok = false;
+    bool manifest_complete_ok = false;
+    bool manifest_time_domain_ok = false;
+    bool manifest_epoch_ok = false;
+    bool manifest_alignment_ok = false;
+    std::array<bool, 6> manifest_unsynced_drop_fields{};
+    const std::array<std::string, 6> expected_unsynced_drop_fields = {
+        "unsynced_imu0_samples_dropped=1",
+        "unsynced_imu1_samples_dropped=1",
+        std::string("unsynced_camera_frame_sets_dropped=") +
+            (test_imu_only ? "0" : "1"),
+        std::string("unsynced_lidar_batches_dropped=") +
+            (test_imu_only ? "0" : "1"),
+        std::string("unsynced_lidar_points_dropped=") +
+            (test_imu_only ? "0" : "2"),
+        "unsynced_lidar_imu_samples_dropped=1"};
     std::ifstream manifest(test_root / "dataset.info");
     const std::string expected_mode =
         test_imu_only ? "recording_mode=imu-only" : "recording_mode=full";
     for (std::string line; std::getline(manifest, line);) {
       manifest_mode_ok = manifest_mode_ok || line == expected_mode;
+      manifest_complete_ok = manifest_complete_ok || line == "complete=1";
+      manifest_time_domain_ok = manifest_time_domain_ok ||
+                                line == "time_domain=rk-clock-realtime";
+      manifest_epoch_ok =
+          manifest_epoch_ok || line == "timestamp_epoch=unix";
+      manifest_alignment_ok = manifest_alignment_ok ||
+                              line == "alignment=common-device-time-domain";
+      for (size_t field = 0; field < expected_unsynced_drop_fields.size();
+           ++field) {
+        manifest_unsynced_drop_fields[field] =
+            manifest_unsynced_drop_fields[field] ||
+            line == expected_unsynced_drop_fields[field];
+      }
     }
+    const bool manifest_unsynced_drops_ok = std::all_of(
+        manifest_unsynced_drop_fields.begin(),
+        manifest_unsynced_drop_fields.end(), [](bool found) { return found; });
     const bool mode_ok =
         summary.mode == (test_imu_only ? DatasetRecordingMode::ImuOnly
                                        : DatasetRecordingMode::Full);
@@ -5705,7 +6074,63 @@ int runViewerApplication(int argc, char** argv) {
       no_lidar_ok = no_lidar_ok && manifest_lidar_none &&
                     manifest_lidar_imu_none;
     }
+    const bool expected_full_unsynced_drops =
+        test_imu_only ||
+        (summary.unsynced_camera_frame_sets_dropped == 1 &&
+         summary.unsynced_lidar_batches_dropped == 1 &&
+         summary.unsynced_lidar_points_dropped == 2);
+    const bool strict_time_drop_counts_ok =
+        summary.unsynced_imu_samples_dropped[0] == 1 &&
+        summary.unsynced_imu_samples_dropped[1] == 1 &&
+        summary.unsynced_lidar_imu_samples_dropped == 1 &&
+        expected_full_unsynced_drops;
+
+    const bool writer_queue_order_ok =
+        shouldTakeFrameJob(true, false, 300, 0) &&
+        !shouldTakeFrameJob(false, true, 0, 100) &&
+        shouldTakeFrameJob(true, true, 100, 200) &&
+        shouldTakeFrameJob(true, true, 100, 100) &&
+        !shouldTakeFrameJob(true, true, 300, 200);
+
+    // A recording that receives only unsynchronized samples is explicitly
+    // unusable; it must not report success merely because empty files were
+    // flushed without an I/O error.
+    const std::filesystem::path unsynced_only_root =
+        test_root / "unsynced-only";
+    DatasetRecorder unsynced_only_recorder;
+    std::string unsynced_only_error;
+    bool unsynced_only_fails = unsynced_only_recorder.start(
+        unsynced_only_root, true, DatasetRecordingMode::ImuOnly, false,
+        &unsynced_only_error);
+    if (unsynced_only_fails) {
+      unsynced_only_recorder.appendImu(unsynced_imu0);
+      unsynced_only_recorder.appendImu(unsynced_imu1);
+      const DatasetRecordingSummary unsynced_only_summary =
+          unsynced_only_recorder.stop();
+      bool incomplete_manifest_ok = false;
+      std::ifstream incomplete_manifest(unsynced_only_root / "dataset.info");
+      for (std::string line; std::getline(incomplete_manifest, line);) {
+        incomplete_manifest_ok =
+            incomplete_manifest_ok || line == "complete=0";
+      }
+      unsynced_only_fails =
+          !unsynced_only_summary.success &&
+          unsynced_only_summary.sample_count[0] == 0 &&
+          unsynced_only_summary.sample_count[1] == 0 &&
+          unsynced_only_summary.unsynced_imu_samples_dropped[0] == 1 &&
+          unsynced_only_summary.unsynced_imu_samples_dropped[1] == 1 &&
+          unsynced_only_summary.error.find("contains no synchronized") !=
+              std::string::npos &&
+          incomplete_manifest_ok;
+    }
     const bool success = summary.success && mode_ok && manifest_mode_ok &&
+                         manifest_complete_ok &&
+                         manifest_time_domain_ok && manifest_epoch_ok &&
+                         manifest_alignment_ok &&
+                         manifest_unsynced_drops_ok &&
+                         strict_time_drop_counts_ok && lidar_v6_source_ok &&
+                         lidar_imu_v6_source_ok && writer_queue_order_ok &&
+                         unsynced_only_fails && in_progress_manifest_ok &&
                          summary.sample_count[0] == 1 &&
                          summary.sample_count[1] == 1 && browser_load_ok &&
                          auxiliary_streams_ok && no_lidar_ok;
@@ -5721,8 +6146,26 @@ int runViewerApplication(int argc, char** argv) {
               << summary.lidar_point_count << " lidar_imu="
               << summary.lidar_imu_sample_count
               << " manifest_mode=" << (manifest_mode_ok ? "PASS" : "FAIL")
+              << " complete=" << (manifest_complete_ok ? "PASS" : "FAIL")
+              << " rk_time="
+              << (manifest_time_domain_ok ? "PASS" : "FAIL")
+              << " unix_epoch=" << (manifest_epoch_ok ? "PASS" : "FAIL")
+              << " alignment="
+              << (manifest_alignment_ok ? "PASS" : "FAIL")
+              << " unsynced_drops="
+              << (strict_time_drop_counts_ok ? "PASS" : "FAIL")
+              << " lidar_v6_source="
+              << (lidar_v6_source_ok ? "PASS" : "FAIL")
+              << " lidar_imu_v6_source="
+              << (lidar_imu_v6_source_ok ? "PASS" : "FAIL")
               << " browser_load=" << (browser_load_ok ? "PASS" : "FAIL")
               << " no_lidar=" << (no_lidar_ok ? "PASS" : "FAIL")
+              << " queue_order="
+              << (writer_queue_order_ok ? "PASS" : "FAIL")
+              << " empty_strict="
+              << (unsynced_only_fails ? "PASS" : "FAIL")
+              << " in_progress="
+              << (in_progress_manifest_ok ? "PASS" : "FAIL")
               << " error=" << summary.error << "\n";
     return success ? 0 : 11;
   }

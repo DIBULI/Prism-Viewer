@@ -35,7 +35,7 @@ version 3，`metadata.yaml` 采用 version 5，以兼容 ROS2 Humble 及能够�
 
 ## 数据集版本和录制模式
 
-新录制的数据集格式为 `prism-dataset-v5`。除原有 `imu0.tum`、`imu1.tum`、
+新录制的数据集格式为 `prism-dataset-v6`。除原有 `imu0.tum`、`imu1.tum`、
 四路相机索引和相机容器外，完整模式选择 LiDAR 时还会写入：
 
 ```text
@@ -46,10 +46,12 @@ lidar-data-0001.bin
 lidar_imu.tum
 ```
 
-`lidar.tum` 保存 UTC 索引时间、容器位置、点数、明确选择的型号、Livox 设备
-类型、原始时间类型、批次号和原始时间戳。点坐标在容器中保持毫米整数，只有
-导出 `PointCloud2` 时才转换成米。`lidar_imu.tum` 保存雷达内置 IMU 的 SI
-数据，以及型号、设备类型、原始时间类型、原始时间戳和同步来源。
+`lidar.tum` 保存归一化到 RK `CLOCK_REALTIME` 的雷达批次测量时间、容器位置、
+点数、型号、Livox 设备类型、
+原始时间类型、批次号、原始时间戳、时间间隔和同步来源。点坐标在容器中保持
+毫米整数，只有导出 `PointCloud2` 时才转换成米。`lidar_imu.tum` 保存雷达内置
+IMU 的 SI 数据，以及型号、设备类型、原始时间类型、原始时间戳、同步状态和
+是否应用 TAI→UTC 偏移。
 
 录制内容与导出结果如下：
 
@@ -63,19 +65,29 @@ lidar_imu.tum
 但不包含相机或点云话题。未选择 LiDAR 的 IMU-only 数据集仍只包含两路板载
 IMU 话题。
 
-旧的 `prism-dataset-v3` 和 `prism-dataset-v4` 数据集仍可导出。没有
+旧的 `prism-dataset-v3`、`prism-dataset-v4` 和 `prism-dataset-v5` 数据集仍可
+导出。没有
 `lidar_imu.tum` 时不会创建 `/prism/lidar/imu/data`；没有 `lidar.tum` 或没有
 点云行时不会创建点云话题。四个相机索引全部缺失会被识别为合法 IMU-only
 数据集；只缺少部分相机索引仍会被拒绝，避免静默导出不完整的四相机数据。
 
 ## 时间戳和文件安全
 
-- 相机、板载 IMU、LiDAR 点云和雷达 IMU 的 ROS 时间都使用各自索引第一列
-  已归一化的 Unix UTC。
+- 相机、板载 IMU、LiDAR 点云和雷达 IMU 的 ROS 时间都使用各自索引第一列，
+  即以 Unix epoch 表示的 RK `CLOCK_REALTIME` 微秒时间。
+- v6 只录制同步到该共同设备时间域的测量时间：相机采用公共 TRIG0 上升沿，
+  板载 IMU 采用 sensor-board 测量时间，点云和雷达 IMU 采用 Agent 从雷达时钟
+  归一化出的 RK 时间。绝对 UTC 准确度不影响同设备内的对齐；Viewer 主机时间
+  不生成或后备数据时间戳。
 - `lidar.tum` 中的 `time_type` 和 `timestamp_raw` 仅用于保留来源。原始 PTP
   纳秒可能处于 TAI 时钟域，导出器不会把它直接用作 ROS 时间。
-- `lidar_imu.tum` 中的原始时间和同步标记同样只保留在 Prism 数据集；ROS
-  消息时间使用第一列 UTC。
+- `time_interval_100ns`、同步状态和 TAI 偏移标记保留在 Prism 数据集；ROS
+  消息时间使用第一列 RK 时间。当前 PointCloud2 只有批次 header stamp，没有逐点
+  时间字段或运动去畸变。
+- v6 导出会验证四路相机同一帧时间完全一致、LiDAR 点云/雷达 IMU 的同步来源
+  字段，以及 manifest 声明的录制模式和必需文件。录制期间的 manifest 保持
+  `complete=0`，只有停止成功后才原子替换为 `complete=1`；v3-v5 按旧格式兼容
+  读取，不伪造新的同步保证。
 - 转换先写同目录的临时文件或临时目录，完成并封口后才替换已有输出；取消或
   转换失败不会留下一个看似完整的 Bag，也不会破坏原有输出。
 - 数据集索引中的容器路径必须是安全的相对路径，拒绝绝对路径和 `..` 跳转。

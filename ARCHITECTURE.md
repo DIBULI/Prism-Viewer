@@ -123,6 +123,14 @@ thread has an exception boundary, and its queued JPEG payload is capped at
 128 MiB so a slow or removable destination drops frame sets rather than
 terminating the process or exhausting host memory.
 
+Dataset v6 treats RK `CLOCK_REALTIME`, expressed in microseconds since the Unix
+epoch, as the only measurement time domain. Absolute UTC accuracy is outside
+the alignment contract.
+Camera TRIG0, synchronized sensor-board IMU samples, normalized LiDAR batch
+timestamps, and normalized LiDAR IMU timestamps are retained at native rates.
+Viewer arrival time is administrative only and is never substituted for an
+unsynchronized sensor timestamp or used to generate measurement timestamps.
+
 These presentation policies may skip obsolete preview frames if the host
 cannot render them in real time. They do not discard transport frames or
 change the reported receive FPS.

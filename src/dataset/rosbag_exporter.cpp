@@ -714,6 +714,118 @@ uint64_t countRows(const std::filesystem::path& path, bool required) {
   return count;
 }
 
+uint32_t datasetFormatVersion(const std::filesystem::path& dataset_root) {
+  std::ifstream manifest(dataset_root / "dataset.info");
+  constexpr const char* kPrefix = "format=prism-dataset-v";
+  const size_t prefix_size = std::char_traits<char>::length(kPrefix);
+  for (std::string line; std::getline(manifest, line);) {
+    if (line.compare(0, prefix_size, kPrefix) != 0) continue;
+    const std::string version_text = line.substr(prefix_size);
+    if (version_text.empty() ||
+        !std::all_of(version_text.begin(), version_text.end(), [](char value) {
+          return std::isdigit(static_cast<unsigned char>(value)) != 0;
+        })) {
+      throw std::runtime_error("invalid dataset format version");
+    }
+    const unsigned long version = std::stoul(version_text);
+    if (version > std::numeric_limits<uint32_t>::max()) {
+      throw std::runtime_error("dataset format version is too large");
+    }
+    return static_cast<uint32_t>(version);
+  }
+  return 0u;
+}
+
+struct V6DatasetLayout {
+  bool full = false;
+  bool cameras = false;
+  bool lidar = false;
+  bool lidar_imu = false;
+};
+
+V6DatasetLayout readV6DatasetLayout(
+    const std::filesystem::path& dataset_root) {
+  std::ifstream manifest(dataset_root / "dataset.info");
+  if (!manifest.is_open()) {
+    throw std::runtime_error("v6 dataset manifest is missing");
+  }
+  std::map<std::string, std::string> fields;
+  for (std::string line; std::getline(manifest, line);) {
+    if (line.empty() || line[0] == '#') continue;
+    const size_t separator = line.find('=');
+    if (separator == std::string::npos || separator == 0u ||
+        !fields.emplace(line.substr(0, separator),
+                        line.substr(separator + 1u))
+             .second) {
+      throw std::runtime_error("invalid or duplicate v6 manifest field");
+    }
+  }
+  if (!manifest.eof()) {
+    throw std::runtime_error("failed while reading dataset manifest");
+  }
+
+  const auto required = [&fields](const char* key) -> const std::string& {
+    const auto found = fields.find(key);
+    if (found == fields.end()) {
+      throw std::runtime_error(std::string("v6 manifest is missing ") + key);
+    }
+    return found->second;
+  };
+  if (required("complete") != "1") {
+    throw std::runtime_error(
+        "v6 dataset is incomplete and cannot be exported");
+  }
+  if (required("time_domain") != "rk-clock-realtime" ||
+      required("timestamp_epoch") != "unix" ||
+      required("alignment") != "common-device-time-domain") {
+    throw std::runtime_error("v6 dataset has an unsupported time domain");
+  }
+
+  V6DatasetLayout layout;
+  const std::string& recording_mode = required("recording_mode");
+  if (recording_mode == "full") {
+    layout.full = true;
+  } else if (recording_mode != "imu-only") {
+    throw std::runtime_error("v6 dataset has an invalid recording mode");
+  }
+
+  const std::string& image_storage = required("image_storage");
+  const std::string& camera_index = required("camera_index");
+  if (image_storage == "chunk-v1" &&
+      camera_index == "chunk-v2-with-actual-exposure") {
+    layout.cameras = true;
+  } else if (image_storage != "none" || camera_index != "none") {
+    throw std::runtime_error("v6 dataset has invalid camera storage fields");
+  }
+
+  const std::string& lidar_storage = required("lidar_storage");
+  if (lidar_storage == "cartesian-mm-chunk-v2-with-time-source") {
+    layout.lidar = true;
+  } else if (lidar_storage != "none") {
+    throw std::runtime_error("v6 dataset has an invalid LiDAR storage field");
+  }
+  const std::string& lidar_imu_storage = required("lidar_imu_storage");
+  if (lidar_imu_storage == "tum-si-v2-with-time-source") {
+    layout.lidar_imu = true;
+  } else if (lidar_imu_storage != "none") {
+    throw std::runtime_error(
+        "v6 dataset has an invalid LiDAR IMU storage field");
+  }
+
+  if (layout.full != layout.cameras ||
+      (layout.full && layout.lidar != layout.lidar_imu) ||
+      (!layout.full && layout.lidar)) {
+    throw std::runtime_error(
+        "v6 dataset storage declarations contradict its recording mode");
+  }
+  return layout;
+}
+
+bool isPlausibleRkClockRealtimeUs(uint64_t timestamp_us) {
+  constexpr uint64_t kMinimumRkClockRealtimeUs = 100000000000000ULL;
+  return timestamp_us >= kMinimumRkClockRealtimeUs;
+}
+
 uint64_t parseTimestampUs(const std::string& token) {
   if (token.empty() || token[0] == '-') {
     throw std::runtime_error("invalid negative or empty timestamp");
@@ -1250,6 +1362,13 @@ RosbagExportResult exportDatasetToRosbag(
         std::filesystem::weakly_canonical(output_path)) {
       throw std::runtime_error("output path cannot replace the source dataset");
     }
+    const uint32_t dataset_version = datasetFormatVersion(dataset_root);
+    if (dataset_version > 6u) {
+      throw std::runtime_error("unsupported future Prism dataset format");
+    }
+    const bool strict_time_v6 = dataset_version == 6u;
+    V6DatasetLayout v6_layout;
+    if (strict_time_v6) v6_layout = readV6DatasetLayout(dataset_root);
 
     std::array<uint64_t, 4> camera_rows{};
     std::array<uint64_t, 2> imu_rows{};
@@ -1262,31 +1381,70 @@ RosbagExportResult exportDatasetToRosbag(
         ++camera_index_count;
       }
     }
-    if (camera_index_count != 0 && camera_index_count != camera_rows.size()) {
+    if (strict_time_v6 &&
+        camera_index_count != (v6_layout.cameras ? camera_rows.size() : 0u)) {
+      throw std::runtime_error(
+          "v6 camera indexes do not match the manifest declaration");
+    }
+    if (!strict_time_v6 && camera_index_count != 0 &&
+        camera_index_count != camera_rows.size()) {
       throw std::runtime_error(
           "dataset has an incomplete set of camera indexes");
     }
-    const bool cameras_present = camera_index_count == camera_rows.size();
+    const bool cameras_present =
+        strict_time_v6 ? v6_layout.cameras
+                       : camera_index_count == camera_rows.size();
     if (cameras_present) {
       for (size_t camera = 0; camera < camera_rows.size(); ++camera) {
         camera_rows[camera] = countRows(
             dataset_root / ("cam" + std::to_string(camera) + ".tum"), true);
         total += camera_rows[camera];
       }
+      if (strict_time_v6 &&
+          (camera_rows.front() == 0u ||
+           !std::all_of(camera_rows.begin(), camera_rows.end(),
+                        [&camera_rows](uint64_t rows) {
+                          return rows == camera_rows.front();
+                        }))) {
+        throw std::runtime_error(
+            "v6 camera indexes contain no complete synchronized frame sets");
+      }
     }
     for (size_t imu = 0; imu < imu_rows.size(); ++imu) {
       imu_rows[imu] = countRows(
           dataset_root / ("imu" + std::to_string(imu) + ".tum"), true);
+      if (strict_time_v6 && imu_rows[imu] == 0u) {
+        throw std::runtime_error("v6 onboard IMU stream is empty");
+      }
       total += imu_rows[imu];
     }
     const std::filesystem::path lidar_index = dataset_root / "lidar.tum";
     const uint64_t lidar_rows = countRows(lidar_index, false);
-    const bool lidar_present = lidar_rows != 0;
+    const bool lidar_file_present =
+        std::filesystem::is_regular_file(lidar_index);
+    if (strict_time_v6 &&
+        ((v6_layout.lidar && (!lidar_file_present || lidar_rows == 0u)) ||
+         (!v6_layout.lidar && lidar_file_present))) {
+      throw std::runtime_error(
+          "v6 LiDAR point index does not match the manifest declaration");
+    }
+    const bool lidar_present =
+        strict_time_v6 ? v6_layout.lidar : lidar_rows != 0;
     total += lidar_rows;
     const std::filesystem::path lidar_imu_index =
         dataset_root / "lidar_imu.tum";
     const uint64_t lidar_imu_rows = countRows(lidar_imu_index, false);
-    const bool lidar_imu_present = lidar_imu_rows != 0;
+    const bool lidar_imu_file_present =
+        std::filesystem::is_regular_file(lidar_imu_index);
+    if (strict_time_v6 &&
+        ((v6_layout.lidar_imu &&
+          (!lidar_imu_file_present || lidar_imu_rows == 0u)) ||
+         (!v6_layout.lidar_imu && lidar_imu_file_present))) {
+      throw std::runtime_error(
+          "v6 LiDAR IMU index does not match the manifest declaration");
+    }
+    const bool lidar_imu_present =
+        strict_time_v6 ? v6_layout.lidar_imu : lidar_imu_rows != 0;
     total += lidar_imu_rows;
     if (total == 0) throw std::runtime_error("dataset is empty");
 
@@ -1295,6 +1453,10 @@ RosbagExportResult exportDatasetToRosbag(
                             lidar_present, lidar_imu_present);
 
     uint64_t completed = 0;
+    std::vector<uint64_t> camera0_timestamps;
+    if (strict_time_v6 && cameras_present) {
+      camera0_timestamps.reserve(static_cast<size_t>(camera_rows.front()));
+    }
     reportProgress(progress, completed, total,
                    format == RosbagFormat::Ros1 ? "Preparing ROS1 bag"
                                                 : "Preparing ROS2 bag",
@@ -1330,8 +1492,22 @@ RosbagExportResult exportDatasetToRosbag(
                                      std::to_string(line_number));
           }
           const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
+          if (strict_time_v6 &&
+              !isPlausibleRkClockRealtimeUs(timestamp_us)) {
+            throw std::runtime_error(
+                "v6 camera timestamp is not in the RK CLOCK_REALTIME epoch");
+          }
           if (sequence != 0 && timestamp_us < previous_timestamp) {
             throw std::runtime_error("camera timestamps are not monotonic");
+          }
+          if (strict_time_v6) {
+            if (camera == 0) {
+              camera0_timestamps.push_back(timestamp_us);
+            } else if (sequence >= camera0_timestamps.size() ||
+                       camera0_timestamps[sequence] != timestamp_us) {
+              throw std::runtime_error(
+                  "v6 four-camera frame timestamps are not identical");
+            }
           }
           previous_timestamp = timestamp_us;
           Bytes jpeg = readContainerPayload(
@@ -1376,6 +1552,11 @@ RosbagExportResult exportDatasetToRosbag(
                                    std::to_string(line_number));
         }
         const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
+        if (strict_time_v6 &&
+            !isPlausibleRkClockRealtimeUs(timestamp_us)) {
+          throw std::runtime_error(
+              "v6 IMU timestamp is not in the RK CLOCK_REALTIME epoch");
+        }
         if (sequence != 0 && timestamp_us < previous_timestamp) {
           throw std::runtime_error("IMU timestamps are not monotonic");
         }
@@ -1415,22 +1596,52 @@ RosbagExportResult exportDatasetToRosbag(
         uint32_t time_type = 0;
         uint32_t batch_id = 0;
         uint64_t raw_timestamp = 0;
-        std::string trailing;
         if (!(parser >> timestamp_text >> relative_path >> offset >> size >>
               point_count >> model >> device_type >> time_type >> batch_id >>
-              raw_timestamp) ||
-            (parser >> trailing) || point_count == 0 ||
+              raw_timestamp) || point_count == 0 ||
             point_count > kMaximumLidarPointsPerBatch ||
             size != point_count * 16ULL || (model != 1u && model != 2u)) {
           throw std::runtime_error("invalid lidar.tum line " +
                                    std::to_string(line_number));
         }
+        bool has_v6_time_source = false;
+        uint32_t time_interval_100ns = 0;
+        uint32_t timestamp_synced = 0;
+        uint32_t tai_offset_applied = 0;
+        parser >> std::ws;
+        if (!parser.eof()) {
+          std::string trailing;
+          if (!(parser >> time_interval_100ns >> timestamp_synced >>
+                tai_offset_applied) ||
+              (parser >> trailing) ||
+              time_interval_100ns >
+                  std::numeric_limits<uint16_t>::max() ||
+              timestamp_synced > 1u || tai_offset_applied > 1u ||
+              (tai_offset_applied != 0u && timestamp_synced == 0u)) {
+            throw std::runtime_error("invalid lidar.tum line " +
+                                     std::to_string(line_number));
+          }
+          has_v6_time_source = true;
+        }
+        if (strict_time_v6 &&
+            (!has_v6_time_source || timestamp_synced != 1u)) {
+          throw std::runtime_error(
+              "v6 lidar.tum requires a synchronized RK time source at line " +
+              std::to_string(line_number));
+        }
         (void)device_type;
         (void)batch_id;
-        // lidar.tum records a normalized host UTC timestamp in its first
-        // column. timestamp_raw is deliberately kept as opaque Livox metadata:
-        // PTP packets use the TAI scale and must not be written to ROS as UTC.
+        (void)time_interval_100ns;
+        // v6 records the LiDAR batch time normalized into the RK
+        // CLOCK_REALTIME epoch in the first column. Legacy v5 used a host
+        // receive time there. In both cases timestamp_raw remains opaque Livox
+        // metadata and must not be written directly to ROS.
         const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
+        if (strict_time_v6 &&
+            !isPlausibleRkClockRealtimeUs(timestamp_us)) {
+          throw std::runtime_error(
+              "v6 LiDAR timestamp is not in the RK CLOCK_REALTIME epoch");
+        }
         (void)time_type;
         (void)raw_timestamp;
         if (sequence != 0 && timestamp_us < previous_timestamp) {
@@ -1485,9 +1696,12 @@ RosbagExportResult exportDatasetToRosbag(
                                    std::to_string(line_number));
         }
 
-        // A recorder may append the six provenance fields below. Accept either
-        // the compact seven-column SI form or the complete extended form; a
-        // partial or unknown suffix is rejected instead of silently ignored.
+        // v3/v4 compact rows have no provenance; v5 appends six source fields;
+        // v6 appends tai_offset_applied as a seventh source field.
+        bool has_time_source = false;
+        bool has_tai_flag = false;
+        uint32_t timestamp_synced = 0;
+        uint32_t tai_offset_applied = 0;
         parser >> std::ws;
         if (!parser.eof()) {
           uint32_t model = 0;
@@ -1495,11 +1709,9 @@ RosbagExportResult exportDatasetToRosbag(
           uint32_t time_type = 0;
           uint64_t sample_id = 0;
           uint64_t timestamp_raw = 0;
-          uint32_t timestamp_synced = 0;
-          std::string trailing;
           if (!(parser >> model >> device_type >> time_type >> sample_id >>
                 timestamp_raw >> timestamp_synced) ||
-              (parser >> trailing) || (model != 1u && model != 2u) ||
+              (model != 1u && model != 2u) ||
               device_type > std::numeric_limits<uint8_t>::max() ||
               time_type > std::numeric_limits<uint8_t>::max() ||
               sample_id > std::numeric_limits<uint32_t>::max() ||
@@ -1507,9 +1719,32 @@ RosbagExportResult exportDatasetToRosbag(
             throw std::runtime_error("invalid lidar_imu.tum line " +
                                      std::to_string(line_number));
           }
+          has_time_source = true;
+          parser >> std::ws;
+          if (!parser.eof()) {
+            std::string trailing;
+            if (!(parser >> tai_offset_applied) || (parser >> trailing) ||
+                tai_offset_applied > 1u ||
+                (tai_offset_applied != 0u && timestamp_synced == 0u)) {
+              throw std::runtime_error("invalid lidar_imu.tum line " +
+                                       std::to_string(line_number));
+            }
+            has_tai_flag = true;
+          }
+        }
+        if (strict_time_v6 &&
+            (!has_time_source || !has_tai_flag || timestamp_synced != 1u)) {
+          throw std::runtime_error(
+              "v6 lidar_imu.tum requires a synchronized RK time source at line " +
+              std::to_string(line_number));
         }
 
         const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
+        if (strict_time_v6 &&
+            !isPlausibleRkClockRealtimeUs(timestamp_us)) {
+          throw std::runtime_error(
+              "v6 LiDAR IMU timestamp is not in the RK CLOCK_REALTIME epoch");
+        }
         if (sequence != 0 && timestamp_us < previous_timestamp) {
           throw std::runtime_error("LiDAR IMU timestamps are not monotonic");
         }

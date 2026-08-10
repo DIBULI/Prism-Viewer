@@ -171,5 +171,30 @@ int main() {
     return 16;
   }
 
+  // A valid metadata row can still carry trigger_time_ns=0 while the
+  // sensor-board is waiting for its RK time anchor. The per-JPEG timestamp is
+  // an Agent monotonic/encode timestamp and must never masquerade as an RK
+  // CLOCK_REALTIME measurement timestamp.
+  prism_viewer::transfer::CameraFrameAssembler unsynced_assembler;
+  prism::VideoMeta unsynced_metadata;
+  unsynced_metadata.valid = true;
+  unsynced_metadata.host_frame_id = 500;
+  unsynced_metadata.trigger_time_ns = 0;
+  unsynced_metadata.exposure_us = {200u, 250u, 350u, 450u};
+  unsynced_assembler.addMetadata(unsynced_metadata);
+  std::optional<prism_viewer::transfer::CameraFrameSet> unsynced_completed;
+  for (uint8_t camera = 0; camera < 4; ++camera) {
+    (void)unsynced_assembler.ingest(
+        makeChunk(camera, 500, 0, {camera, camera}));
+    const auto second = unsynced_assembler.ingest(
+        makeChunk(camera, 500, 2, {camera, camera}));
+    if (second.completed.has_value()) unsynced_completed = second.completed;
+  }
+  if (!unsynced_completed.has_value() ||
+      unsynced_completed->timestamp_us != 0) {
+    std::cerr << "unsynchronized camera frame used a monotonic fallback\n";
+    return 17;
+  }
+
   return 0;
 }

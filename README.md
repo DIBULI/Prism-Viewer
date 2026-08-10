@@ -6,11 +6,15 @@ Prism Viewer is the standalone Qt desktop application for Prism USB devices.
 It provides four-camera MJPEG preview, two onboard IMUs plus optional
 Mid-360/Mid-360S IMU recording, LiDAR point-cloud display with adjustable point
 rendering, device configuration, system upgrade, dataset browsing, and ROS1/ROS2
-bag export.
+bag export. New v6 recordings use RK `CLOCK_REALTIME` with a Unix epoch as the
+common device time domain for camera, onboard IMU, LiDAR point batches, and
+LiDAR IMU. Absolute UTC accuracy is not required for stream alignment;
+unsynchronized callbacks remain available for live preview but are never
+written as measurement timestamps.
 
 The Viewer does not compile or fetch Host SDK sources. The matching binary SDK
 is versioned directly in this repository under
-`vendor/prism-host-sdk/0.9.0`:
+`vendor/prism-host-sdk/0.10.0`:
 
 - public headers under `include/prism`;
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
@@ -58,8 +62,8 @@ matching `v*` additionally publishes both packaged Viewer archives as a GitHub
 Release. For example:
 
 ```sh
-git tag v0.9.0
-git push origin v0.9.0
+git tag v0.10.0
+git push origin v0.10.0
 ```
 
 ## Documentation

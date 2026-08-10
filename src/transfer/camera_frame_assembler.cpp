@@ -85,14 +85,6 @@ std::optional<CameraFrameSet> CameraFrameAssembler::takeCompletedFrame(
       completed.metadata.trigger_time_ns != 0) {
     completed.timestamp_us =
         completed.metadata.trigger_time_ns / 1000ULL;
-  } else {
-    for (uint64_t camera_timestamp : frame_set->second.timestamp_us) {
-      if (camera_timestamp != 0 &&
-          (completed.timestamp_us == 0 ||
-           camera_timestamp < completed.timestamp_us)) {
-        completed.timestamp_us = camera_timestamp;
-      }
-    }
   }
   completed.jpeg = std::move(frame_set->second.jpeg);
   partial_frame_sets_.erase(frame_set);
