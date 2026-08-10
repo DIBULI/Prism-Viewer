@@ -7,6 +7,11 @@
 
 namespace prism_viewer::dataset {
 
+enum class RosbagFormat {
+  Ros1,
+  Ros2,
+};
+
 struct RosbagExportProgress {
   uint64_t completed_records = 0;
   uint64_t total_records = 0;
@@ -30,7 +35,8 @@ using RosbagCancelCallback = std::function<bool()>;
 
 RosbagExportResult exportDatasetToRosbag(
     const std::filesystem::path& dataset_root,
-    const std::filesystem::path& output_path, bool overwrite,
+    const std::filesystem::path& output_path, RosbagFormat format,
+    bool overwrite,
     const RosbagProgressCallback& progress = {},
     const RosbagCancelCallback& cancelled = {});
 

@@ -1,5 +1,13 @@
 #include "dataset/rosbag_exporter.hpp"
 
+#include <QtCore/QByteArray>
+#include <QtCore/QString>
+#include <QtCore/QUuid>
+#include <QtCore/QVariant>
+#include <QtSql/QSqlDatabase>
+#include <QtSql/QSqlError>
+#include <QtSql/QSqlQuery>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -9,6 +17,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -173,8 +182,8 @@ Bytes timeValue(const RosTime& time) {
   return bytes;
 }
 
-void appendRosHeader(Bytes* message, uint32_t sequence,
-                     uint64_t timestamp_us, const std::string& frame_id) {
+void appendRos1Header(Bytes* message, uint32_t sequence,
+                      uint64_t timestamp_us, const std::string& frame_id) {
   const RosTime time = rosTimeFromUs(timestamp_us);
   appendU32(message, sequence);
   appendU32(message, time.seconds);
@@ -208,9 +217,9 @@ uint64_t comparableTime(const RosTime& time) {
          time.nanoseconds;
 }
 
-class RosbagWriter {
+class Ros1BagWriter {
  public:
-  explicit RosbagWriter(const std::filesystem::path& path) {
+  explicit Ros1BagWriter(const std::filesystem::path& path) {
     connections_.reserve(8u);
     output_.open(path, std::ios::out | std::ios::binary | std::ios::trunc);
     if (!output_.is_open()) throw std::runtime_error("cannot create rosbag");
@@ -445,24 +454,25 @@ const std::string kPointCloud2Definition =
     "uint8 INT32=5\nuint8 UINT32=6\nuint8 FLOAT32=7\nuint8 FLOAT64=8\n"
     "string name\nuint32 offset\nuint8 datatype\nuint32 count\n";
 
-Bytes makeCompressedImage(uint32_t sequence, uint64_t timestamp_us,
-                          const std::string& frame_id, const Bytes& jpeg) {
+Bytes makeRos1CompressedImage(uint32_t sequence, uint64_t timestamp_us,
+                              const std::string& frame_id,
+                              const Bytes& jpeg) {
   Bytes message;
   message.reserve(64u + jpeg.size());
-  appendRosHeader(&message, sequence, timestamp_us, frame_id);
+  appendRos1Header(&message, sequence, timestamp_us, frame_id);
   appendString(&message, "bgr8; jpeg compressed bgr8");
   appendU32(&message, static_cast<uint32_t>(jpeg.size()));
   message.insert(message.end(), jpeg.begin(), jpeg.end());
   return message;
 }
 
-Bytes makeImu(uint32_t sequence, uint64_t timestamp_us,
-              const std::string& frame_id,
-              const std::array<double, 3>& acceleration,
-              const std::array<double, 3>& angular_velocity) {
+Bytes makeRos1Imu(uint32_t sequence, uint64_t timestamp_us,
+                  const std::string& frame_id,
+                  const std::array<double, 3>& acceleration,
+                  const std::array<double, 3>& angular_velocity) {
   Bytes message;
   message.reserve(320u);
-  appendRosHeader(&message, sequence, timestamp_us, frame_id);
+  appendRos1Header(&message, sequence, timestamp_us, frame_id);
   appendDouble(&message, 0.0);
   appendDouble(&message, 0.0);
   appendDouble(&message, 0.0);
@@ -485,9 +495,9 @@ void appendPointField(Bytes* message, const std::string& name,
   appendU32(message, 1u);
 }
 
-Bytes makePointCloud2(uint32_t sequence, uint64_t timestamp_us,
-                      const std::string& frame_id, const Bytes& point_data,
-                      uint32_t point_count) {
+Bytes makeRos1PointCloud2(uint32_t sequence, uint64_t timestamp_us,
+                          const std::string& frame_id,
+                          const Bytes& point_data, uint32_t point_count) {
   constexpr uint32_t kStoredPointSize = 16u;
   constexpr uint32_t kRosPointSize = 20u;
   if (point_data.size() !=
@@ -496,7 +506,7 @@ Bytes makePointCloud2(uint32_t sequence, uint64_t timestamp_us,
   }
   Bytes message;
   message.reserve(160u + static_cast<size_t>(point_count) * kRosPointSize);
-  appendRosHeader(&message, sequence, timestamp_us, frame_id);
+  appendRos1Header(&message, sequence, timestamp_us, frame_id);
   appendU32(&message, 1u);
   appendU32(&message, point_count);
   appendU32(&message, 5u);
@@ -522,6 +532,158 @@ Bytes makePointCloud2(uint32_t sequence, uint64_t timestamp_us,
   }
   appendU8(&message, 1u);
   return message;
+}
+
+// ROS2 stores messages using little-endian CDR. Alignment is relative to the
+// payload after the four-byte encapsulation header (CDR_LE = 0x0001).
+class CdrWriter {
+ public:
+  CdrWriter() : bytes_{0x00u, 0x01u, 0x00u, 0x00u} {}
+
+  void writeU8(uint8_t value) { bytes_.push_back(value); }
+
+  void writeU32(uint32_t value) {
+    align(4u);
+    appendU32(&bytes_, value);
+  }
+
+  void writeI32(int32_t value) {
+    writeU32(static_cast<uint32_t>(value));
+  }
+
+  void writeFloat(float value) {
+    align(4u);
+    appendFloat(&bytes_, value);
+  }
+
+  void writeDouble(double value) {
+    align(8u);
+    appendDouble(&bytes_, value);
+  }
+
+  void writeString(const std::string& value) {
+    if (value.size() >= std::numeric_limits<uint32_t>::max()) {
+      throw std::runtime_error("ROS2 string is too large");
+    }
+    writeU32(static_cast<uint32_t>(value.size() + 1u));
+    bytes_.insert(bytes_.end(), value.begin(), value.end());
+    bytes_.push_back(0u);
+  }
+
+  void writeOctets(const Bytes& value) {
+    if (value.size() > std::numeric_limits<uint32_t>::max()) {
+      throw std::runtime_error("ROS2 byte sequence is too large");
+    }
+    writeU32(static_cast<uint32_t>(value.size()));
+    bytes_.insert(bytes_.end(), value.begin(), value.end());
+  }
+
+  Bytes finish() { return std::move(bytes_); }
+
+ private:
+  void align(size_t alignment) {
+    const size_t payload_offset = bytes_.size() - 4u;
+    const size_t padding =
+        (alignment - (payload_offset % alignment)) % alignment;
+    bytes_.insert(bytes_.end(), padding, 0u);
+  }
+
+  Bytes bytes_;
+};
+
+void writeRos2Header(CdrWriter* writer, uint64_t timestamp_us,
+                     const std::string& frame_id) {
+  const uint64_t seconds = timestamp_us / 1000000ULL;
+  if (seconds >
+      static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+    throw std::runtime_error("timestamp exceeds ROS2 builtin Time range");
+  }
+  writer->writeI32(static_cast<int32_t>(seconds));
+  writer->writeU32(
+      static_cast<uint32_t>(timestamp_us % 1000000ULL) * 1000u);
+  writer->writeString(frame_id);
+}
+
+Bytes makeRos2CompressedImage(uint64_t timestamp_us,
+                              const std::string& frame_id,
+                              const Bytes& jpeg) {
+  CdrWriter writer;
+  writeRos2Header(&writer, timestamp_us, frame_id);
+  writer.writeString("bgr8; jpeg compressed bgr8");
+  writer.writeOctets(jpeg);
+  return writer.finish();
+}
+
+Bytes makeRos2Imu(uint64_t timestamp_us, const std::string& frame_id,
+                  const std::array<double, 3>& acceleration,
+                  const std::array<double, 3>& angular_velocity) {
+  CdrWriter writer;
+  writeRos2Header(&writer, timestamp_us, frame_id);
+  writer.writeDouble(0.0);
+  writer.writeDouble(0.0);
+  writer.writeDouble(0.0);
+  writer.writeDouble(1.0);
+  for (size_t index = 0; index < 9; ++index) {
+    writer.writeDouble(index == 0 ? -1.0 : 0.0);
+  }
+  for (double value : angular_velocity) writer.writeDouble(value);
+  for (size_t index = 0; index < 9; ++index) writer.writeDouble(0.0);
+  for (double value : acceleration) writer.writeDouble(value);
+  for (size_t index = 0; index < 9; ++index) writer.writeDouble(0.0);
+  return writer.finish();
+}
+
+void writeRos2PointField(CdrWriter* writer, const std::string& name,
+                         uint32_t offset, uint8_t datatype) {
+  writer->writeString(name);
+  writer->writeU32(offset);
+  writer->writeU8(datatype);
+  writer->writeU32(1u);
+}
+
+Bytes makeRos2PointCloud2(uint64_t timestamp_us,
+                          const std::string& frame_id,
+                          const Bytes& point_data, uint32_t point_count) {
+  constexpr uint32_t kStoredPointSize = 16u;
+  constexpr uint32_t kRosPointSize = 20u;
+  if (point_data.size() !=
+      static_cast<size_t>(point_count) * kStoredPointSize) {
+    throw std::runtime_error("LiDAR payload size does not match point count");
+  }
+
+  Bytes ros_points;
+  ros_points.reserve(static_cast<size_t>(point_count) * kRosPointSize);
+  for (uint32_t point = 0; point < point_count; ++point) {
+    const uint8_t* source = point_data.data() + point * kStoredPointSize;
+    appendFloat(&ros_points,
+                static_cast<int32_t>(readU32(source)) / 1000.0f);
+    appendFloat(&ros_points,
+                static_cast<int32_t>(readU32(source + 4)) / 1000.0f);
+    appendFloat(&ros_points,
+                static_cast<int32_t>(readU32(source + 8)) / 1000.0f);
+    appendFloat(&ros_points, static_cast<float>(source[12]));
+    appendU8(&ros_points, source[13]);
+    appendU8(&ros_points, 0u);
+    appendU8(&ros_points, 0u);
+    appendU8(&ros_points, 0u);
+  }
+
+  CdrWriter writer;
+  writeRos2Header(&writer, timestamp_us, frame_id);
+  writer.writeU32(1u);
+  writer.writeU32(point_count);
+  writer.writeU32(5u);
+  writeRos2PointField(&writer, "x", 0u, 7u);
+  writeRos2PointField(&writer, "y", 4u, 7u);
+  writeRos2PointField(&writer, "z", 8u, 7u);
+  writeRos2PointField(&writer, "intensity", 12u, 7u);
+  writeRos2PointField(&writer, "tag", 16u, 2u);
+  writer.writeU8(0u);
+  writer.writeU32(kRosPointSize);
+  writer.writeU32(point_count * kRosPointSize);
+  writer.writeOctets(ros_points);
+  writer.writeU8(1u);
+  return writer.finish();
 }
 
 bool isSafeRelativePath(const std::filesystem::path& path) {
@@ -651,11 +813,385 @@ uint64_t lidarTimestampUs(uint32_t time_type, uint64_t raw_timestamp,
   return fallback_us;
 }
 
+QString pathToQString(const std::filesystem::path& path) {
+#ifdef _WIN32
+  return QString::fromStdWString(path.wstring());
+#else
+  return QString::fromUtf8(path.string().c_str());
+#endif
+}
+
+std::string yamlQuote(const std::string& text) {
+  std::string quoted = "\"";
+  for (const unsigned char character : text) {
+    switch (character) {
+      case '\\':
+        quoted += "\\\\";
+        break;
+      case '"':
+        quoted += "\\\"";
+        break;
+      case '\n':
+        quoted += "\\n";
+        break;
+      case '\r':
+        quoted += "\\r";
+        break;
+      case '\t':
+        quoted += "\\t";
+        break;
+      default:
+        quoted.push_back(static_cast<char>(character));
+        break;
+    }
+  }
+  quoted.push_back('"');
+  return quoted;
+}
+
+struct Ros2Topic {
+  int id = 0;
+  std::string name;
+  std::string type;
+  uint64_t message_count = 0;
+};
+
+class Ros2BagWriter {
+ public:
+  Ros2BagWriter(const std::filesystem::path& directory,
+                const std::filesystem::path& final_output)
+      : directory_(directory),
+        connection_name_(QStringLiteral("prism_rosbag2_") +
+                         QUuid::createUuid().toString(QUuid::WithoutBraces)) {
+    std::string base = final_output.filename().string();
+    if (final_output.extension() == std::filesystem::path(".rosbag2")) {
+      base = final_output.stem().string();
+    }
+    if (base.empty()) base = "prism_dataset";
+    database_filename_ = base + "_0.db3";
+    database_path_ = directory_ / database_filename_;
+
+    if (!std::filesystem::create_directory(directory_)) {
+      throw std::runtime_error("cannot create temporary ROS2 bag directory");
+    }
+    try {
+      if (!QSqlDatabase::isDriverAvailable(QStringLiteral("QSQLITE"))) {
+        throw std::runtime_error(
+            "Qt SQLite driver is unavailable; install the Qt SQLite plugin");
+      }
+      database_ =
+          QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection_name_);
+      database_.setDatabaseName(pathToQString(database_path_));
+      if (!database_.open()) {
+        throwSqlError("cannot create ROS2 SQLite bag", database_.lastError());
+      }
+      execute(QStringLiteral(
+          "CREATE TABLE schema(schema_version INTEGER PRIMARY KEY,"
+          "ros_distro TEXT NOT NULL);"));
+      execute(QStringLiteral(
+          "CREATE TABLE metadata(id INTEGER PRIMARY KEY,"
+          "metadata_version INTEGER NOT NULL,metadata TEXT NOT NULL);"));
+      execute(QStringLiteral(
+          "CREATE TABLE topics(id INTEGER PRIMARY KEY,name TEXT NOT NULL,"
+          "type TEXT NOT NULL,serialization_format TEXT NOT NULL,"
+          "offered_qos_profiles TEXT NOT NULL);"));
+      execute(QStringLiteral(
+          "CREATE TABLE messages(id INTEGER PRIMARY KEY,topic_id INTEGER "
+          "NOT NULL,timestamp INTEGER NOT NULL,data BLOB NOT NULL);"));
+      execute(QStringLiteral(
+          "CREATE INDEX timestamp_idx ON messages (timestamp ASC);"));
+
+      QSqlQuery schema(database_);
+      schema.prepare(QStringLiteral(
+          "INSERT INTO schema (schema_version, ros_distro) VALUES (3, ?);"));
+      schema.addBindValue(QStringLiteral("humble"));
+      if (!schema.exec()) {
+        throwSqlError("cannot initialize ROS2 bag schema", schema.lastError());
+      }
+      if (!database_.transaction()) {
+        throwSqlError("cannot start ROS2 bag transaction",
+                      database_.lastError());
+      }
+      transaction_active_ = true;
+      insert_message_ = QSqlQuery(database_);
+      if (!insert_message_.prepare(QStringLiteral(
+              "INSERT INTO messages (timestamp, topic_id, data) "
+              "VALUES (?, ?, ?);"))) {
+        throwSqlError("cannot prepare ROS2 message insert",
+                      insert_message_.lastError());
+      }
+    } catch (...) {
+      closeDatabase();
+      throw;
+    }
+  }
+
+  ~Ros2BagWriter() {
+    if (transaction_active_ && database_.isOpen()) database_.rollback();
+    closeDatabase();
+  }
+
+  int addTopic(const std::string& name, const std::string& type) {
+    const int id = static_cast<int>(topics_.size()) + 1;
+    QSqlQuery topic(database_);
+    topic.prepare(QStringLiteral(
+        "INSERT INTO topics (id, name, type, serialization_format, "
+        "offered_qos_profiles) VALUES (?, ?, ?, 'cdr', '');"));
+    topic.addBindValue(id);
+    topic.addBindValue(QString::fromStdString(name));
+    topic.addBindValue(QString::fromStdString(type));
+    if (!topic.exec()) {
+      throwSqlError("cannot add ROS2 bag topic", topic.lastError());
+    }
+    topics_.push_back(Ros2Topic{id, name, type, 0u});
+    return id;
+  }
+
+  void writeMessage(int topic_id, uint64_t timestamp_us,
+                    const Bytes& message) {
+    if (topic_id <= 0 ||
+        topic_id > static_cast<int>(topics_.size())) {
+      throw std::logic_error("invalid ROS2 bag topic id");
+    }
+    if (timestamp_us >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / 1000ULL) {
+      throw std::runtime_error("timestamp exceeds ROS2 bag range");
+    }
+    if (message.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+      throw std::runtime_error("ROS2 message exceeds Qt byte-array limit");
+    }
+    const int64_t timestamp_ns = static_cast<int64_t>(timestamp_us * 1000ULL);
+    const QByteArray payload(
+        reinterpret_cast<const char*>(message.data()),
+        static_cast<int>(message.size()));
+    insert_message_.bindValue(0, static_cast<qlonglong>(timestamp_ns));
+    insert_message_.bindValue(1, topic_id);
+    insert_message_.bindValue(2, payload);
+    if (!insert_message_.exec()) {
+      throwSqlError("cannot write ROS2 bag message",
+                    insert_message_.lastError());
+    }
+    ++topics_[static_cast<size_t>(topic_id - 1)].message_count;
+    ++message_count_;
+    if (!has_messages_) {
+      minimum_timestamp_ns_ = timestamp_ns;
+      maximum_timestamp_ns_ = timestamp_ns;
+      has_messages_ = true;
+    } else {
+      minimum_timestamp_ns_ = std::min(minimum_timestamp_ns_, timestamp_ns);
+      maximum_timestamp_ns_ = std::max(maximum_timestamp_ns_, timestamp_ns);
+    }
+  }
+
+  uint64_t finish() {
+    if (!has_messages_) {
+      throw std::runtime_error("dataset contains no ROS messages");
+    }
+    insert_message_.finish();
+    if (!database_.commit()) {
+      throwSqlError("cannot commit ROS2 bag", database_.lastError());
+    }
+    transaction_active_ = false;
+    closeDatabase();
+    writeMetadata();
+    return std::filesystem::file_size(database_path_) +
+           std::filesystem::file_size(directory_ / "metadata.yaml");
+  }
+
+ private:
+  [[noreturn]] static void throwSqlError(const char* operation,
+                                         const QSqlError& error) {
+    throw std::runtime_error(std::string(operation) + ": " +
+                             error.text().toStdString());
+  }
+
+  void execute(const QString& statement) {
+    QSqlQuery query(database_);
+    if (!query.exec(statement)) {
+      throwSqlError("cannot initialize ROS2 bag database", query.lastError());
+    }
+  }
+
+  void closeDatabase() {
+    insert_message_ = QSqlQuery();
+    if (database_.isValid()) database_.close();
+    database_ = QSqlDatabase();
+    if (!connection_name_.isEmpty() &&
+        QSqlDatabase::contains(connection_name_)) {
+      QSqlDatabase::removeDatabase(connection_name_);
+    }
+  }
+
+  void writeMetadata() const {
+    const int64_t duration_ns = maximum_timestamp_ns_ - minimum_timestamp_ns_;
+    std::ofstream output(directory_ / "metadata.yaml",
+                         std::ios::out | std::ios::trunc);
+    if (!output.is_open()) {
+      throw std::runtime_error("cannot create ROS2 metadata.yaml");
+    }
+    output << "rosbag2_bagfile_information:\n"
+           << "  version: 5\n"
+           << "  storage_identifier: sqlite3\n"
+           << "  duration:\n"
+           << "    nanoseconds: " << duration_ns << "\n"
+           << "  starting_time:\n"
+           << "    nanoseconds_since_epoch: " << minimum_timestamp_ns_ << "\n"
+           << "  message_count: " << message_count_ << "\n"
+           << "  topics_with_message_count:\n";
+    for (const auto& topic : topics_) {
+      output << "    - topic_metadata:\n"
+             << "        name: " << yamlQuote(topic.name) << "\n"
+             << "        type: " << yamlQuote(topic.type) << "\n"
+             << "        serialization_format: cdr\n"
+             << "        offered_qos_profiles: \"\"\n"
+             << "      message_count: " << topic.message_count << "\n";
+    }
+    output << "  compression_format: \"\"\n"
+           << "  compression_mode: \"\"\n"
+           << "  relative_file_paths:\n"
+           << "    - " << yamlQuote(database_filename_) << "\n"
+           << "  files:\n"
+           << "    - path: " << yamlQuote(database_filename_) << "\n"
+           << "      starting_time:\n"
+           << "        nanoseconds_since_epoch: " << minimum_timestamp_ns_ << "\n"
+           << "      duration:\n"
+           << "        nanoseconds: " << duration_ns << "\n"
+           << "      message_count: " << message_count_ << "\n";
+    output.flush();
+    if (!output.good()) {
+      throw std::runtime_error("cannot write ROS2 metadata.yaml");
+    }
+  }
+
+  std::filesystem::path directory_;
+  std::filesystem::path database_path_;
+  std::string database_filename_;
+  QString connection_name_;
+  QSqlDatabase database_;
+  QSqlQuery insert_message_;
+  std::vector<Ros2Topic> topics_;
+  uint64_t message_count_ = 0;
+  int64_t minimum_timestamp_ns_ = 0;
+  int64_t maximum_timestamp_ns_ = 0;
+  bool has_messages_ = false;
+  bool transaction_active_ = false;
+};
+
+class DatasetBagWriter {
+ public:
+  DatasetBagWriter(RosbagFormat format,
+                   const std::filesystem::path& temporary,
+                   const std::filesystem::path& final_output,
+                   bool lidar_present)
+      : format_(format) {
+    if (format_ == RosbagFormat::Ros1) {
+      ros1_ = std::make_unique<Ros1BagWriter>(temporary);
+      for (size_t camera = 0; camera < camera_ros1_.size(); ++camera) {
+        camera_ros1_[camera] = &ros1_->addConnection(
+            "/prism/camera" + std::to_string(camera) + "/image/compressed",
+            "sensor_msgs/CompressedImage",
+            "8f7a12909da2c9d3332d540a0977563f",
+            kCompressedImageDefinition);
+      }
+      for (size_t imu = 0; imu < imu_ros1_.size(); ++imu) {
+        imu_ros1_[imu] = &ros1_->addConnection(
+            "/prism/imu" + std::to_string(imu) + "/data",
+            "sensor_msgs/Imu", "6a62c6daae103f4ff57a132d6f95cec2",
+            kImuDefinition);
+      }
+      if (lidar_present) {
+        lidar_ros1_ = &ros1_->addConnection(
+            "/prism/lidar/points", "sensor_msgs/PointCloud2",
+            "1158d486dd51d683ce2f1be655c3c181", kPointCloud2Definition);
+      }
+      return;
+    }
+
+    ros2_ = std::make_unique<Ros2BagWriter>(temporary, final_output);
+    for (size_t camera = 0; camera < camera_ros2_.size(); ++camera) {
+      camera_ros2_[camera] = ros2_->addTopic(
+          "/prism/camera" + std::to_string(camera) + "/image/compressed",
+          "sensor_msgs/msg/CompressedImage");
+    }
+    for (size_t imu = 0; imu < imu_ros2_.size(); ++imu) {
+      imu_ros2_[imu] = ros2_->addTopic(
+          "/prism/imu" + std::to_string(imu) + "/data",
+          "sensor_msgs/msg/Imu");
+    }
+    if (lidar_present) {
+      lidar_ros2_ = ros2_->addTopic(
+          "/prism/lidar/points", "sensor_msgs/msg/PointCloud2");
+    }
+  }
+
+  void writeCamera(size_t camera, uint32_t sequence, uint64_t timestamp_us,
+                   const Bytes& jpeg) {
+    const std::string frame_id =
+        "camera" + std::to_string(camera) + "_optical_frame";
+    if (format_ == RosbagFormat::Ros1) {
+      ros1_->writeMessage(
+          camera_ros1_.at(camera), timestamp_us,
+          makeRos1CompressedImage(sequence, timestamp_us, frame_id, jpeg));
+    } else {
+      ros2_->writeMessage(
+          camera_ros2_.at(camera), timestamp_us,
+          makeRos2CompressedImage(timestamp_us, frame_id, jpeg));
+    }
+  }
+
+  void writeImu(size_t imu, uint32_t sequence, uint64_t timestamp_us,
+                const std::array<double, 3>& acceleration,
+                const std::array<double, 3>& angular_velocity) {
+    const std::string frame_id = "imu" + std::to_string(imu) + "_frame";
+    if (format_ == RosbagFormat::Ros1) {
+      ros1_->writeMessage(
+          imu_ros1_.at(imu), timestamp_us,
+          makeRos1Imu(sequence, timestamp_us, frame_id, acceleration,
+                      angular_velocity));
+    } else {
+      ros2_->writeMessage(
+          imu_ros2_.at(imu), timestamp_us,
+          makeRos2Imu(timestamp_us, frame_id, acceleration, angular_velocity));
+    }
+  }
+
+  void writeLidar(uint32_t sequence, uint64_t timestamp_us,
+                  const std::string& frame_id, const Bytes& points,
+                  uint32_t point_count) {
+    if (format_ == RosbagFormat::Ros1) {
+      ros1_->writeMessage(
+          lidar_ros1_, timestamp_us,
+          makeRos1PointCloud2(sequence, timestamp_us, frame_id, points,
+                              point_count));
+    } else {
+      ros2_->writeMessage(
+          lidar_ros2_, timestamp_us,
+          makeRos2PointCloud2(timestamp_us, frame_id, points, point_count));
+    }
+  }
+
+  uint64_t finish() {
+    return format_ == RosbagFormat::Ros1 ? ros1_->finish() : ros2_->finish();
+  }
+
+ private:
+  RosbagFormat format_;
+  std::unique_ptr<Ros1BagWriter> ros1_;
+  std::unique_ptr<Ros2BagWriter> ros2_;
+  std::array<Connection*, 4> camera_ros1_{};
+  std::array<Connection*, 2> imu_ros1_{};
+  Connection* lidar_ros1_ = nullptr;
+  std::array<int, 4> camera_ros2_{};
+  std::array<int, 2> imu_ros2_{};
+  int lidar_ros2_ = 0;
+};
+
 }  // namespace
 
 RosbagExportResult exportDatasetToRosbag(
     const std::filesystem::path& dataset_root,
-    const std::filesystem::path& output_path, bool overwrite,
+    const std::filesystem::path& output_path, RosbagFormat format,
+    bool overwrite,
     const RosbagProgressCallback& progress,
     const RosbagCancelCallback& cancelled) {
   RosbagExportResult result;
@@ -664,7 +1200,11 @@ RosbagExportResult exportDatasetToRosbag(
     if (dataset_root.empty() || output_path.empty()) {
       throw std::invalid_argument("dataset and output paths are required");
     }
-    if (output_path.extension() != std::filesystem::path(".bag")) {
+    if (format != RosbagFormat::Ros1 && format != RosbagFormat::Ros2) {
+      throw std::invalid_argument("unsupported ROS bag format");
+    }
+    if (format == RosbagFormat::Ros1 &&
+        output_path.extension() != std::filesystem::path(".bag")) {
       throw std::invalid_argument("output filename must use the .bag extension");
     }
     if (!std::filesystem::is_directory(dataset_root)) {
@@ -673,12 +1213,23 @@ RosbagExportResult exportDatasetToRosbag(
     if (std::filesystem::exists(output_path) && !overwrite) {
       throw std::runtime_error("output rosbag already exists");
     }
-    if (std::filesystem::is_directory(output_path)) {
-      throw std::runtime_error("output rosbag path is a directory");
+    if (std::filesystem::exists(output_path) &&
+        ((format == RosbagFormat::Ros1 &&
+          std::filesystem::is_directory(output_path)) ||
+         (format == RosbagFormat::Ros2 &&
+          !std::filesystem::is_directory(output_path)))) {
+      throw std::runtime_error(
+          format == RosbagFormat::Ros1
+              ? "ROS1 output path is a directory"
+              : "ROS2 output path is not a directory");
     }
     if (!output_path.parent_path().empty() &&
         !std::filesystem::is_directory(output_path.parent_path())) {
       throw std::runtime_error("output directory does not exist");
+    }
+    if (std::filesystem::weakly_canonical(dataset_root) ==
+        std::filesystem::weakly_canonical(output_path)) {
+      throw std::runtime_error("output path cannot replace the source dataset");
     }
 
     std::array<uint64_t, 4> camera_rows{};
@@ -701,30 +1252,14 @@ RosbagExportResult exportDatasetToRosbag(
     if (total == 0) throw std::runtime_error("dataset is empty");
 
     temporary = temporaryPathFor(output_path);
-    RosbagWriter writer(temporary);
-    std::array<Connection*, 4> camera_connections{};
-    std::array<Connection*, 2> imu_connections{};
-    for (size_t camera = 0; camera < camera_connections.size(); ++camera) {
-      camera_connections[camera] = &writer.addConnection(
-          "/prism/camera" + std::to_string(camera) + "/image/compressed",
-          "sensor_msgs/CompressedImage", "8f7a12909da2c9d3332d540a0977563f",
-          kCompressedImageDefinition);
-    }
-    for (size_t imu = 0; imu < imu_connections.size(); ++imu) {
-      imu_connections[imu] = &writer.addConnection(
-          "/prism/imu" + std::to_string(imu) + "/data", "sensor_msgs/Imu",
-          "6a62c6daae103f4ff57a132d6f95cec2", kImuDefinition);
-    }
-    Connection* lidar_connection = nullptr;
-    if (lidar_present) {
-      lidar_connection = &writer.addConnection(
-          "/prism/lidar/points", "sensor_msgs/PointCloud2",
-          "1158d486dd51d683ce2f1be655c3c181", kPointCloud2Definition);
-    }
+    DatasetBagWriter writer(format, temporary, output_path, lidar_present);
 
     uint64_t completed = 0;
-    reportProgress(progress, completed, total, "Preparing ROS1 bag", true);
-    for (size_t camera = 0; camera < camera_connections.size(); ++camera) {
+    reportProgress(progress, completed, total,
+                   format == RosbagFormat::Ros1 ? "Preparing ROS1 bag"
+                                                : "Preparing ROS2 bag",
+                   true);
+    for (size_t camera = 0; camera < camera_rows.size(); ++camera) {
       checkCancelled(cancelled);
       const std::string stage = "Exporting camera " + std::to_string(camera);
       std::ifstream index(
@@ -760,12 +1295,7 @@ RosbagExportResult exportDatasetToRosbag(
         Bytes jpeg = readContainerPayload(
             dataset_root, relative_path, offset, static_cast<uint32_t>(size),
             &container, &open_container);
-        writer.writeMessage(
-            camera_connections[camera], timestamp_us,
-            makeCompressedImage(sequence++, timestamp_us,
-                                "camera" + std::to_string(camera) +
-                                    "_optical_frame",
-                                jpeg));
+        writer.writeCamera(camera, sequence++, timestamp_us, jpeg);
         ++result.camera_messages;
         ++completed;
         checkCancelled(cancelled);
@@ -775,7 +1305,7 @@ RosbagExportResult exportDatasetToRosbag(
       reportProgress(progress, completed, total, stage, true);
     }
 
-    for (size_t imu = 0; imu < imu_connections.size(); ++imu) {
+    for (size_t imu = 0; imu < imu_rows.size(); ++imu) {
       checkCancelled(cancelled);
       const std::string stage = "Exporting IMU " + std::to_string(imu);
       std::ifstream input(
@@ -805,10 +1335,8 @@ RosbagExportResult exportDatasetToRosbag(
           throw std::runtime_error("IMU timestamps are not monotonic");
         }
         previous_timestamp = timestamp_us;
-        writer.writeMessage(imu_connections[imu], timestamp_us,
-                            makeImu(sequence++, timestamp_us,
-                                    "imu" + std::to_string(imu) + "_frame",
-                                    acceleration, angular_velocity));
+        writer.writeImu(imu, sequence++, timestamp_us, acceleration,
+                        angular_velocity);
         ++result.imu_messages;
         ++completed;
         checkCancelled(cancelled);
@@ -818,7 +1346,7 @@ RosbagExportResult exportDatasetToRosbag(
       reportProgress(progress, completed, total, stage, true);
     }
 
-    if (lidar_connection != nullptr) {
+    if (lidar_present) {
       checkCancelled(cancelled);
       const std::string stage = "Exporting LiDAR point clouds";
       std::ifstream input(lidar_index);
@@ -864,11 +1392,10 @@ RosbagExportResult exportDatasetToRosbag(
         Bytes points = readContainerPayload(
             dataset_root, relative_path, offset, static_cast<uint32_t>(size),
             &container, &open_container);
-        writer.writeMessage(
-            lidar_connection, timestamp_us,
-            makePointCloud2(sequence++, timestamp_us,
-                            model == 1u ? "livox_mid360" : "livox_mid360s",
-                            points, static_cast<uint32_t>(point_count)));
+        writer.writeLidar(
+            sequence++, timestamp_us,
+            model == 1u ? "livox_mid360" : "livox_mid360s", points,
+            static_cast<uint32_t>(point_count));
         ++result.lidar_messages;
         result.lidar_points += point_count;
         ++completed;
@@ -880,7 +1407,10 @@ RosbagExportResult exportDatasetToRosbag(
     }
 
     checkCancelled(cancelled);
-    reportProgress(progress, completed, total, "Finalizing ROS1 bag", true);
+    reportProgress(progress, completed, total,
+                   format == RosbagFormat::Ros1 ? "Finalizing ROS1 bag"
+                                                : "Finalizing ROS2 bag",
+                   true);
     result.output_bytes = writer.finish();
     checkCancelled(cancelled);
     if (std::filesystem::exists(output_path)) {
@@ -896,12 +1426,15 @@ RosbagExportResult exportDatasetToRosbag(
         throw;
       }
       std::error_code ignored;
-      std::filesystem::remove(backup, ignored);
+      std::filesystem::remove_all(backup, ignored);
     } else {
       std::filesystem::rename(temporary, output_path);
     }
     result.success = true;
-    reportProgress(progress, total, total, "ROS1 bag complete", true);
+    reportProgress(progress, total, total,
+                   format == RosbagFormat::Ros1 ? "ROS1 bag complete"
+                                                : "ROS2 bag complete",
+                   true);
   } catch (const Cancelled&) {
     result.cancelled = true;
   } catch (const std::exception& exception) {
@@ -911,7 +1444,7 @@ RosbagExportResult exportDatasetToRosbag(
   }
   if (!result.success && !temporary.empty()) {
     std::error_code ignored;
-    std::filesystem::remove(temporary, ignored);
+    std::filesystem::remove_all(temporary, ignored);
   }
   return result;
 }

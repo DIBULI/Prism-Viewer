@@ -12,11 +12,11 @@ if(NOT TARGET prism_usb_sdk)
                    "${CMAKE_CURRENT_BINARY_DIR}/usb-sdk")
 endif()
 
-find_package(Qt6 QUIET COMPONENTS Widgets Charts)
+find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql)
 if(Qt6_FOUND)
   set(QT_PACKAGE Qt6)
 else()
-  find_package(Qt5 REQUIRED COMPONENTS Widgets Charts)
+  find_package(Qt5 REQUIRED COMPONENTS Widgets Charts Sql)
   set(QT_PACKAGE Qt5)
 endif()
 
@@ -49,6 +49,7 @@ target_link_libraries(prism-viewer PRIVATE
   prism_usb_sdk
   ${QT_PACKAGE}::Widgets
   ${QT_PACKAGE}::Charts
+  ${QT_PACKAGE}::Sql
 )
 
 if(MSVC)
@@ -134,6 +135,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(rosbag-exporter-test PRIVATE src)
   target_compile_features(rosbag-exporter-test PRIVATE cxx_std_17)
+  target_link_libraries(rosbag-exporter-test PRIVATE ${QT_PACKAGE}::Sql)
   if(MSVC)
     target_compile_options(
       rosbag-exporter-test PRIVATE /W4 /permissive- /utf-8)

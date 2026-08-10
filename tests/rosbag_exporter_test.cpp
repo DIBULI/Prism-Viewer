@@ -1,15 +1,28 @@
 #include "dataset/rosbag_exporter.hpp"
 
+#include <QtCore/QByteArray>
+#include <QtCore/QCoreApplication>
+#include <QtCore/QString>
+#include <QtCore/QUuid>
+#include <QtCore/QVariant>
+#include <QtSql/QSqlDatabase>
+#include <QtSql/QSqlError>
+#include <QtSql/QSqlQuery>
+
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -141,9 +154,107 @@ Bytes readFile(const std::filesystem::path& path) {
   return bytes;
 }
 
+std::string readText(const std::filesystem::path& path) {
+  std::ifstream input(path);
+  if (!input.is_open()) throw std::runtime_error("cannot read test text file");
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+}
+
+class CdrReader {
+ public:
+  explicit CdrReader(Bytes bytes) : bytes_(std::move(bytes)) {
+    if (bytes_.size() < 4u || bytes_[0] != 0u || bytes_[1] != 1u ||
+        bytes_[2] != 0u || bytes_[3] != 0u) {
+      throw std::runtime_error("invalid little-endian CDR header");
+    }
+    offset_ = 4u;
+  }
+
+  uint8_t readU8() {
+    requireBytes(1u);
+    return bytes_[offset_++];
+  }
+
+  uint32_t readU32() {
+    align(4u);
+    requireBytes(4u);
+    const uint32_t value = ::readU32(bytes_, offset_);
+    offset_ += 4u;
+    return value;
+  }
+
+  int32_t readI32() { return static_cast<int32_t>(readU32()); }
+
+  float readFloat() {
+    const uint32_t bits = readU32();
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  }
+
+  double readDouble() {
+    align(8u);
+    requireBytes(8u);
+    const uint64_t bits = ::readU64(bytes_, offset_);
+    offset_ += 8u;
+    double value = 0.0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  }
+
+  std::string readString() {
+    const uint32_t size = readU32();
+    if (size == 0u) throw std::runtime_error("CDR string has no terminator");
+    requireBytes(size);
+    if (bytes_[offset_ + size - 1u] != 0u) {
+      throw std::runtime_error("CDR string is not terminated");
+    }
+    const std::string value(
+        bytes_.begin() + static_cast<ptrdiff_t>(offset_),
+        bytes_.begin() + static_cast<ptrdiff_t>(offset_ + size - 1u));
+    offset_ += size;
+    return value;
+  }
+
+  Bytes readOctets() {
+    const uint32_t size = readU32();
+    requireBytes(size);
+    Bytes value(bytes_.begin() + static_cast<ptrdiff_t>(offset_),
+                bytes_.begin() + static_cast<ptrdiff_t>(offset_ + size));
+    offset_ += size;
+    return value;
+  }
+
+  bool atEnd() const { return offset_ == bytes_.size(); }
+
+ private:
+  void align(size_t alignment) {
+    const size_t payload_offset = offset_ - 4u;
+    offset_ += (alignment - (payload_offset % alignment)) % alignment;
+    if (offset_ > bytes_.size()) throw std::runtime_error("short CDR padding");
+  }
+
+  void requireBytes(size_t size) const {
+    if (offset_ + size > bytes_.size()) {
+      throw std::runtime_error("short CDR message");
+    }
+  }
+
+  Bytes bytes_;
+  size_t offset_ = 0;
+};
+
+Bytes byteArrayToBytes(const QByteArray& data) {
+  return Bytes(reinterpret_cast<const uint8_t*>(data.constData()),
+               reinterpret_cast<const uint8_t*>(data.constData()) +
+                   data.size());
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  QCoreApplication app(argc, argv);
   const auto nonce =
       std::chrono::steady_clock::now().time_since_epoch().count();
   const std::filesystem::path root =
@@ -186,7 +297,7 @@ int main() {
 
     const std::filesystem::path bag = root / "dataset.bag";
     const auto result = prism_viewer::dataset::exportDatasetToRosbag(
-        root, bag, false);
+        root, bag, prism_viewer::dataset::RosbagFormat::Ros1, false);
     if (!result.success || result.camera_messages != 4u ||
         result.imu_messages != 2u || result.lidar_messages != 1u ||
         result.lidar_points != 2u || result.output_bytes == 0u) {
@@ -269,31 +380,259 @@ int main() {
 
     const std::filesystem::path cancelled_bag = root / "cancelled.bag";
     const auto cancelled = prism_viewer::dataset::exportDatasetToRosbag(
-        root, cancelled_bag, false, {}, []() { return true; });
+        root, cancelled_bag, prism_viewer::dataset::RosbagFormat::Ros1,
+        false, {}, []() { return true; });
     if (!cancelled.cancelled || std::filesystem::exists(cancelled_bag)) {
       throw std::runtime_error("cancelled export left an output file");
     }
     const Bytes original_bag = readFile(bag);
     const auto cancelled_overwrite =
         prism_viewer::dataset::exportDatasetToRosbag(
-            root, bag, true, {}, []() { return true; });
+            root, bag, prism_viewer::dataset::RosbagFormat::Ros1, true, {},
+            []() { return true; });
     if (!cancelled_overwrite.cancelled || readFile(bag) != original_bag) {
       throw std::runtime_error(
           "cancelled overwrite changed the existing rosbag");
     }
     const auto overwritten =
-        prism_viewer::dataset::exportDatasetToRosbag(root, bag, true);
+        prism_viewer::dataset::exportDatasetToRosbag(
+            root, bag, prism_viewer::dataset::RosbagFormat::Ros1, true);
     if (!overwritten.success || readFile(bag).size() != original_bag.size()) {
       throw std::runtime_error("successful rosbag replacement failed");
     }
+
+    const std::filesystem::path ros2_bag = root / "dataset_ros2.rosbag2";
+    const auto ros2_result = prism_viewer::dataset::exportDatasetToRosbag(
+        root, ros2_bag, prism_viewer::dataset::RosbagFormat::Ros2, false);
+    if (!ros2_result.success || ros2_result.camera_messages != 4u ||
+        ros2_result.imu_messages != 2u || ros2_result.lidar_messages != 1u ||
+        ros2_result.lidar_points != 2u || ros2_result.output_bytes == 0u ||
+        !std::filesystem::is_directory(ros2_bag)) {
+      throw std::runtime_error("ROS2 export result is incorrect: " +
+                               ros2_result.error);
+    }
+    const std::filesystem::path ros2_database =
+        ros2_bag / "dataset_ros2_0.db3";
+    const std::filesystem::path ros2_metadata = ros2_bag / "metadata.yaml";
+    if (!std::filesystem::is_regular_file(ros2_database) ||
+        !std::filesystem::is_regular_file(ros2_metadata)) {
+      throw std::runtime_error("ROS2 bag files are missing");
+    }
+    const std::string metadata = readText(ros2_metadata);
+    if (metadata.find("version: 5") == std::string::npos ||
+        metadata.find("storage_identifier: sqlite3") == std::string::npos ||
+        metadata.find("message_count: 7") == std::string::npos ||
+        metadata.find("sensor_msgs/msg/CompressedImage") == std::string::npos ||
+        metadata.find("sensor_msgs/msg/Imu") == std::string::npos ||
+        metadata.find("sensor_msgs/msg/PointCloud2") == std::string::npos ||
+        metadata.find("dataset_ros2_0.db3") == std::string::npos) {
+      throw std::runtime_error("ROS2 metadata.yaml is incomplete");
+    }
+
+    QByteArray camera_cdr;
+    QByteArray imu_cdr;
+    QByteArray lidar_cdr;
+    const QString sqlite_connection =
+        QStringLiteral("prism_rosbag2_test_") +
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    {
+      QSqlDatabase database =
+          QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                    sqlite_connection);
+      database.setDatabaseName(QString::fromStdString(ros2_database.string()));
+      if (!database.open()) {
+        throw std::runtime_error("cannot open generated ROS2 SQLite bag: " +
+                                 database.lastError().text().toStdString());
+      }
+      QSqlQuery schema(database);
+      if (!schema.exec(QStringLiteral(
+              "SELECT schema_version, ros_distro FROM schema;")) ||
+          !schema.next() || schema.value(0).toInt() != 3 ||
+          schema.value(1).toString() != QStringLiteral("humble")) {
+        throw std::runtime_error("ROS2 SQLite schema is incorrect");
+      }
+      QSqlQuery topics(database);
+      if (!topics.exec(QStringLiteral(
+              "SELECT name, type, serialization_format FROM topics "
+              "ORDER BY id;"))) {
+        throw std::runtime_error("cannot query ROS2 topics");
+      }
+      std::map<std::string, std::string> ros2_types;
+      while (topics.next()) {
+        if (topics.value(2).toString() != QStringLiteral("cdr")) {
+          throw std::runtime_error("ROS2 topic is not CDR serialized");
+        }
+        ros2_types.emplace(topics.value(0).toString().toStdString(),
+                           topics.value(1).toString().toStdString());
+      }
+      if (ros2_types.size() != 7u ||
+          ros2_types["/prism/camera0/image/compressed"] !=
+              "sensor_msgs/msg/CompressedImage" ||
+          ros2_types["/prism/imu0/data"] != "sensor_msgs/msg/Imu" ||
+          ros2_types["/prism/lidar/points"] !=
+              "sensor_msgs/msg/PointCloud2") {
+        throw std::runtime_error("ROS2 topic metadata is incorrect");
+      }
+      QSqlQuery count(database);
+      if (!count.exec(QStringLiteral("SELECT COUNT(*) FROM messages;")) ||
+          !count.next() || count.value(0).toULongLong() != 7u) {
+        throw std::runtime_error("ROS2 message count is incorrect");
+      }
+      const auto messageFor = [&database](const QString& topic) {
+        QSqlQuery message(database);
+        message.prepare(QStringLiteral(
+            "SELECT messages.data FROM messages JOIN topics ON "
+            "messages.topic_id=topics.id WHERE topics.name=? "
+            "ORDER BY messages.timestamp, messages.id LIMIT 1;"));
+        message.addBindValue(topic);
+        if (!message.exec() || !message.next()) {
+          throw std::runtime_error("cannot read ROS2 serialized message");
+        }
+        return message.value(0).toByteArray();
+      };
+      camera_cdr =
+          messageFor(QStringLiteral("/prism/camera0/image/compressed"));
+      imu_cdr = messageFor(QStringLiteral("/prism/imu0/data"));
+      lidar_cdr = messageFor(QStringLiteral("/prism/lidar/points"));
+      database.close();
+    }
+    QSqlDatabase::removeDatabase(sqlite_connection);
+
+    const auto nearlyEqual = [](double left, double right) {
+      return std::abs(left - right) < 1e-6;
+    };
+    CdrReader camera_message(byteArrayToBytes(camera_cdr));
+    if (camera_message.readI32() != 1780000000 ||
+        camera_message.readU32() != 500000u ||
+        camera_message.readString() != "camera0_optical_frame" ||
+        camera_message.readString() != "bgr8; jpeg compressed bgr8" ||
+        camera_message.readOctets() !=
+            Bytes({0xffu, 0xd8u, 0u, 0xffu, 0xd9u}) ||
+        !camera_message.atEnd()) {
+      throw std::runtime_error("ROS2 CompressedImage CDR is incorrect");
+    }
+
+    CdrReader imu_message(byteArrayToBytes(imu_cdr));
+    if (imu_message.readI32() != 1780000000 ||
+        imu_message.readU32() != 0u ||
+        imu_message.readString() != "imu0_frame" ||
+        !nearlyEqual(imu_message.readDouble(), 0.0) ||
+        !nearlyEqual(imu_message.readDouble(), 0.0) ||
+        !nearlyEqual(imu_message.readDouble(), 0.0) ||
+        !nearlyEqual(imu_message.readDouble(), 1.0)) {
+      throw std::runtime_error("ROS2 IMU header or orientation is incorrect");
+    }
+    for (size_t index = 0; index < 9u; ++index) {
+      const double value = imu_message.readDouble();
+      if (!nearlyEqual(value, index == 0u ? -1.0 : 0.0)) {
+        throw std::runtime_error("ROS2 IMU orientation covariance is incorrect");
+      }
+    }
+    for (double expected : {0.01, 0.02, 0.03}) {
+      if (!nearlyEqual(imu_message.readDouble(), expected)) {
+        throw std::runtime_error("ROS2 IMU angular velocity is incorrect");
+      }
+    }
+    for (size_t index = 0; index < 9u; ++index) {
+      if (!nearlyEqual(imu_message.readDouble(), 0.0)) {
+        throw std::runtime_error("ROS2 IMU angular covariance is incorrect");
+      }
+    }
+    for (double expected : {0.1, 0.2, 9.8}) {
+      if (!nearlyEqual(imu_message.readDouble(), expected)) {
+        throw std::runtime_error("ROS2 IMU acceleration is incorrect");
+      }
+    }
+    for (size_t index = 0; index < 9u; ++index) {
+      if (!nearlyEqual(imu_message.readDouble(), 0.0)) {
+        throw std::runtime_error("ROS2 IMU acceleration covariance is incorrect");
+      }
+    }
+    if (!imu_message.atEnd()) {
+      throw std::runtime_error("ROS2 IMU CDR has trailing data");
+    }
+
+    CdrReader lidar_message(byteArrayToBytes(lidar_cdr));
+    if (lidar_message.readI32() != 1780000000 ||
+        lidar_message.readU32() != 700000u ||
+        lidar_message.readString() != "livox_mid360s" ||
+        lidar_message.readU32() != 1u || lidar_message.readU32() != 2u ||
+        lidar_message.readU32() != 5u) {
+      throw std::runtime_error("ROS2 PointCloud2 header is incorrect");
+    }
+    const std::array<std::string, 5> field_names = {
+        "x", "y", "z", "intensity", "tag"};
+    const std::array<uint32_t, 5> field_offsets = {0u, 4u, 8u, 12u, 16u};
+    const std::array<uint8_t, 5> field_types = {7u, 7u, 7u, 7u, 2u};
+    for (size_t field = 0; field < field_names.size(); ++field) {
+      if (lidar_message.readString() != field_names[field] ||
+          lidar_message.readU32() != field_offsets[field] ||
+          lidar_message.readU8() != field_types[field] ||
+          lidar_message.readU32() != 1u) {
+        throw std::runtime_error("ROS2 PointCloud2 fields are incorrect");
+      }
+    }
+    if (lidar_message.readU8() != 0u || lidar_message.readU32() != 20u ||
+        lidar_message.readU32() != 40u) {
+      throw std::runtime_error("ROS2 PointCloud2 layout is incorrect");
+    }
+    const Bytes ros2_points = lidar_message.readOctets();
+    const auto pointFloat = [&ros2_points](size_t offset) {
+      const uint32_t bits = ::readU32(ros2_points, offset);
+      float value = 0.0f;
+      std::memcpy(&value, &bits, sizeof(value));
+      return value;
+    };
+    if (ros2_points.size() != 40u || !nearlyEqual(pointFloat(0u), 1.0) ||
+        !nearlyEqual(pointFloat(4u), -2.0) ||
+        !nearlyEqual(pointFloat(8u), 3.0) ||
+        !nearlyEqual(pointFloat(12u), 70.0) || ros2_points[16] != 4u ||
+        lidar_message.readU8() != 1u || !lidar_message.atEnd()) {
+      throw std::runtime_error("ROS2 PointCloud2 data is incorrect");
+    }
+
+    const std::filesystem::path cancelled_ros2 =
+        root / "cancelled_ros2.rosbag2";
+    const auto ros2_cancelled = prism_viewer::dataset::exportDatasetToRosbag(
+        root, cancelled_ros2, prism_viewer::dataset::RosbagFormat::Ros2,
+        false, {}, []() { return true; });
+    if (!ros2_cancelled.cancelled ||
+        std::filesystem::exists(cancelled_ros2)) {
+      throw std::runtime_error("cancelled ROS2 export left an output directory");
+    }
+    const Bytes original_ros2_database = readFile(ros2_database);
+    const auto ros2_cancelled_overwrite =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            root, ros2_bag, prism_viewer::dataset::RosbagFormat::Ros2, true,
+            {}, []() { return true; });
+    if (!ros2_cancelled_overwrite.cancelled ||
+        readFile(ros2_database) != original_ros2_database) {
+      throw std::runtime_error(
+          "cancelled overwrite changed the existing ROS2 bag");
+    }
+    const auto ros2_overwritten = prism_viewer::dataset::exportDatasetToRosbag(
+        root, ros2_bag, prism_viewer::dataset::RosbagFormat::Ros2, true);
+    if (!ros2_overwritten.success ||
+        !std::filesystem::is_regular_file(ros2_database)) {
+      throw std::runtime_error("successful ROS2 bag replacement failed");
+    }
+
     if (const char* keep = std::getenv("PRISM_ROSBAG_TEST_KEEP");
         keep != nullptr && keep[0] != '\0') {
       std::filesystem::copy_file(
           bag, std::filesystem::path(keep),
           std::filesystem::copy_options::overwrite_existing);
     }
+    if (const char* keep = std::getenv("PRISM_ROSBAG2_TEST_KEEP");
+        keep != nullptr && keep[0] != '\0') {
+      const std::filesystem::path destination(keep);
+      std::filesystem::remove_all(destination);
+      std::filesystem::copy(
+          ros2_bag, destination,
+          std::filesystem::copy_options::recursive);
+    }
     std::filesystem::remove_all(root);
-    std::cout << "ROS1 bag exporter tests passed\n";
+    std::cout << "ROS1 and ROS2 bag exporter tests passed\n";
     return 0;
   } catch (const std::exception& exception) {
     std::filesystem::remove_all(root);

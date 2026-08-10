@@ -59,6 +59,7 @@
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QProgressDialog>
@@ -127,6 +128,7 @@ using prism_viewer::common::toQString;
 using prism_viewer::common::uiText;
 using prism_viewer::common::wideToQString;
 using prism_viewer::dataset::DatasetImageEntry;
+using prism_viewer::dataset::RosbagFormat;
 using prism_viewer::dataset::TumFileSummary;
 using prism_viewer::dataset::loadDatasetImage;
 using prism_viewer::dataset::loadDatasetImageIndex;
@@ -1583,6 +1585,16 @@ class MainWindow : public QMainWindow {
     dataset_export_rosbag_button_ = new QPushButton(
         uiText("Export ROS Bag...", "导出 ROS Bag..."), dataset_page_);
     dataset_export_rosbag_button_->setEnabled(false);
+    auto* rosbag_export_menu = new QMenu(dataset_export_rosbag_button_);
+    auto* export_ros1_action = rosbag_export_menu->addAction(
+        uiText("ROS1 Bag (.bag)", "ROS1 Bag（.bag）"));
+    auto* export_ros2_action = rosbag_export_menu->addAction(
+        uiText("ROS2 Bag (SQLite3)", "ROS2 Bag（SQLite3）"));
+    dataset_export_rosbag_button_->setMenu(rosbag_export_menu);
+    connect(export_ros1_action, &QAction::triggered, this,
+            [this]() { exportLoadedDatasetRosbag(RosbagFormat::Ros1); });
+    connect(export_ros2_action, &QAction::triggered, this,
+            [this]() { exportLoadedDatasetRosbag(RosbagFormat::Ros2); });
     dataset_path_label_ = new QLabel(
         uiText("No dataset loaded", "尚未加载数据集"), dataset_page_);
     dataset_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -1906,8 +1918,6 @@ class MainWindow : public QMainWindow {
             this, [this]() { stopImuRecording(); });
     connect(dataset_open_button_, &QPushButton::clicked,
             this, [this]() { openRecordedDataset(); });
-    connect(dataset_export_rosbag_button_, &QPushButton::clicked,
-            this, [this]() { exportLoadedDatasetRosbag(); });
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) { showDatasetFrame(frame); });
     connect(close_offset_button, &QPushButton::clicked,
@@ -3538,26 +3548,40 @@ class MainWindow : public QMainWindow {
     if (!directory.isEmpty()) loadRecordedDataset(directory, true);
   }
 
-  void exportLoadedDatasetRosbag() {
+  void exportLoadedDatasetRosbag(RosbagFormat format) {
     if (loaded_dataset_root_.isEmpty() || worker_running_ ||
         rosbag_export_running_ ||
         dataset_recorder_.isActive()) {
       return;
     }
+    const bool ros2 = format == RosbagFormat::Ros2;
+    const QString format_label =
+        ros2 ? QStringLiteral("ROS2") : QStringLiteral("ROS1");
     const QFileInfo dataset_info(loaded_dataset_root_);
     const QString suggested =
         dataset_info.dir().filePath(dataset_info.fileName() +
-                                    QStringLiteral(".bag"));
+                                    (ros2 ? QStringLiteral(".rosbag2")
+                                          : QStringLiteral(".bag")));
     QString output = QFileDialog::getSaveFileName(
-        this, uiText("Export Prism dataset to ROS1 bag",
-                     "将 Prism 数据集导出为 ROS1 Bag"),
-        suggested, uiText("ROS1 bag (*.bag)", "ROS1 Bag (*.bag)"), nullptr,
+        this,
+        ros2 ? uiText("Export Prism dataset to ROS2 bag directory",
+                      "将 Prism 数据集导出为 ROS2 Bag 目录")
+             : uiText("Export Prism dataset to ROS1 bag",
+                      "将 Prism 数据集导出为 ROS1 Bag"),
+        suggested,
+        ros2 ? uiText("ROS2 bag directory (*.rosbag2)",
+                      "ROS2 Bag 目录 (*.rosbag2)")
+             : uiText("ROS1 bag (*.bag)", "ROS1 Bag (*.bag)"),
+        nullptr,
         QFileDialog::DontUseNativeDialog);
     if (output.isEmpty()) return;
-    if (QFileInfo(output).suffix().isEmpty()) output += QStringLiteral(".bag");
+    if (QFileInfo(output).suffix().isEmpty()) {
+      output += ros2 ? QStringLiteral(".rosbag2") : QStringLiteral(".bag");
+    }
     if (worker_running_) {
       appendLog(QStringLiteral(
-          "ROS1 bag export cancelled because live capture started"));
+                    "%1 bag export cancelled because live capture started")
+                    .arg(format_label));
       refreshControls();
       return;
     }
@@ -3565,17 +3589,18 @@ class MainWindow : public QMainWindow {
     const bool output_exists = QFileInfo::exists(output);
     if (output_exists) {
       const auto answer = QMessageBox::question(
-          this, uiText("Replace ROS bag?", "替换 ROS Bag？"),
-          uiText("The output already exists. Replace it after conversion "
-                 "finishes successfully?\n%1",
-                 "输出文件已经存在。转换成功后是否替换？\n%1")
+          this, uiText("Replace ROS bag output?", "替换 ROS Bag 输出？"),
+          uiText("The output file or directory already exists. Replace it "
+                 "after conversion finishes successfully?\n%1",
+                 "输出文件或目录已经存在。转换成功后是否替换？\n%1")
               .arg(output),
           QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
       if (answer != QMessageBox::Yes) return;
     }
 
     QProgressDialog progress(
-        uiText("Preparing ROS1 bag...", "正在准备 ROS1 Bag……"),
+        ros2 ? uiText("Preparing ROS2 bag...", "正在准备 ROS2 Bag……")
+             : uiText("Preparing ROS1 bag...", "正在准备 ROS1 Bag……"),
         uiText("Cancel", "取消"), 0, 1000, this);
     progress.setWindowTitle(
         uiText("Export ROS Bag", "导出 ROS Bag"));
@@ -3587,11 +3612,11 @@ class MainWindow : public QMainWindow {
 
     rosbag_export_running_ = true;
     refreshControls();
-    appendLog(QStringLiteral("ROS1 bag export started: dataset=%1 output=%2")
-                  .arg(loaded_dataset_root_, output));
+    appendLog(QStringLiteral("%1 bag export started: dataset=%2 output=%3")
+                  .arg(format_label, loaded_dataset_root_, output));
     const auto result = prism_viewer::dataset::exportDatasetToRosbag(
         toFilesystemPath(loaded_dataset_root_), toFilesystemPath(output),
-        output_exists,
+        format, output_exists,
         [&progress](const prism_viewer::dataset::RosbagExportProgress& state) {
           const uint64_t scaled =
               state.total_records == 0
@@ -3616,8 +3641,9 @@ class MainWindow : public QMainWindow {
 
     if (result.success) {
       appendLog(
-          QStringLiteral("ROS1 bag export complete: %1 camera=%2 imu=%3 "
-                         "lidar_batches=%4 lidar_points=%5 bytes=%6")
+          QStringLiteral("%1 bag export complete: %2 camera=%3 imu=%4 "
+                         "lidar_batches=%5 lidar_points=%6 bytes=%7")
+              .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
               .arg(result.imu_messages)
@@ -3626,10 +3652,11 @@ class MainWindow : public QMainWindow {
               .arg(result.output_bytes));
       QMessageBox::information(
           this, uiText("ROS bag exported", "ROS Bag 已导出"),
-          uiText("Saved ROS1 bag:\n%1\n\nCamera messages: %2\n"
-                 "IMU messages: %3\nLiDAR clouds: %4 (%5 points)",
-                 "已保存 ROS1 Bag：\n%1\n\n相机消息：%2\nIMU 消息：%3\n"
-                 "LiDAR 点云：%4 批（%5 点）")
+          uiText("Saved %1 bag:\n%2\n\nCamera messages: %3\n"
+                 "IMU messages: %4\nLiDAR clouds: %5 (%6 points)",
+                 "已保存 %1 Bag：\n%2\n\n相机消息：%3\nIMU 消息：%4\n"
+                 "LiDAR 点云：%5 批（%6 点）")
+              .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
               .arg(result.imu_messages)
@@ -3638,11 +3665,13 @@ class MainWindow : public QMainWindow {
       return;
     }
     if (result.cancelled) {
-      appendLog(QStringLiteral("ROS1 bag export cancelled: %1").arg(output));
+      appendLog(QStringLiteral("%1 bag export cancelled: %2")
+                    .arg(format_label, output));
       return;
     }
     const QString error = toQString(result.error);
-    appendLog(QStringLiteral("ROS1 bag export failed: %1").arg(error));
+    appendLog(QStringLiteral("%1 bag export failed: %2")
+                  .arg(format_label, error));
     QMessageBox::critical(
         this, uiText("ROS bag export failed", "ROS Bag 导出失败"), error);
   }

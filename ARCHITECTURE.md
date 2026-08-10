@@ -16,7 +16,7 @@ src/
     camera_frame_assembler.*       VideoChunk -> atomic four-camera frame set
   dataset/
     dataset_browser.*              TUM indexes and camera-container reads
-    rosbag_exporter.*              dependency-free ROS1 bag serialization
+    rosbag_exporter.*              ROS1 and ROS2/SQLite3 bag serialization
   ui/
     main_window.*                  widgets and high-level user-flow orchestration
     camera_exposure_panel.*        runtime camera exposure controls and state
@@ -59,7 +59,7 @@ main
 | USB discovery, device open/close, connection policy | `communication/` |
 | Start/stop, mutual exclusion, cancellation, task lifetime | `control/` |
 | Camera/IMU frame assembly, stream validation, rate accounting | `transfer/` |
-| Local dataset recording, indexing, browsing and ROS1 export | `dataset/` |
+| Local dataset recording, indexing, browsing and ROS1/ROS2 export | `dataset/` |
 | Charts, dialogs, tables and window layout | `ui/` |
 | Pure calibration or synchronization math | a dedicated algorithm class |
 
