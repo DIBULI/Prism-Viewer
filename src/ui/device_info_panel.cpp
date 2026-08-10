@@ -1,6 +1,7 @@
 #include "ui/device_info_panel.hpp"
 
 #include "common/ui_text.hpp"
+#include "communication/prism_runtime.hpp"
 #include "prism/usb/device_info.hpp"
 
 #include <QtCore/QStringList>
@@ -82,7 +83,7 @@ QString sensorBoardErrorText(const prism::DeviceInfo& info) {
   const QString reason =
       info.sensor_board_error.empty()
           ? QString::fromLatin1(
-                prism::sensorBoardErrorCodeName(info.sensor_board_error_code))
+                prism_runtime::sensorBoardErrorCodeName(info.sensor_board_error_code))
           : toQString(info.sensor_board_error);
   return QStringLiteral("%1 (code=%2, flags=0x%3)")
       .arg(reason)
@@ -236,7 +237,7 @@ void DeviceInfoPanel::refreshView() {
             .arg(has_versions_ ? valueOrDash(versions_.sensor_board)
                                : QStringLiteral("-"))
             .arg(QString::fromLatin1(
-                prism::usbLinkSpeedName(info_.usb_speed)))
+                prism_runtime::usbLinkSpeedName(info_.usb_speed)))
             .arg(info_.detected_imu_count)
             .arg(info_.detected_camera_count));
     summary_label_->setStyleSheet(
@@ -274,7 +275,7 @@ void DeviceInfoPanel::refreshView() {
        has_versions_ ? valueOrDash(versions_.combined)
                      : QStringLiteral("-")},
       {QStringLiteral("USB"), uiText("Link speed", "连接速率"),
-       QString::fromLatin1(prism::usbLinkSpeedName(info_.usb_speed))},
+       QString::fromLatin1(prism_runtime::usbLinkSpeedName(info_.usb_speed))},
       {QStringLiteral("USB"), uiText("USB 3 connected", "USB 3 已连接"),
        yesNo(info_.usb3_connected)},
       {QStringLiteral("sensor-board"), uiText("Online", "在线"),

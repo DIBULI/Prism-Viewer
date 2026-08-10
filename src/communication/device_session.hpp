@@ -1,6 +1,6 @@
 #pragma once
 
-#include "prism/usb_sdk.hpp"
+#include "communication/prism_runtime.hpp"
 
 #include <cstddef>
 #include <vector>
@@ -28,11 +28,11 @@ class DeviceSession {
   void close() noexcept;
 
   bool isOpen() const;
-  prism::Client& client();
+  prism_runtime::Client& client();
   const std::vector<prism::DeviceInfo>& devices() const;
 
  private:
-  prism::Client client_;
+  prism_runtime::Client client_;
   std::vector<prism::DeviceInfo> devices_;
 };
 

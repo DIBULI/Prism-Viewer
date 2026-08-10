@@ -8,7 +8,7 @@ const std::vector<prism::DeviceInfo>& DeviceSession::refresh() {
   if (client_.isOpen()) {
     throw std::logic_error("cannot scan devices while a device is open");
   }
-  devices_ = prism::Client::enumerate();
+  devices_ = prism_runtime::Client::enumerate();
   return devices_;
 }
 
@@ -46,7 +46,7 @@ bool DeviceSession::isOpen() const {
   return client_.isOpen();
 }
 
-prism::Client& DeviceSession::client() {
+prism_runtime::Client& DeviceSession::client() {
   return client_;
 }
 

@@ -1,4 +1,4 @@
-#include "prism/usb_sdk.hpp"
+#include "communication/prism_runtime.hpp"
 #include "common/ui_text.hpp"
 #include "communication/device_session.hpp"
 #include "control/operation_controller.hpp"
@@ -2517,7 +2517,7 @@ class MainWindow : public QMainWindow {
               "IMU-fps=%5 camera-fps=%6 WiFi=%7")
               .arg(toQString(device_info.product_serial))
               .arg(QString::fromLatin1(
-                  prism::usbLinkSpeedName(device_info.usb_speed)))
+                  prism_runtime::usbLinkSpeedName(device_info.usb_speed)))
               .arg(device_info.detected_imu_count)
               .arg(device_info.detected_camera_count)
               .arg(device_info.imu_fps)
@@ -3080,7 +3080,7 @@ class MainWindow : public QMainWindow {
     prism::SystemUpgradePackageInfo package;
     try {
       package =
-          prism::inspectSystemUpgradePackage(path.toStdString());
+          prism_runtime::inspectSystemUpgradePackage(path.toStdString());
     } catch (const std::exception& ex) {
       QMessageBox::critical(
           this, uiText("Invalid system update package", "系统升级包无效"),
@@ -3496,7 +3496,7 @@ class MainWindow : public QMainWindow {
     if (info.sensor_board_error_flags != 0u) {
       const QString detail =
           info.sensor_board_error.empty()
-              ? QString::fromLatin1(prism::sensorBoardErrorCodeName(
+              ? QString::fromLatin1(prism_runtime::sensorBoardErrorCodeName(
                     info.sensor_board_error_code))
               : toQString(info.sensor_board_error);
       text = uiText(
@@ -3544,7 +3544,7 @@ class MainWindow : public QMainWindow {
             "sensor-board-error=0x%9")
             .arg(toQString(info.product_serial))
             .arg(QString::fromLatin1(
-                prism::usbLinkSpeedName(info.usb_speed)))
+                prism_runtime::usbLinkSpeedName(info.usb_speed)))
             .arg(info.detected_imu_count)
             .arg(info.imu_present_mask, 2, 16, QLatin1Char('0'))
             .arg(info.detected_camera_count)
@@ -4652,7 +4652,7 @@ class MainWindow : public QMainWindow {
       pending_lidar_preview.reserve(8192u);
       uint64_t received_lidar_points = 0;
       auto last_lidar_preview_post = std::chrono::steady_clock::now();
-      prism::ImuStream imu_stream(
+      prism_runtime::ImuStream imu_stream(
           client_, [this, &last_imu_post, &last_imu_plot_post,
                    &imu_rate_samples, &received_imu_samples,
                    &received_fsync_events, &last_fsync_sample_us,
@@ -4807,7 +4807,7 @@ class MainWindow : public QMainWindow {
                                last_fsync_delay_valid[sensor]);
             }
           });
-      prism::LidarStream lidar_stream(
+      prism_runtime::LidarStream lidar_stream(
           client_, [this, requested_lidar_model, &pending_lidar_preview,
                    &received_lidar_points, &last_lidar_preview_post](
                        const prism::LidarPointBatch& batch) {
@@ -5071,10 +5071,10 @@ class MainWindow : public QMainWindow {
           }
 
           if (frame.type == prism::FrameType::Heartbeat) {
-            const auto heartbeat = prism::parseHeartbeat(frame);
+            const auto heartbeat = prism_runtime::parseHeartbeat(frame);
             updateHeartbeat(heartbeat);
           } else if (frame.type == prism::FrameType::VideoChunk) {
-            const auto chunk = prism::parseVideoChunkView(frame);
+            const auto chunk = prism_runtime::parseVideoChunkView(frame);
             last_video_chunk_at = std::chrono::steady_clock::now();
             last_video_chunk_frame_id = chunk.frame_id;
             ++received_video_chunks;
@@ -5096,7 +5096,7 @@ class MainWindow : public QMainWindow {
             if (!result.completed.has_value()) continue;
             handleCompletedCameraFrame(std::move(*result.completed));
           } else if (frame.type == prism::FrameType::VideoMeta) {
-            const auto meta = prism::parseVideoMeta(frame);
+            const auto meta = prism_runtime::parseVideoMeta(frame);
             std::optional<prism_viewer::transfer::CameraFrameSet> completed =
                 camera_assembler.addMetadata(meta);
             if (completed.has_value()) {
@@ -5287,7 +5287,7 @@ class MainWindow : public QMainWindow {
   ImuPlotWidget* imu_plot_ = nullptr;
   QTimer* imu_ui_timer_ = nullptr;
   prism_viewer::communication::DeviceSession device_session_;
-  prism::Client& client_ = device_session_.client();
+  prism_runtime::Client& client_ = device_session_.client();
   const std::vector<prism::DeviceInfo>& devices_ = device_session_.devices();
   DatasetRecorder dataset_recorder_;
   QString recorded_dataset_root_;

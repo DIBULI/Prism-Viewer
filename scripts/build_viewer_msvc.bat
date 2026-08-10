@@ -36,6 +36,9 @@ if errorlevel 1 exit /b 1
 cmake --build "%BUILD_DIR%" --config Release
 if errorlevel 1 exit /b 1
 
+ctest --test-dir "%BUILD_DIR%" -C Release -R windows-runtime-loader --output-on-failure
+if errorlevel 1 exit /b 1
+
 set "WINDEPLOYQT="
 if not "%QT_PREFIX%"=="" (
   if exist "%QT_PREFIX%\bin\windeployqt.exe" (

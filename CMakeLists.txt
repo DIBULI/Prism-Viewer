@@ -4,17 +4,45 @@ project(prism_viewer VERSION 0.9.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
+if(WIN32 AND NOT MSVC)
+  message(FATAL_ERROR
+    "Prism Viewer runtime loading requires the MSVC 14.x C++ ABI")
+endif()
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY
+      "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 set(CMAKE_AUTOMOC OFF)
 set(CMAKE_AUTORCC OFF)
 set(CMAKE_AUTOUIC OFF)
 
 set(PRISM_USB_SDK_ROOT "" CACHE PATH
-    "Installed Prism Host SDK prefix containing lib/cmake/PrismUsbSdk")
-if(PRISM_USB_SDK_ROOT)
-  list(PREPEND CMAKE_PREFIX_PATH "${PRISM_USB_SDK_ROOT}")
-endif()
-if(NOT TARGET Prism::UsbSdk)
-  find_package(PrismUsbSdk 0.9.0 EXACT CONFIG REQUIRED)
+    "Installed Prism Host SDK prefix")
+add_library(prism-viewer-sdk INTERFACE)
+target_compile_definitions(prism-viewer-sdk INTERFACE
+  PRISM_REQUIRED_USB_SDK_VERSION="${PROJECT_VERSION}")
+if(WIN32)
+  find_path(PRISM_USB_SDK_INCLUDE_DIR
+    NAMES prism/usb/runtime_api.hpp
+    HINTS "${PRISM_USB_SDK_ROOT}/include"
+    REQUIRED
+  )
+  find_file(PRISM_USB_SDK_RUNTIME
+    NAMES prism_usb_sdk.dll
+    HINTS "${PRISM_USB_SDK_ROOT}/bin" "${PRISM_USB_SDK_ROOT}/lib"
+    REQUIRED
+  )
+  target_include_directories(prism-viewer-sdk INTERFACE
+    "${PRISM_USB_SDK_INCLUDE_DIR}")
+else()
+  if(PRISM_USB_SDK_ROOT)
+    list(PREPEND CMAKE_PREFIX_PATH "${PRISM_USB_SDK_ROOT}")
+  endif()
+  if(NOT TARGET Prism::UsbSdk)
+    find_package(PrismUsbSdk 0.9.0 EXACT CONFIG REQUIRED)
+  endif()
+  target_link_libraries(prism-viewer-sdk INTERFACE Prism::UsbSdk)
 endif()
 
 find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql)
@@ -29,6 +57,7 @@ add_executable(prism-viewer
   resources/prism.qrc
   src/common/ui_text.cpp
   src/communication/device_session.cpp
+  src/communication/prism_runtime.cpp
   src/control/operation_controller.cpp
   src/dataset/dataset_browser.cpp
   src/dataset/rosbag_exporter.cpp
@@ -62,16 +91,24 @@ target_compile_features(prism-viewer PRIVATE cxx_std_17)
 target_include_directories(prism-viewer PRIVATE src)
 
 target_link_libraries(prism-viewer PRIVATE
-  Prism::UsbSdk
+  prism-viewer-sdk
   ${QT_PACKAGE}::Widgets
   ${QT_PACKAGE}::Charts
   ${QT_PACKAGE}::Sql
 )
 
-# Keep the SDK runtime beside development/test executables. Prism-Viewer only
-# consumes the installed public SDK target; it never compiles SDK sources.
+# Keep the SDK runtime beside development/test executables. On Windows the
+# Viewer consumes only installed headers plus the DLL; no import library is
+# searched or linked. Prism-Viewer never compiles SDK sources.
 function(prism_copy_sdk_runtime target)
-  if(NOT APPLE)
+  if(WIN32)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+              "${PRISM_USB_SDK_RUNTIME}"
+              "$<TARGET_FILE_DIR:${target}>"
+      VERBATIM
+    )
+  elseif(NOT APPLE)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E copy_if_different
               "$<TARGET_FILE:Prism::UsbSdk>"
@@ -112,7 +149,7 @@ install(TARGETS prism-viewer
   BUNDLE DESTINATION .
 )
 if(WIN32)
-  install(FILES "$<TARGET_FILE:Prism::UsbSdk>"
+  install(FILES "${PRISM_USB_SDK_RUNTIME}"
     DESTINATION ${CMAKE_INSTALL_BINDIR})
 elseif(UNIX AND NOT APPLE)
   install(FILES "$<TARGET_FILE:Prism::UsbSdk>"
@@ -155,8 +192,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(camera-frame-assembler-test PRIVATE src)
   target_compile_features(camera-frame-assembler-test PRIVATE cxx_std_17)
-  target_link_libraries(camera-frame-assembler-test PRIVATE Prism::UsbSdk)
-  prism_copy_sdk_runtime(camera-frame-assembler-test)
+  target_link_libraries(camera-frame-assembler-test PRIVATE prism-viewer-sdk)
   add_test(NAME camera-frame-assembler COMMAND camera-frame-assembler-test)
 
   add_executable(preview-image-decoder-test
@@ -198,14 +234,34 @@ if(BUILD_TESTING)
   target_include_directories(camera-encoding-panel-test PRIVATE src)
   target_compile_features(camera-encoding-panel-test PRIVATE cxx_std_17)
   target_link_libraries(camera-encoding-panel-test PRIVATE
-    Prism::UsbSdk
+    prism-viewer-sdk
     ${QT_PACKAGE}::Widgets
   )
-  prism_copy_sdk_runtime(camera-encoding-panel-test)
   add_test(NAME camera-encoding-panel COMMAND camera-encoding-panel-test)
   if(UNIX)
     set_tests_properties(camera-encoding-panel PROPERTIES
       ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
+  if(WIN32)
+    add_executable(windows-runtime-loader-test
+      src/communication/prism_runtime.cpp
+      tests/windows_runtime_loader_test.cpp
+    )
+    target_include_directories(windows-runtime-loader-test PRIVATE src)
+    target_compile_features(
+      windows-runtime-loader-test PRIVATE cxx_std_17)
+    target_link_libraries(
+      windows-runtime-loader-test PRIVATE prism-viewer-sdk)
+    if(MSVC)
+      target_compile_options(
+        windows-runtime-loader-test PRIVATE /W4 /permissive- /utf-8)
+    endif()
+    prism_copy_sdk_runtime(windows-runtime-loader-test)
+    add_test(
+      NAME windows-runtime-loader
+      COMMAND windows-runtime-loader-test
     )
   endif()
 
