@@ -14,6 +14,8 @@ constexpr uint16_t kImuFlagFsyncEvent = 1u << 0;
 constexpr uint16_t kImuFlagFsyncDelayValid = 1u << 1;
 constexpr uint16_t kImuFlagSampleGap = 1u << 2;
 constexpr uint16_t kImuFlagTimestampSynced = 1u << 7;
+constexpr uint8_t kLidarImuFlagTimestampSynced = 1u << 0;
+constexpr uint8_t kLidarImuFlagTaiOffsetApplied = 1u << 1;
 
 struct HeartbeatStatus {
   // RK CLOCK_REALTIME in Unix microseconds. Device status is deliberately
@@ -171,6 +173,22 @@ struct LidarPointBatch {
   std::vector<LidarPoint> points;
 };
 
+struct LidarImuSample {
+  uint16_t version = 0;
+  LidarModel model = LidarModel::None;
+  uint8_t device_type = 0;
+  uint8_t time_type = 0;
+  uint8_t flags = 0;
+  bool timestamp_synced = false;
+  bool tai_offset_applied = false;
+  uint32_t handle = 0;
+  uint32_t sample_id = 0;
+  uint64_t timestamp_raw_ns = 0;
+  uint64_t timestamp_utc_us = 0;
+  std::array<float, 3> gyro_rad_s{};
+  std::array<float, 3> accel_m_s2{};
+};
+
 HeartbeatStatus parseHeartbeat(const Frame& frame);
 VideoChunkView parseVideoChunkView(const Frame& frame);
 VideoChunk parseVideoChunk(const Frame& frame);
@@ -179,5 +197,6 @@ ImuSample parseImuSample(const Frame& frame);
 LidarStatus parseLidarStatus(const Frame& frame);
 LidarNetworkStatus parseLidarNetworkStatus(const Frame& frame);
 LidarPointBatch parseLidarPointBatch(const Frame& frame);
+LidarImuSample parseLidarImuSample(const Frame& frame);
 
 }  // namespace prism

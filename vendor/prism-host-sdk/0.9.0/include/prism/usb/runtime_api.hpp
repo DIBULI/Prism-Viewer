@@ -74,6 +74,7 @@ struct RuntimeApi {
   LidarPointBatch (*parse_lidar_point_batch)(const Frame&);
   const char* (*usb_link_speed_name)(UsbLinkSpeed);
   const char* (*sensor_board_error_code_name)(SensorBoardErrorCode);
+  LidarImuSample (*parse_lidar_imu_sample)(const Frame&);
 };
 
 using GetRuntimeApiFunction = const RuntimeApi* (*)(uint32_t);

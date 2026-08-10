@@ -296,17 +296,20 @@ struct DatasetRecordingSummary {
   uint64_t lidar_point_count = 0;
   uint64_t dropped_lidar_batches = 0;
   uint64_t dropped_lidar_points = 0;
+  uint64_t lidar_imu_sample_count = 0;
   std::string error;
 };
 
-// Records either a complete dataset or only the two TUM-style IMU streams. In
-// full mode, image and optional Livox payloads are appended to sequential
-// containers so exFAT does not allocate a 256-KiB cluster for every message.
-// The large-payload writer stays off the USB receive thread.
+// Records either a complete dataset or IMU-only data. imu0/imu1 always mean
+// the two onboard sensors; an enabled Livox IMU is written independently as
+// lidar_imu.tum. In full mode, image and point-cloud payloads are appended to
+// sequential containers so exFAT does not allocate a 256-KiB cluster for every
+// message. The large-payload writer stays off the USB receive thread.
 class DatasetRecorder {
  public:
   bool start(const std::filesystem::path& root, bool overwrite,
-             DatasetRecordingMode mode, std::string* error) {
+             DatasetRecordingMode mode, bool record_lidar_streams,
+             std::string* error) {
     std::unique_lock<std::mutex> lock(mutex_);
     try {
       if (session_open_) {
@@ -321,10 +324,11 @@ class DatasetRecorder {
         return false;
       }
       root_ = root;
-      const std::array<std::filesystem::path, 8> known_outputs = {
+      const std::array<std::filesystem::path, 9> known_outputs = {
           root_ / "imu0.tum", root_ / "imu1.tum", root_ / "cam0.tum",
           root_ / "cam1.tum", root_ / "cam2.tum", root_ / "cam3.tum",
-          root_ / "lidar.tum", root_ / "dataset.info"};
+          root_ / "lidar.tum", root_ / "lidar_imu.tum",
+          root_ / "dataset.info"};
       bool existing_dataset = false;
       for (const auto& path : known_outputs) {
         const bool exists = std::filesystem::exists(path, filesystem_error);
@@ -411,6 +415,7 @@ class DatasetRecorder {
       lidar_point_count_ = 0;
       dropped_lidar_batches_ = 0;
       dropped_lidar_points_ = 0;
+      lidar_imu_sample_count_ = 0;
       write_failed_ = false;
       write_error_.clear();
       frame_jobs_.clear();
@@ -425,6 +430,8 @@ class DatasetRecorder {
       lidar_chunk_size_ = 0;
       lidar_chunk_name_.clear();
       mode_.store(mode, std::memory_order_relaxed);
+      record_lidar_streams_.store(record_lidar_streams,
+                                  std::memory_order_relaxed);
 
       for (size_t sensor = 0; sensor < imu_files_.size(); ++sensor) {
         imu_files_[sensor].open(
@@ -462,18 +469,36 @@ class DatasetRecorder {
               << "# timestamp[s] container_path byte_offset byte_size "
                  "actual_exposure_us\n";
         }
-        lidar_index_file_.open(root_ / "lidar.tum",
-                               std::ios::out | std::ios::trunc);
-        lidar_index_file_.imbue(std::locale::classic());
-        if (!lidar_index_file_.is_open()) {
+        if (record_lidar_streams) {
+          lidar_index_file_.open(root_ / "lidar.tum",
+                                 std::ios::out | std::ios::trunc);
+          lidar_index_file_.imbue(std::locale::classic());
+          if (!lidar_index_file_.is_open()) {
+            closeFiles();
+            if (error != nullptr) *error = "cannot open LiDAR index file";
+            return false;
+          }
+          lidar_index_file_
+              << "# Prism Livox point-batch stream\n"
+              << "# timestamp[s] container_path byte_offset byte_size "
+                 "point_count model device_type time_type batch_id "
+                 "timestamp_raw\n";
+        }
+      }
+      if (record_lidar_streams) {
+        lidar_imu_file_.open(root_ / "lidar_imu.tum",
+                             std::ios::out | std::ios::trunc);
+        lidar_imu_file_.imbue(std::locale::classic());
+        if (!lidar_imu_file_.is_open()) {
           closeFiles();
-          if (error != nullptr) *error = "cannot open LiDAR index file";
+          if (error != nullptr) *error = "cannot open LiDAR IMU output file";
           return false;
         }
-        lidar_index_file_
-            << "# Prism Livox point-batch stream\n"
-            << "# timestamp[s] container_path byte_offset byte_size point_count "
-               "model device_type time_type batch_id timestamp_raw\n";
+        lidar_imu_file_
+            << "# Prism Livox IMU stream (separate from onboard imu0/imu1)\n"
+            << "# timestamp[s] ax[m/s^2] ay[m/s^2] az[m/s^2] "
+               "gx[rad/s] gy[rad/s] gz[rad/s] model device_type "
+               "time_type sample_id timestamp_raw timestamp_synced\n";
       }
 
       session_open_ = true;
@@ -625,6 +650,7 @@ class DatasetRecorder {
       if (!active_.load(std::memory_order_acquire) ||
           mode_.load(std::memory_order_relaxed) !=
               DatasetRecordingMode::Full ||
+          !record_lidar_streams_.load(std::memory_order_relaxed) ||
           batch.points.empty()) {
         return;
       }
@@ -681,6 +707,40 @@ class DatasetRecorder {
     }
   }
 
+  void appendLidarImu(const prism::LidarImuSample& sample) {
+    try {
+      if (!active_.load(std::memory_order_acquire) ||
+          !record_lidar_streams_.load(std::memory_order_relaxed)) {
+        return;
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_ || !lidar_imu_file_.is_open()) {
+        return;
+      }
+      writeTumTimestamp(lidar_imu_file_,
+                        sample.timestamp_utc_us != 0 ? sample.timestamp_utc_us
+                                                     : wallClockUs());
+      lidar_imu_file_ << std::fixed << std::setprecision(9);
+      for (double value : sample.accel_m_s2) lidar_imu_file_ << ' ' << value;
+      for (double value : sample.gyro_rad_s) lidar_imu_file_ << ' ' << value;
+      lidar_imu_file_ << ' ' << static_cast<unsigned>(sample.model) << ' '
+                      << static_cast<unsigned>(sample.device_type) << ' '
+                      << static_cast<unsigned>(sample.time_type) << ' '
+                      << sample.sample_id << ' ' << sample.timestamp_raw_ns
+                      << ' '
+                      << (sample.timestamp_synced ? 1 : 0) << '\n';
+      if (!lidar_imu_file_.good()) {
+        write_failed_ = true;
+        write_error_ = "LiDAR IMU dataset write failed";
+        return;
+      }
+      ++lidar_imu_sample_count_;
+    } catch (...) {
+      markWriteFailedNoThrow("LiDAR IMU dataset write failed");
+    }
+  }
+
   DatasetRecordingSummary stop() {
     active_.store(false, std::memory_order_release);
     {
@@ -701,6 +761,7 @@ class DatasetRecorder {
     summary.lidar_point_count = lidar_point_count_;
     summary.dropped_lidar_batches = dropped_lidar_batches_;
     summary.dropped_lidar_points = dropped_lidar_points_;
+    summary.lidar_imu_sample_count = lidar_imu_sample_count_;
     if (!session_open_) return summary;
 
     writeManifest();
@@ -953,7 +1014,9 @@ class DatasetRecorder {
     }
     const bool imu_only = mode_.load(std::memory_order_relaxed) ==
                           DatasetRecordingMode::ImuOnly;
-    manifest << "format=prism-dataset-v4\n"
+    const bool has_lidar_streams =
+        record_lidar_streams_.load(std::memory_order_relaxed);
+    manifest << "format=prism-dataset-v5\n"
              << "recording_mode="
              << (imu_only ? "imu-only" : "full")
              << "\n"
@@ -964,8 +1027,12 @@ class DatasetRecorder {
              << (imu_only ? "none" : "chunk-v2-with-actual-exposure")
              << "\n"
              << "lidar_storage="
-             << (imu_only ? "none" : "cartesian-mm-chunk-v1")
+             << (!imu_only && has_lidar_streams
+                     ? "cartesian-mm-chunk-v1"
+                     : "none")
              << "\n"
+             << "lidar_imu_storage="
+             << (has_lidar_streams ? "tum-si-v1" : "none") << "\n"
              << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
              << "start_unix_us=" << start_unix_us_ << "\n"
              << "end_unix_us=" << wallClockUs() << "\n"
@@ -975,7 +1042,8 @@ class DatasetRecorder {
              << "lidar_batches=" << lidar_batch_count_ << "\n"
              << "lidar_points=" << lidar_point_count_ << "\n"
              << "dropped_lidar_batches=" << dropped_lidar_batches_ << "\n"
-             << "dropped_lidar_points=" << dropped_lidar_points_ << "\n";
+             << "dropped_lidar_points=" << dropped_lidar_points_ << "\n"
+             << "lidar_imu_samples=" << lidar_imu_sample_count_ << "\n";
     for (size_t camera = 0; camera < image_counts_.size(); ++camera) {
       manifest << "camera" << camera << "_images=" << image_counts_[camera]
                << "\n";
@@ -1015,6 +1083,11 @@ class DatasetRecorder {
       if (!lidar_chunk_file_.good()) write_failed_ = true;
       lidar_chunk_file_.close();
     }
+    if (lidar_imu_file_.is_open()) {
+      lidar_imu_file_.flush();
+      if (!lidar_imu_file_.good()) write_failed_ = true;
+      lidar_imu_file_.close();
+    }
   }
 
   static constexpr uint64_t kCameraChunkTargetBytes =
@@ -1031,6 +1104,7 @@ class DatasetRecorder {
   std::ofstream camera_chunk_file_;
   std::ofstream lidar_index_file_;
   std::ofstream lidar_chunk_file_;
+  std::ofstream lidar_imu_file_;
   std::filesystem::path root_;
   std::string camera_chunk_name_;
   uint64_t camera_chunk_size_ = 0;
@@ -1044,11 +1118,13 @@ class DatasetRecorder {
   uint64_t lidar_point_count_ = 0;
   uint64_t dropped_lidar_batches_ = 0;
   uint64_t dropped_lidar_points_ = 0;
+  uint64_t lidar_imu_sample_count_ = 0;
   uint64_t start_unix_us_ = 0;
   uint64_t dropped_frame_sets_ = 0;
   uint64_t queued_payload_bytes_ = 0;
   std::atomic<bool> active_{false};
   std::atomic<DatasetRecordingMode> mode_{DatasetRecordingMode::Full};
+  std::atomic<bool> record_lidar_streams_{false};
   bool session_open_ = false;
   bool stop_writer_ = false;
   bool write_failed_ = false;
@@ -1389,15 +1465,20 @@ class MainWindow : public QMainWindow {
         uiText("Record...", "录制..."), header_card);
     auto* recording_menu = new QMenu(imu_record_start_button_);
     auto* record_full_dataset_action = recording_menu->addAction(
-        uiText("Full Dataset (IMU + Cameras + LiDAR)...",
-               "完整数据集（IMU + 相机 + LiDAR）..."));
+        uiText("Full Dataset (Cameras + Onboard IMUs + enabled LiDAR)...",
+               "完整数据集（相机 + 板载 IMU + 已启用雷达）..."));
     auto* record_imu_only_action = recording_menu->addAction(
-        uiText("IMU Only...", "仅录制 IMU..."));
+        uiText("IMU Only (Onboard + enabled LiDAR IMU)...",
+               "仅录制 IMU（板载 + 已启用雷达 IMU）..."));
     imu_record_start_button_->setMenu(recording_menu);
     imu_record_start_button_->setToolTip(
-        uiText("Choose whether to record all enabled streams or only the two "
-               "IMU streams",
-               "选择录制所有已启用的数据流，或仅录制两路 IMU"));
+        uiText("Full mode records cameras and onboard IMU0/IMU1, plus LiDAR "
+               "points and LiDAR IMU when LiDAR is enabled. IMU-only mode "
+               "records onboard IMU0/IMU1 and the enabled LiDAR IMU as "
+               "separate streams.",
+               "完整模式录制相机和板载 IMU0/IMU1；启用雷达时还会录制雷达"
+               "点云和雷达 IMU。仅 IMU 模式分别录制板载 IMU0/IMU1 与已启用"
+               "的雷达 IMU。"));
     connect(record_full_dataset_action, &QAction::triggered, this, [this]() {
       startImuRecording(DatasetRecordingMode::Full);
     });
@@ -1719,10 +1800,11 @@ class MainWindow : public QMainWindow {
 
     dataset_summary_label_ = new QLabel(
         uiText("Select a Prism dataset directory containing imu0.tum and "
-               "imu1.tum. Camera indexes are optional for IMU-only "
-               "recordings.",
+               "imu1.tum (onboard IMUs). Camera indexes are optional for "
+               "IMU-only recordings; lidar_imu.tum is detected separately.",
                "请选择包含 imu0.tum 和 imu1.tum 的 Prism 数据集目录；"
-               "仅 IMU 录制无需相机索引。"),
+               "它们表示板载 IMU。仅 IMU 录制无需相机索引，"
+               "lidar_imu.tum 会单独识别为雷达 IMU。"),
         dataset_page_);
     dataset_summary_label_->setWordWrap(true);
     dataset_summary_label_->setStyleSheet(QStringLiteral(
@@ -2936,6 +3018,8 @@ class MainWindow : public QMainWindow {
         QFileInfo::exists(
             output_directory.filePath(QStringLiteral("lidar.tum"))) ||
         QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("lidar_imu.tum"))) ||
+        QFileInfo::exists(
             output_directory.filePath(QStringLiteral("dataset.info"))) ||
         !output_directory.entryList(
              {QStringLiteral("camera-data-*.bin"),
@@ -2958,15 +3042,18 @@ class MainWindow : public QMainWindow {
               ? uiText(
                     "This directory already contains a Prism dataset. "
                     "Replace it with an IMU-only recording? Existing camera "
-                    "and LiDAR data in this directory will be removed.\n%1",
+                    "and LiDAR point/IMU data in this directory will be "
+                    "removed.\n%1",
                     "该目录已经包含 Prism 数据集。是否替换为仅 IMU 录制？"
-                    "目录中已有的相机和 LiDAR 数据将被删除。\n%1")
+                    "目录中已有的相机、雷达点云和雷达 IMU 数据将被删除。\n%1")
                     .arg(selected_directory)
               : uiText(
                     "This directory already contains a Prism dataset. Replace "
-                    "IMU, camera, and LiDAR data and indexes?\n%1",
+                    "onboard IMU, camera, LiDAR point, and LiDAR IMU data "
+                    "and indexes?\n%1",
                     "该目录已经包含 Prism 数据集。是否替换 imu0.tum、"
-                    "imu1.tum、cam0...cam3 图像、LiDAR 数据及索引？\n%1")
+                    "imu1.tum、cam0...cam3 图像、雷达点云、雷达 IMU 数据"
+                    "及索引？\n%1")
                     .arg(selected_directory);
       const auto answer = QMessageBox::question(
           this, uiText("Overwrite dataset?", "覆盖数据集？"),
@@ -2976,9 +3063,14 @@ class MainWindow : public QMainWindow {
       overwrite = true;
     }
 
+    const auto lidar_model = static_cast<prism::LidarModel>(
+        requested_lidar_model_.load(std::memory_order_acquire));
+    const bool record_lidar_streams =
+        lidar_model != prism::LidarModel::None;
     std::string error;
     if (!dataset_recorder_.start(toFilesystemPath(selected_directory),
-                                 overwrite, mode, &error)) {
+                                 overwrite, mode, record_lidar_streams,
+                                 &error)) {
       QMessageBox::critical(
           this, uiText("Dataset recording failed", "数据集录制失败"),
           uiText("Unable to start recording: %1", "无法开始录制：%1")
@@ -2986,20 +3078,33 @@ class MainWindow : public QMainWindow {
       return;
     }
     recorded_dataset_root_ = selected_directory;
-    imu_record_status_label_->setText(
-        mode == DatasetRecordingMode::ImuOnly
-            ? uiText("Recording IMU only", "正在仅录制 IMU")
-            : uiText("Recording IMU + 4 cameras + enabled LiDAR",
-                     "正在录制 IMU + 四路图像 + 已启用的 LiDAR"));
+    if (mode == DatasetRecordingMode::ImuOnly) {
+      imu_record_status_label_->setText(
+          record_lidar_streams
+              ? uiText("Recording onboard IMU0/IMU1 + LiDAR IMU only",
+                       "正在仅录制板载 IMU0/IMU1 + 雷达 IMU")
+              : uiText("Recording onboard IMU0/IMU1 only",
+                       "正在仅录制板载 IMU0/IMU1"));
+    } else {
+      imu_record_status_label_->setText(
+          record_lidar_streams
+              ? uiText("Recording 4 cameras + onboard IMU0/IMU1 + "
+                       "LiDAR points + LiDAR IMU",
+                       "正在录制四路相机 + 板载 IMU0/IMU1 + 雷达点云 + 雷达 IMU")
+              : uiText("Recording 4 cameras + onboard IMU0/IMU1",
+                       "正在录制四路相机 + 板载 IMU0/IMU1"));
+    }
     imu_record_status_label_->setToolTip(selected_directory);
     imu_record_status_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
         "border-radius: 5px; padding: 4px 8px; font-weight: 700;"));
-    appendLog(QStringLiteral("Dataset recording started: mode=%1 root=%2")
+    appendLog(QStringLiteral(
+                  "Dataset recording started: mode=%1 lidar_imu=%2 root=%3")
                   .arg(mode == DatasetRecordingMode::ImuOnly
                            ? QStringLiteral("imu-only")
-                           : QStringLiteral("full"),
-                       selected_directory));
+                           : QStringLiteral("full"))
+                  .arg(record_lidar_streams ? 1 : 0)
+                  .arg(selected_directory));
     refreshControls();
   }
 
@@ -3010,21 +3115,23 @@ class MainWindow : public QMainWindow {
     if (summary.success) {
       if (summary.mode == DatasetRecordingMode::ImuOnly) {
         imu_record_status_label_->setText(
-            uiText("Saved IMU only: %1/%2 samples",
-                   "仅 IMU 已保存：%1/%2 个样本")
+            uiText("Saved IMU only: onboard %1/%2, LiDAR %3 samples",
+                   "仅 IMU 已保存：板载 %1/%2，雷达 %3 个样本")
                 .arg(summary.sample_count[0])
-                .arg(summary.sample_count[1]));
+                .arg(summary.sample_count[1])
+                .arg(summary.lidar_imu_sample_count));
       } else {
         imu_record_status_label_->setText(
-            uiText("Saved: IMU %1/%2, images %3x4, LiDAR %4 batches, "
-                   "dropped sets %5",
-                   "已保存：IMU %1/%2，图像 %3×4，LiDAR %4 批，"
-                   "丢弃帧集 %5")
+            uiText("Saved: onboard IMU %1/%2, images %3x4, LiDAR %4 "
+                   "batches + %5 IMU samples, dropped sets %6",
+                   "已保存：板载 IMU %1/%2，图像 %3×4，雷达 %4 批点云 + "
+                   "%5 个 IMU 样本，丢弃帧集 %6")
                 .arg(summary.sample_count[0])
                 .arg(summary.sample_count[1])
                 .arg(*std::min_element(summary.image_count.begin(),
                                        summary.image_count.end()))
                 .arg(summary.lidar_batch_count)
+                .arg(summary.lidar_imu_sample_count)
                 .arg(summary.dropped_frame_sets));
       }
       imu_record_status_label_->setStyleSheet(QStringLiteral(
@@ -3034,7 +3141,8 @@ class MainWindow : public QMainWindow {
                     "Dataset saved: mode=%1 root=%2 imu0=%3 imu1=%4 "
                     "camera_images=%5/%6/%7/%8 dropped_sets=%9 "
                     "lidar_batches=%10 lidar_points=%11 "
-                    "dropped_lidar_batches=%12 dropped_lidar_points=%13")
+                    "dropped_lidar_batches=%12 dropped_lidar_points=%13 "
+                    "lidar_imu_samples=%14")
                     .arg(summary.mode == DatasetRecordingMode::ImuOnly
                              ? QStringLiteral("imu-only")
                              : QStringLiteral("full"))
@@ -3049,7 +3157,8 @@ class MainWindow : public QMainWindow {
                     .arg(summary.lidar_batch_count)
                     .arg(summary.lidar_point_count)
                     .arg(summary.dropped_lidar_batches)
-                    .arg(summary.dropped_lidar_points));
+                    .arg(summary.dropped_lidar_points)
+                    .arg(summary.lidar_imu_sample_count));
       loadRecordedDataset(recorded_dataset_root_, false);
     } else {
       imu_record_status_label_->setText(
@@ -3967,25 +4076,29 @@ class MainWindow : public QMainWindow {
 
     if (result.success) {
       appendLog(
-          QStringLiteral("%1 bag export complete: %2 camera=%3 imu=%4 "
-                         "lidar_batches=%5 lidar_points=%6 bytes=%7")
+          QStringLiteral("%1 bag export complete: %2 camera=%3 "
+                         "onboard_imu=%4 lidar_imu=%5 lidar_batches=%6 "
+                         "lidar_points=%7 bytes=%8")
               .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
               .arg(result.imu_messages)
+              .arg(result.lidar_imu_messages)
               .arg(result.lidar_messages)
               .arg(result.lidar_points)
               .arg(result.output_bytes));
       QMessageBox::information(
           this, uiText("ROS bag exported", "ROS Bag 已导出"),
           uiText("Saved %1 bag:\n%2\n\nCamera messages: %3\n"
-                 "IMU messages: %4\nLiDAR clouds: %5 (%6 points)",
-                 "已保存 %1 Bag：\n%2\n\n相机消息：%3\nIMU 消息：%4\n"
-                 "LiDAR 点云：%5 批（%6 点）")
+                 "Onboard IMU messages: %4\nLiDAR IMU messages: %5\n"
+                 "LiDAR clouds: %6 (%7 points)",
+                 "已保存 %1 Bag：\n%2\n\n相机消息：%3\n板载 IMU 消息：%4\n"
+                 "雷达 IMU 消息：%5\nLiDAR 点云：%6 批（%7 点）")
               .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
               .arg(result.imu_messages)
+              .arg(result.lidar_imu_messages)
               .arg(result.lidar_messages)
               .arg(result.lidar_points));
       return;
@@ -4008,6 +4121,7 @@ class MainWindow : public QMainWindow {
     const TumFileSummary imu0 = summarizeTumFile(root / "imu0.tum");
     const TumFileSummary imu1 = summarizeTumFile(root / "imu1.tum");
     const TumFileSummary lidar = summarizeTumFile(root / "lidar.tum");
+    const TumFileSummary lidar_imu = summarizeTumFile(root / "lidar_imu.tum");
 
     size_t camera_index_count = 0;
     std::string camera_index_error;
@@ -4060,12 +4174,13 @@ class MainWindow : public QMainWindow {
     }
 
     if (complete_frames == 0 && imu0.rows == 0 && imu1.rows == 0 &&
-        lidar.rows == 0) {
+        lidar.rows == 0 && lidar_imu.rows == 0) {
       if (show_errors) {
         QMessageBox::warning(
             this, uiText("Empty dataset", "空数据集"),
-            uiText("No camera, IMU, or LiDAR records were found.",
-                   "没有找到相机、IMU 或 LiDAR 数据。"));
+            uiText("No camera, onboard IMU, LiDAR point, or LiDAR IMU "
+                   "records were found.",
+                   "没有找到相机、板载 IMU、雷达点云或雷达 IMU 数据。"));
       }
       return;
     }
@@ -4078,31 +4193,35 @@ class MainWindow : public QMainWindow {
 
     if (has_cameras) {
       dataset_summary_label_->setText(
-          uiText("Loaded %1 complete four-camera frame sets | "
-                 "IMU0 %2 samples | IMU1 %3 samples | LiDAR %4 batches",
-                 "已加载 %1 个完整四路帧集 | IMU0 %2 个样本 | "
-                 "IMU1 %3 个样本 | LiDAR %4 批")
+          uiText("Loaded %1 complete four-camera frame sets | onboard "
+                 "IMU0 %2 | onboard IMU1 %3 | LiDAR %4 batches | "
+                 "LiDAR IMU %5",
+                 "已加载 %1 个完整四路帧集 | 板载 IMU0 %2 个样本 | "
+                 "板载 IMU1 %3 个样本 | 雷达点云 %4 批 | 雷达 IMU %5 个样本")
               .arg(dataset_frame_count_)
               .arg(imu0.rows)
               .arg(imu1.rows)
-              .arg(lidar.rows));
+              .arg(lidar.rows)
+              .arg(lidar_imu.rows));
     } else if (lidar.rows == 0) {
       dataset_summary_label_->setText(
-          uiText("Loaded IMU-only dataset | IMU0 %1 samples | "
-                 "IMU1 %2 samples",
-                 "已加载仅 IMU 数据集 | IMU0 %1 个样本 | "
-                 "IMU1 %2 个样本")
-              .arg(imu0.rows)
-              .arg(imu1.rows));
-    } else {
-      dataset_summary_label_->setText(
-          uiText("Loaded dataset without cameras | IMU0 %1 samples | "
-                 "IMU1 %2 samples | LiDAR %3 batches",
-                 "已加载无相机数据集 | IMU0 %1 个样本 | "
-                 "IMU1 %2 个样本 | LiDAR %3 批")
+          uiText("Loaded IMU-only dataset | onboard IMU0 %1 | onboard "
+                 "IMU1 %2 | LiDAR IMU %3",
+                 "已加载仅 IMU 数据集 | 板载 IMU0 %1 个样本 | "
+                 "板载 IMU1 %2 个样本 | 雷达 IMU %3 个样本")
               .arg(imu0.rows)
               .arg(imu1.rows)
-              .arg(lidar.rows));
+              .arg(lidar_imu.rows));
+    } else {
+      dataset_summary_label_->setText(
+          uiText("Loaded dataset without cameras | onboard IMU0 %1 | "
+                 "onboard IMU1 %2 | LiDAR %3 batches | LiDAR IMU %4",
+                 "已加载无相机数据集 | 板载 IMU0 %1 个样本 | "
+                 "板载 IMU1 %2 个样本 | 雷达点云 %3 批 | 雷达 IMU %4 个样本")
+              .arg(imu0.rows)
+              .arg(imu1.rows)
+              .arg(lidar.rows)
+              .arg(lidar_imu.rows));
     }
     dataset_summary_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
@@ -4116,18 +4235,22 @@ class MainWindow : public QMainWindow {
                    .arg(dataset_camera_entries_[1].size())
                    .arg(dataset_camera_entries_[2].size())
                    .arg(dataset_camera_entries_[3].size());
-    details += QStringLiteral("imu0: samples=%1 first=%2 last=%3\n")
+    details += QStringLiteral("onboard imu0: samples=%1 first=%2 last=%3\n")
                    .arg(imu0.rows)
                    .arg(imu0.first_timestamp_us)
                    .arg(imu0.last_timestamp_us);
-    details += QStringLiteral("imu1: samples=%1 first=%2 last=%3\n")
+    details += QStringLiteral("onboard imu1: samples=%1 first=%2 last=%3\n")
                    .arg(imu1.rows)
                    .arg(imu1.first_timestamp_us)
                    .arg(imu1.last_timestamp_us);
-    details += QStringLiteral("lidar: batches=%1 first=%2 last=%3")
+    details += QStringLiteral("lidar points: batches=%1 first=%2 last=%3\n")
                    .arg(lidar.rows)
                    .arg(lidar.first_timestamp_us)
                    .arg(lidar.last_timestamp_us);
+    details += QStringLiteral("lidar imu: samples=%1 first=%2 last=%3")
+                   .arg(lidar_imu.rows)
+                   .arg(lidar_imu.first_timestamp_us)
+                   .arg(lidar_imu.last_timestamp_us);
     dataset_details_->setPlainText(details);
 
     if (has_cameras && dataset_frame_count_ != 0) {
@@ -5065,6 +5188,14 @@ class MainWindow : public QMainWindow {
                               received_lidar_points, batch.batch_id);
             pending_lidar_preview.clear();
             pending_lidar_preview.reserve(8192u);
+          },
+          [this, requested_lidar_model](
+              const prism::LidarImuSample& sample) {
+            if (sample.model != requested_lidar_model) {
+              throw std::runtime_error(
+                  "received LiDAR IMU for a model other than the explicit selection");
+            }
+            dataset_recorder_.appendLidarImu(sample);
           });
       try {
         imu_stream.start();
@@ -5617,10 +5748,11 @@ int runViewerApplication(int argc, char** argv) {
         std::cerr << "cannot create IMU-only self-test directory\n";
         return 9;
       }
-      const std::array<std::filesystem::path, 7> stale_full_outputs = {
+      const std::array<std::filesystem::path, 8> stale_full_outputs = {
           test_root / "cam0.tum", test_root / "cam1.tum",
           test_root / "cam2.tum", test_root / "cam3.tum",
-          test_root / "lidar.tum", test_root / "camera-data-0000.bin",
+          test_root / "lidar.tum", test_root / "lidar_imu.tum",
+          test_root / "camera-data-0000.bin",
           test_root / "lidar-data-0000.bin"};
       for (const auto& path : stale_full_outputs) {
         std::ofstream stale_file(path, std::ios::out | std::ios::trunc);
@@ -5637,7 +5769,7 @@ int runViewerApplication(int argc, char** argv) {
             test_root, true,
             test_imu_only ? DatasetRecordingMode::ImuOnly
                           : DatasetRecordingMode::Full,
-            &error)) {
+            true, &error)) {
       std::cerr << "dataset recorder start failed: " << error << "\n";
       return 10;
     }
@@ -5677,6 +5809,17 @@ int runViewerApplication(int argc, char** argv) {
     lidar.points.push_back(
         prism::LidarPoint{-4000, 5000, 6000, 88u, 5u});
     recorder.appendLidar(lidar);
+    prism::LidarImuSample lidar_imu;
+    lidar_imu.model = prism::LidarModel::Mid360S;
+    lidar_imu.device_type = 35u;
+    lidar_imu.time_type = 1u;
+    lidar_imu.sample_id = 10u;
+    lidar_imu.timestamp_raw_ns = 1780000000000800000ULL;
+    lidar_imu.timestamp_utc_us = 1780000000000800ULL;
+    lidar_imu.timestamp_synced = true;
+    lidar_imu.accel_m_s2 = {0.1f, -0.2f, 9.7f};
+    lidar_imu.gyro_rad_s = {0.01f, -0.02f, 0.03f};
+    recorder.appendLidarImu(lidar_imu);
     const DatasetRecordingSummary summary = recorder.stop();
     std::array<std::vector<DatasetImageEntry>, 4> loaded_images;
     bool browser_load_ok = true;
@@ -5699,14 +5842,17 @@ int runViewerApplication(int argc, char** argv) {
         summarizeTumFile(test_root / "imu1.tum");
     const TumFileSummary loaded_lidar =
         summarizeTumFile(test_root / "lidar.tum");
+    const TumFileSummary loaded_lidar_imu =
+        summarizeTumFile(test_root / "lidar_imu.tum");
     browser_load_ok = browser_load_ok && loaded_imu0.rows == 1 &&
-                      loaded_imu1.rows == 1;
+                      loaded_imu1.rows == 1 && loaded_lidar_imu.rows == 1;
     bool auxiliary_streams_ok = true;
     if (test_imu_only) {
       auxiliary_streams_ok = loaded_lidar.rows == 0 &&
                              !std::filesystem::exists(test_root / "lidar.tum") &&
                              summary.lidar_batch_count == 0 &&
                              summary.lidar_point_count == 0 &&
+                             summary.lidar_imu_sample_count == 1 &&
                              std::all_of(
                                  summary.image_count.begin(),
                                  summary.image_count.end(),
@@ -5725,6 +5871,7 @@ int runViewerApplication(int argc, char** argv) {
       auxiliary_streams_ok =
           loaded_lidar.rows == 1 && summary.lidar_batch_count == 1 &&
           summary.lidar_point_count == 2 &&
+          summary.lidar_imu_sample_count == 1 &&
           std::all_of(summary.image_count.begin(), summary.image_count.end(),
                       [](uint64_t count) { return count == 1; });
     }
@@ -5738,10 +5885,63 @@ int runViewerApplication(int argc, char** argv) {
     const bool mode_ok =
         summary.mode == (test_imu_only ? DatasetRecordingMode::ImuOnly
                                        : DatasetRecordingMode::Full);
+
+    // Exercise the complementary file set as well. A capture started without
+    // LiDAR must not leave an empty point index, LiDAR IMU stream, or manifest
+    // claim behind, even if stale/unexpected LiDAR callbacks are presented to
+    // the recorder during the test.
+    const std::filesystem::path no_lidar_root = test_root / "without-lidar";
+    DatasetRecorder no_lidar_recorder;
+    std::string no_lidar_error;
+    bool no_lidar_ok = no_lidar_recorder.start(
+        no_lidar_root, true,
+        test_imu_only ? DatasetRecordingMode::ImuOnly
+                      : DatasetRecordingMode::Full,
+        false, &no_lidar_error);
+    DatasetRecordingSummary no_lidar_summary;
+    if (no_lidar_ok) {
+      no_lidar_recorder.appendImu(imu0);
+      no_lidar_recorder.appendImu(imu1);
+      no_lidar_recorder.appendFrameSet(
+          7, 1780000000000500ULL, metadata, jpeg);
+      no_lidar_recorder.appendLidar(lidar);
+      no_lidar_recorder.appendLidarImu(lidar_imu);
+      no_lidar_summary = no_lidar_recorder.stop();
+      no_lidar_ok =
+          no_lidar_summary.success &&
+          no_lidar_summary.sample_count[0] == 1 &&
+          no_lidar_summary.sample_count[1] == 1 &&
+          no_lidar_summary.lidar_batch_count == 0 &&
+          no_lidar_summary.lidar_point_count == 0 &&
+          no_lidar_summary.lidar_imu_sample_count == 0 &&
+          !std::filesystem::exists(no_lidar_root / "lidar.tum") &&
+          !std::filesystem::exists(no_lidar_root / "lidar_imu.tum") &&
+          !std::filesystem::exists(no_lidar_root / "lidar-data-0000.bin");
+      for (size_t camera = 0; camera < loaded_images.size(); ++camera) {
+        const bool camera_index_exists = std::filesystem::is_regular_file(
+            no_lidar_root / ("cam" + std::to_string(camera) + ".tum"));
+        no_lidar_ok =
+            no_lidar_ok &&
+            camera_index_exists == !test_imu_only &&
+            no_lidar_summary.image_count[camera] ==
+                (test_imu_only ? 0u : 1u);
+      }
+      bool manifest_lidar_none = false;
+      bool manifest_lidar_imu_none = false;
+      std::ifstream no_lidar_manifest(no_lidar_root / "dataset.info");
+      for (std::string line; std::getline(no_lidar_manifest, line);) {
+        manifest_lidar_none =
+            manifest_lidar_none || line == "lidar_storage=none";
+        manifest_lidar_imu_none =
+            manifest_lidar_imu_none || line == "lidar_imu_storage=none";
+      }
+      no_lidar_ok = no_lidar_ok && manifest_lidar_none &&
+                    manifest_lidar_imu_none;
+    }
     const bool success = summary.success && mode_ok && manifest_mode_ok &&
                          summary.sample_count[0] == 1 &&
                          summary.sample_count[1] == 1 && browser_load_ok &&
-                         auxiliary_streams_ok;
+                         auxiliary_streams_ok && no_lidar_ok;
     std::cout << (test_imu_only ? "imu_only_recorder_self_test="
                                 : "dataset_recorder_self_test=")
               << (success ? "PASS" : "FAIL")
@@ -5751,9 +5951,11 @@ int runViewerApplication(int argc, char** argv) {
               << "/" << summary.image_count[2] << "/"
               << summary.image_count[3] << " lidar="
               << summary.lidar_batch_count << "/"
-              << summary.lidar_point_count
+              << summary.lidar_point_count << " lidar_imu="
+              << summary.lidar_imu_sample_count
               << " manifest_mode=" << (manifest_mode_ok ? "PASS" : "FAIL")
               << " browser_load=" << (browser_load_ok ? "PASS" : "FAIL")
+              << " no_lidar=" << (no_lidar_ok ? "PASS" : "FAIL")
               << " error=" << summary.error << "\n";
     return success ? 0 : 11;
   }

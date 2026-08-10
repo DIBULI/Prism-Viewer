@@ -109,7 +109,8 @@ class ImuStream {
 
 class LidarStream {
  public:
-  LidarStream(Client& client, prism::LidarPointBatchHandler handler);
+  LidarStream(Client& client, prism::LidarPointBatchHandler point_handler,
+              prism::LidarImuSampleHandler imu_handler = {});
   ~LidarStream();
   void start(prism::LidarModel model);
   void stop();
@@ -118,7 +119,8 @@ class LidarStream {
 
  private:
   Client* client_;
-  prism::LidarPointBatchHandler handler_;
+  prism::LidarPointBatchHandler point_handler_;
+  prism::LidarImuSampleHandler imu_handler_;
   bool active_ = false;
 };
 

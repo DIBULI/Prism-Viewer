@@ -22,7 +22,10 @@ struct RosbagExportResult {
   bool success = false;
   bool cancelled = false;
   uint64_t camera_messages = 0;
+  // Board-mounted IMU0/IMU1 messages. Kept separate from the optional
+  // LiDAR-integrated IMU for backwards-compatible result accounting.
   uint64_t imu_messages = 0;
+  uint64_t lidar_imu_messages = 0;
   uint64_t lidar_messages = 0;
   uint64_t lidar_points = 0;
   uint64_t output_bytes = 0;

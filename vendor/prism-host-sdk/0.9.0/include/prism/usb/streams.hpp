@@ -13,6 +13,7 @@ class Client;
 using ImuSampleHandler = std::function<void(const ImuSample&)>;
 using LidarPointBatchHandler =
     std::function<void(const LidarPointBatch&)>;
+using LidarImuSampleHandler = std::function<void(const LidarImuSample&)>;
 
 // High-level IMU interface for applications that share the USB receive stream
 // with video. Feed every received frame to handleFrame(); IMU protocol parsing
@@ -39,6 +40,8 @@ class ImuStream {
 class LidarStream {
  public:
   LidarStream(Client& client, LidarPointBatchHandler handler);
+  LidarStream(Client& client, LidarPointBatchHandler point_handler,
+              LidarImuSampleHandler imu_handler);
   ~LidarStream();
 
   LidarStream(const LidarStream&) = delete;
@@ -51,7 +54,8 @@ class LidarStream {
 
  private:
   Client* client_ = nullptr;
-  LidarPointBatchHandler handler_;
+  LidarPointBatchHandler point_handler_;
+  LidarImuSampleHandler imu_handler_;
   bool active_ = false;
 };
 

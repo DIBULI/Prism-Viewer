@@ -3,9 +3,9 @@
 ![Prism](branding/prism-logo.svg)
 
 Prism Viewer is the standalone Qt desktop application for Prism USB devices.
-It provides four-camera MJPEG preview, dual-IMU monitoring and recording,
-Mid-360/Mid-360S point-cloud display, device configuration, system upgrade,
-dataset browsing, and ROS1/ROS2 bag export.
+It provides four-camera MJPEG preview, two onboard IMUs plus optional
+Mid-360/Mid-360S IMU recording, LiDAR point-cloud display, device configuration,
+system upgrade, dataset browsing, and ROS1/ROS2 bag export.
 
 The Viewer does not compile or fetch Host SDK sources. The matching binary SDK
 is versioned directly in this repository under

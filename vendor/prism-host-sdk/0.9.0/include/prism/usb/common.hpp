@@ -71,6 +71,7 @@ enum class FrameType : uint8_t {
   LidarStatusResponse = 0x91,
   LidarPoints = 0x92,
   LidarNetworkStatus = 0x93,
+  LidarImuSample = 0x94,
   UpgradeStatus = 0xa0,
   SensorBoardUpgradeStatus = 0xa1,
   ConfigResponse = 0xb2,

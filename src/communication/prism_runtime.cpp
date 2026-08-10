@@ -178,8 +178,12 @@ bool ImuStream::handleFrame(const prism::Frame& f) {
   return true;
 }
 
-LidarStream::LidarStream(Client& c, prism::LidarPointBatchHandler h)
-    : client_(&c), handler_(std::move(h)) {}
+LidarStream::LidarStream(Client& c,
+                         prism::LidarPointBatchHandler point_handler,
+                         prism::LidarImuSampleHandler imu_handler)
+    : client_(&c),
+      point_handler_(std::move(point_handler)),
+      imu_handler_(std::move(imu_handler)) {}
 LidarStream::~LidarStream() {
   try {
     stop();
@@ -191,7 +195,9 @@ void LidarStream::start(prism::LidarModel m) {
   if (client_ == nullptr || !client_->isOpen()) {
     throw std::runtime_error("LiDAR stream client is not open");
   }
-  if (!handler_) throw std::runtime_error("LiDAR stream handler is not set");
+  if (!point_handler_ && !imu_handler_) {
+    throw std::runtime_error("LiDAR stream handlers are not set");
+  }
   const prism::LidarStatus status =
       client_->api_->start_lidar(client_->handle_, m);
   if (!status.enabled || status.model != m) {
@@ -208,10 +214,21 @@ void LidarStream::stop() {
 }
 bool LidarStream::active() const noexcept { return active_; }
 bool LidarStream::handleFrame(const prism::Frame& f) {
-  if (f.type != prism::FrameType::LidarPoints) return false;
-  if (!active_) return true;
-  handler_(client_->api_->parse_lidar_point_batch(f));
-  return true;
+  if (f.type == prism::FrameType::LidarPoints) {
+    if (!active_) return true;
+    if (point_handler_) {
+      point_handler_(client_->api_->parse_lidar_point_batch(f));
+    }
+    return true;
+  }
+  if (f.type == prism::FrameType::LidarImuSample) {
+    if (!active_) return true;
+    if (imu_handler_) {
+      imu_handler_(client_->api_->parse_lidar_imu_sample(f));
+    }
+    return true;
+  }
+  return false;
 }
 
 prism::SystemUpgradePackageInfo inspectSystemUpgradePackage(

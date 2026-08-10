@@ -12,6 +12,7 @@
 #include <array>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -798,21 +799,6 @@ std::filesystem::path temporaryPathFor(const std::filesystem::path& output) {
          (output.filename().string() + ".partial." + std::to_string(nonce));
 }
 
-uint64_t lidarTimestampUs(uint32_t time_type, uint64_t raw_timestamp,
-                          uint64_t fallback_us) {
-  constexpr uint64_t kMinimumPlausibleUnixNanoseconds =
-      100000000000000000ULL;
-  // Livox encodes PTP as a little-endian uint64 nanosecond timestamp. Other
-  // time modes may use a byte-structured GPS representation, so preserve the
-  // host reception time unless the packet explicitly reports PTP.
-  constexpr uint32_t kLivoxTimestampTypePtp = 1u;
-  if (time_type == kLivoxTimestampTypePtp &&
-      raw_timestamp >= kMinimumPlausibleUnixNanoseconds) {
-    return raw_timestamp / 1000ULL;
-  }
-  return fallback_us;
-}
-
 QString pathToQString(const std::filesystem::path& path) {
 #ifdef _WIN32
   return QString::fromStdWString(path.wstring());
@@ -1082,7 +1068,8 @@ class DatasetBagWriter {
   DatasetBagWriter(RosbagFormat format,
                    const std::filesystem::path& temporary,
                    const std::filesystem::path& final_output,
-                   bool cameras_present, bool lidar_present)
+                   bool cameras_present, bool lidar_present,
+                   bool lidar_imu_present)
       : format_(format) {
     if (format_ == RosbagFormat::Ros1) {
       ros1_ = std::make_unique<Ros1BagWriter>(temporary);
@@ -1106,6 +1093,11 @@ class DatasetBagWriter {
             "/prism/lidar/points", "sensor_msgs/PointCloud2",
             "1158d486dd51d683ce2f1be655c3c181", kPointCloud2Definition);
       }
+      if (lidar_imu_present) {
+        lidar_imu_ros1_ = &ros1_->addConnection(
+            "/prism/lidar/imu/data", "sensor_msgs/Imu",
+            "6a62c6daae103f4ff57a132d6f95cec2", kImuDefinition);
+      }
       return;
     }
 
@@ -1125,6 +1117,10 @@ class DatasetBagWriter {
     if (lidar_present) {
       lidar_ros2_ = ros2_->addTopic(
           "/prism/lidar/points", "sensor_msgs/msg/PointCloud2");
+    }
+    if (lidar_imu_present) {
+      lidar_imu_ros2_ = ros2_->addTopic(
+          "/prism/lidar/imu/data", "sensor_msgs/msg/Imu");
     }
   }
 
@@ -1174,6 +1170,23 @@ class DatasetBagWriter {
     }
   }
 
+  void writeLidarImu(uint32_t sequence, uint64_t timestamp_us,
+                     const std::array<double, 3>& acceleration,
+                     const std::array<double, 3>& angular_velocity) {
+    constexpr const char* kFrameId = "livox_imu";
+    if (format_ == RosbagFormat::Ros1) {
+      ros1_->writeMessage(
+          lidar_imu_ros1_, timestamp_us,
+          makeRos1Imu(sequence, timestamp_us, kFrameId, acceleration,
+                      angular_velocity));
+    } else {
+      ros2_->writeMessage(
+          lidar_imu_ros2_, timestamp_us,
+          makeRos2Imu(timestamp_us, kFrameId, acceleration,
+                      angular_velocity));
+    }
+  }
+
   uint64_t finish() {
     return format_ == RosbagFormat::Ros1 ? ros1_->finish() : ros2_->finish();
   }
@@ -1185,9 +1198,11 @@ class DatasetBagWriter {
   std::array<Connection*, 4> camera_ros1_{};
   std::array<Connection*, 2> imu_ros1_{};
   Connection* lidar_ros1_ = nullptr;
+  Connection* lidar_imu_ros1_ = nullptr;
   std::array<int, 4> camera_ros2_{};
   std::array<int, 2> imu_ros2_{};
   int lidar_ros2_ = 0;
+  int lidar_imu_ros2_ = 0;
 };
 
 }  // namespace
@@ -1268,11 +1283,16 @@ RosbagExportResult exportDatasetToRosbag(
     const uint64_t lidar_rows = countRows(lidar_index, false);
     const bool lidar_present = lidar_rows != 0;
     total += lidar_rows;
+    const std::filesystem::path lidar_imu_index =
+        dataset_root / "lidar_imu.tum";
+    const uint64_t lidar_imu_rows = countRows(lidar_imu_index, false);
+    const bool lidar_imu_present = lidar_imu_rows != 0;
+    total += lidar_imu_rows;
     if (total == 0) throw std::runtime_error("dataset is empty");
 
     temporary = temporaryPathFor(output_path);
     DatasetBagWriter writer(format, temporary, output_path, cameras_present,
-                            lidar_present);
+                            lidar_present, lidar_imu_present);
 
     uint64_t completed = 0;
     reportProgress(progress, completed, total,
@@ -1407,9 +1427,12 @@ RosbagExportResult exportDatasetToRosbag(
         }
         (void)device_type;
         (void)batch_id;
-        const uint64_t fallback_us = parseTimestampUs(timestamp_text);
-        const uint64_t timestamp_us =
-            lidarTimestampUs(time_type, raw_timestamp, fallback_us);
+        // lidar.tum records a normalized host UTC timestamp in its first
+        // column. timestamp_raw is deliberately kept as opaque Livox metadata:
+        // PTP packets use the TAI scale and must not be written to ROS as UTC.
+        const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
+        (void)time_type;
+        (void)raw_timestamp;
         if (sequence != 0 && timestamp_us < previous_timestamp) {
           throw std::runtime_error("LiDAR timestamps are not monotonic");
         }
@@ -1428,6 +1451,77 @@ RosbagExportResult exportDatasetToRosbag(
         reportProgress(progress, completed, total, stage, false);
       }
       if (!input.eof()) throw std::runtime_error("LiDAR index read failed");
+      reportProgress(progress, completed, total, stage, true);
+    }
+
+    if (lidar_imu_present) {
+      checkCancelled(cancelled);
+      const std::string stage = "Exporting LiDAR IMU";
+      std::ifstream input(lidar_imu_index);
+      std::string line;
+      uint64_t line_number = 0;
+      uint64_t previous_timestamp = 0;
+      uint32_t sequence = 0;
+      while (std::getline(input, line)) {
+        ++line_number;
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream parser(line);
+        std::string timestamp_text;
+        std::array<double, 3> acceleration{};
+        std::array<double, 3> angular_velocity{};
+        if (!(parser >> timestamp_text >> acceleration[0] >> acceleration[1] >>
+              acceleration[2] >> angular_velocity[0] >> angular_velocity[1] >>
+              angular_velocity[2])) {
+          throw std::runtime_error("invalid lidar_imu.tum line " +
+                                   std::to_string(line_number));
+        }
+        const bool values_finite =
+            std::all_of(acceleration.begin(), acceleration.end(),
+                        [](double value) { return std::isfinite(value); }) &&
+            std::all_of(angular_velocity.begin(), angular_velocity.end(),
+                        [](double value) { return std::isfinite(value); });
+        if (!values_finite) {
+          throw std::runtime_error("invalid lidar_imu.tum line " +
+                                   std::to_string(line_number));
+        }
+
+        // A recorder may append the six provenance fields below. Accept either
+        // the compact seven-column SI form or the complete extended form; a
+        // partial or unknown suffix is rejected instead of silently ignored.
+        parser >> std::ws;
+        if (!parser.eof()) {
+          uint32_t model = 0;
+          uint32_t device_type = 0;
+          uint32_t time_type = 0;
+          uint64_t sample_id = 0;
+          uint64_t timestamp_raw = 0;
+          uint32_t timestamp_synced = 0;
+          std::string trailing;
+          if (!(parser >> model >> device_type >> time_type >> sample_id >>
+                timestamp_raw >> timestamp_synced) ||
+              (parser >> trailing) || (model != 1u && model != 2u) ||
+              device_type > std::numeric_limits<uint8_t>::max() ||
+              time_type > std::numeric_limits<uint8_t>::max() ||
+              sample_id > std::numeric_limits<uint32_t>::max() ||
+              timestamp_synced > 1u) {
+            throw std::runtime_error("invalid lidar_imu.tum line " +
+                                     std::to_string(line_number));
+          }
+        }
+
+        const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
+        if (sequence != 0 && timestamp_us < previous_timestamp) {
+          throw std::runtime_error("LiDAR IMU timestamps are not monotonic");
+        }
+        previous_timestamp = timestamp_us;
+        writer.writeLidarImu(sequence++, timestamp_us, acceleration,
+                             angular_velocity);
+        ++result.lidar_imu_messages;
+        ++completed;
+        checkCancelled(cancelled);
+        reportProgress(progress, completed, total, stage, false);
+      }
+      if (!input.eof()) throw std::runtime_error("LiDAR IMU index read failed");
       reportProgress(progress, completed, total, stage, true);
     }
 

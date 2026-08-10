@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "vendor/prism-host-sdk/0.9.0/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "1adcd3a3996333aee89a5e75a73625240f39afca1829a7cdd5e73032ac366d98"
+          $expected = "5e88232f3117515689f7ab2be14c94b33a8d9be0b874387eb3b03e98d2a73b83"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -103,7 +103,7 @@ jobs:
 
       - name: Verify bundled Linux SDK
         run: |
-          echo "d541a7f9db1136e24b9bf96282e1e6a7f8bcf14d1096d3b84f87a4094b24a82b  vendor/prism-host-sdk/0.9.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
+          echo "5b1092f62b24c7fd36456de337dac078208b2134e278a559a17ffd65460667dc  vendor/prism-host-sdk/0.9.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
 
       - name: Configure and build Viewer
         run: |

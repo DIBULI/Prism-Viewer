@@ -240,6 +240,27 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME rosbag-exporter COMMAND rosbag-exporter-test)
 
+  add_test(
+    NAME dataset-recorder-full
+    COMMAND prism-viewer --dataset-recorder-self-test
+            "${CMAKE_CURRENT_BINARY_DIR}/test-output/dataset-recorder-full"
+  )
+  add_test(
+    NAME dataset-recorder-imu-only
+    COMMAND prism-viewer --imu-only-recorder-self-test
+            "${CMAKE_CURRENT_BINARY_DIR}/test-output/dataset-recorder-imu-only"
+  )
+  set_tests_properties(
+    dataset-recorder-full dataset-recorder-imu-only
+    PROPERTIES RUN_SERIAL TRUE
+  )
+  if(UNIX)
+    set_tests_properties(
+      dataset-recorder-full dataset-recorder-imu-only
+      PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
   add_executable(camera-encoding-panel-test
     src/common/ui_text.cpp
     src/ui/camera_encoding_panel.cpp
