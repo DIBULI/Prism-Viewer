@@ -273,7 +273,8 @@ jobs:
                   exit 1
                   ;;
               esac
-            done < <(otool -L "$binary" | tail -n +2 | awk '{print $1}')
+            done < <(otool -L "$binary" |
+                       awk '/^[[:space:]]/ { print $1 }')
           done
 
           codesign --force --deep --sign - "$app"

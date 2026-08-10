@@ -16,8 +16,12 @@ while IFS= read -r -d '' candidate; do
     continue
   fi
 
-  install_id="$(otool -D "${candidate}" 2>/dev/null |
-                  tail -n +2 | head -n 1 || true)"
+  # Read LC_ID_DYLIB directly. `otool -D` adds architecture headings for
+  # universal2 files, which can be mistaken for the install name.
+  install_id="$(otool -l "${candidate}" 2>/dev/null |
+                  awk '$1 == "cmd" && $2 == "LC_ID_DYLIB" {
+                         getline; getline; print $2; exit
+                       }' || true)"
   case "${install_id}" in
     "" | @* | /System/Library/* | /usr/lib/*)
       ;;

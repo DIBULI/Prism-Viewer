@@ -57,7 +57,8 @@ while IFS= read -r -d '' candidate; do
         invalid_dependencies+="${candidate}: ${dependency}"$'\n'
         ;;
     esac
-  done < <(otool -L "${candidate}" | tail -n +2 | awk '{ print $1 }')
+  done < <(otool -L "${candidate}" |
+             awk '/^[[:space:]]/ { print $1 }')
   while IFS= read -r runtime_path; do
     case "${runtime_path}" in
       @* | /System/Library/* | /usr/lib/*)
