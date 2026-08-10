@@ -243,6 +243,7 @@ jobs:
 
           "$QT_PREFIX/bin/macdeployqt" "$app" \
             -always-overwrite -verbose=2
+          scripts/prune_macos_qt_plugins.sh "$app" "$QT_PREFIX"
           scripts/deploy_macos_offscreen_plugin.sh "$app" "$QT_PREFIX"
           scripts/restore_macos_sdk_runtime.sh "$app"
           scripts/fixup_macos_bundle.sh "$app"

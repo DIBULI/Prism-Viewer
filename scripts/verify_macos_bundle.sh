@@ -40,6 +40,11 @@ if [[ ! -f "${offscreen_plugin}" ]]; then
   echo "Bundled Qt offscreen plugin is missing: ${offscreen_plugin}" >&2
   exit 1
 fi
+sqlite_plugin="${app_bundle}/Contents/PlugIns/sqldrivers/libqsqlite.dylib"
+if [[ ! -f "${sqlite_plugin}" ]]; then
+  echo "Bundled Qt SQLite plugin is missing: ${sqlite_plugin}" >&2
+  exit 1
+fi
 
 invalid_dependencies=""
 while IFS= read -r -d '' candidate; do

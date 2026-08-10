@@ -94,6 +94,8 @@ rm -rf "${build_dir}/CMakeFiles"
 "${cmake_bin}" -E remove_directory "${stage_dir}"
 "${cmake_bin}" --install "${build_dir}" --prefix "${stage_dir}"
 "${macdeployqt}" "${app_bundle}" -always-overwrite
+"${root}/scripts/prune_macos_qt_plugins.sh" \
+  "${app_bundle}" "${qt_prefix}"
 "${root}/scripts/deploy_macos_offscreen_plugin.sh" \
   "${app_bundle}" "${qt_prefix}"
 "${root}/scripts/restore_macos_sdk_runtime.sh" "${app_bundle}"
