@@ -4,6 +4,18 @@ project(prism_viewer VERSION 0.9.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
+if(APPLE OR NOT (WIN32 OR UNIX))
+  message(FATAL_ERROR "Prism Viewer supports Windows x64 and Linux x64")
+endif()
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "The bundled Prism Host SDK requires a 64-bit build")
+endif()
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" PRISM_SYSTEM_PROCESSOR)
+if(NOT PRISM_SYSTEM_PROCESSOR MATCHES "^(amd64|x86_64|x64)$")
+  message(FATAL_ERROR
+    "The bundled Prism Host SDK requires an x86-64 target")
+endif()
+unset(PRISM_SYSTEM_PROCESSOR)
 if(WIN32 AND NOT MSVC)
   message(FATAL_ERROR
     "Prism Viewer runtime loading requires the MSVC 14.x C++ ABI")
@@ -17,32 +29,35 @@ set(CMAKE_AUTOMOC OFF)
 set(CMAKE_AUTORCC OFF)
 set(CMAKE_AUTOUIC OFF)
 
-set(PRISM_USB_SDK_ROOT "" CACHE PATH
-    "Installed Prism Host SDK prefix")
+set(PRISM_USB_SDK_ROOT
+    "${CMAKE_CURRENT_LIST_DIR}/vendor/prism-host-sdk/${PROJECT_VERSION}"
+    CACHE PATH "Bundled Prism Host SDK prefix")
+set(PRISM_USB_SDK_INCLUDE_DIR "${PRISM_USB_SDK_ROOT}/include")
+if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/runtime_api.hpp")
+  message(FATAL_ERROR
+    "Bundled Prism Host SDK headers are missing under ${PRISM_USB_SDK_ROOT}")
+endif()
+
 add_library(prism-viewer-sdk INTERFACE)
 target_compile_definitions(prism-viewer-sdk INTERFACE
   PRISM_REQUIRED_USB_SDK_VERSION="${PROJECT_VERSION}")
+target_include_directories(prism-viewer-sdk INTERFACE
+  "${PRISM_USB_SDK_INCLUDE_DIR}")
 if(WIN32)
-  find_path(PRISM_USB_SDK_INCLUDE_DIR
-    NAMES prism/usb/runtime_api.hpp
-    HINTS "${PRISM_USB_SDK_ROOT}/include"
-    REQUIRED
-  )
-  find_file(PRISM_USB_SDK_RUNTIME
-    NAMES prism_usb_sdk.dll
-    HINTS "${PRISM_USB_SDK_ROOT}/bin" "${PRISM_USB_SDK_ROOT}/lib"
-    REQUIRED
-  )
-  target_include_directories(prism-viewer-sdk INTERFACE
-    "${PRISM_USB_SDK_INCLUDE_DIR}")
+  set(PRISM_USB_SDK_RUNTIME
+      "${PRISM_USB_SDK_ROOT}/runtime/windows-x64/prism_usb_sdk.dll")
 else()
-  if(PRISM_USB_SDK_ROOT)
-    list(PREPEND CMAKE_PREFIX_PATH "${PRISM_USB_SDK_ROOT}")
-  endif()
-  if(NOT TARGET Prism::UsbSdk)
-    find_package(PrismUsbSdk 0.9.0 EXACT CONFIG REQUIRED)
-  endif()
-  target_link_libraries(prism-viewer-sdk INTERFACE Prism::UsbSdk)
+  set(PRISM_USB_SDK_RUNTIME
+      "${PRISM_USB_SDK_ROOT}/runtime/linux-x64/libprism_usb_sdk.so")
+  add_library(prism-viewer-sdk-runtime SHARED IMPORTED GLOBAL)
+  set_target_properties(prism-viewer-sdk-runtime PROPERTIES
+    IMPORTED_LOCATION "${PRISM_USB_SDK_RUNTIME}")
+  target_link_libraries(prism-viewer-sdk INTERFACE
+    prism-viewer-sdk-runtime)
+endif()
+if(NOT EXISTS "${PRISM_USB_SDK_RUNTIME}")
+  message(FATAL_ERROR
+    "Bundled Prism Host SDK runtime is missing: ${PRISM_USB_SDK_RUNTIME}")
 endif()
 
 find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql)
@@ -76,17 +91,6 @@ add_executable(prism-viewer
 )
 set_target_properties(prism-viewer PROPERTIES AUTORCC ON)
 
-if(APPLE)
-  set_target_properties(prism-viewer PROPERTIES
-    MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_BUNDLE_NAME "Prism Viewer"
-    MACOSX_BUNDLE_GUI_IDENTIFIER "com.dibuli.prism-viewer"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
-    OUTPUT_NAME "Prism Viewer"
-  )
-endif()
-
 target_compile_features(prism-viewer PRIVATE cxx_std_17)
 target_include_directories(prism-viewer PRIVATE src)
 
@@ -97,29 +101,20 @@ target_link_libraries(prism-viewer PRIVATE
   ${QT_PACKAGE}::Sql
 )
 
-# Keep the SDK runtime beside development/test executables. On Windows the
-# Viewer consumes only installed headers plus the DLL; no import library is
-# searched or linked. Prism-Viewer never compiles SDK sources.
+# Keep the bundled SDK runtime beside development/test executables. On Windows
+# no import library is searched or linked. Prism-Viewer never compiles SDK
+# sources.
 function(prism_copy_sdk_runtime target)
-  if(WIN32)
-    add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "${PRISM_USB_SDK_RUNTIME}"
-              "$<TARGET_FILE_DIR:${target}>"
-      VERBATIM
-    )
-  elseif(NOT APPLE)
-    add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "$<TARGET_FILE:Prism::UsbSdk>"
-              "$<TARGET_FILE_DIR:${target}>"
-      VERBATIM
-    )
-  endif()
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${PRISM_USB_SDK_RUNTIME}"
+            "$<TARGET_FILE_DIR:${target}>"
+    VERBATIM
+  )
 endfunction()
 prism_copy_sdk_runtime(prism-viewer)
 
-if(UNIX AND NOT APPLE)
+if(UNIX)
   set_target_properties(prism-viewer PROPERTIES
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
@@ -146,16 +141,15 @@ endif()
 
 install(TARGETS prism-viewer
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  BUNDLE DESTINATION .
 )
 if(WIN32)
   install(FILES "${PRISM_USB_SDK_RUNTIME}"
     DESTINATION ${CMAKE_INSTALL_BINDIR})
-elseif(UNIX AND NOT APPLE)
-  install(FILES "$<TARGET_FILE:Prism::UsbSdk>"
+else()
+  install(FILES "${PRISM_USB_SDK_RUNTIME}"
     DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
-if(UNIX AND NOT APPLE)
+if(UNIX)
   install(FILES packaging/prism-viewer.desktop
     DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
   )

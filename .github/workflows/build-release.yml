@@ -1,0 +1,162 @@
+name: Build and release Prism Viewer
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prism-viewer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  windows-x64:
+    runs-on: windows-2022
+    steps:
+      - name: Check out Viewer
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install Qt 6.11.1
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
+          $qtRoot = Join-Path $env:RUNNER_TEMP "Qt"
+          aqt install-qt windows desktop 6.11.1 win64_msvc2022_64 `
+            -O $qtRoot -m qtcharts
+          $qtPrefix = Join-Path $qtRoot "6.11.1\msvc2022_64"
+          "QT_PREFIX=$qtPrefix" | Out-File -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 -Append
+          (Join-Path $qtPrefix "bin") | Out-File -FilePath $env:GITHUB_PATH `
+            -Encoding utf8 -Append
+
+      - name: Verify bundled Windows SDK
+        shell: pwsh
+        run: |
+          $dll = "vendor/prism-host-sdk/0.9.0/runtime/windows-x64/prism_usb_sdk.dll"
+          $expected = "0bd8cdce4b86de55939444c1de9d08df780216c163df4b31054067843b9f4ba5"
+          $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Bundled prism_usb_sdk.dll checksum mismatch"
+          }
+
+      - name: Configure and build Viewer
+        shell: pwsh
+        run: |
+          cmake -S . -B build-windows -A x64 `
+            -DCMAKE_PREFIX_PATH="$env:QT_PREFIX" `
+            -DBUILD_TESTING=ON
+          cmake --build build-windows --config Release --parallel
+
+      - name: Test Viewer
+        shell: pwsh
+        run: ctest --test-dir build-windows -C Release --output-on-failure
+
+      - name: Package Viewer
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "prism-viewer-stage"
+          cmake --install build-windows --config Release --prefix $stage
+          $exe = Join-Path $stage "bin\prism-viewer.exe"
+          & (Join-Path $env:QT_PREFIX "bin\windeployqt.exe") `
+            --release --no-translations --compiler-runtime `
+            --dir (Join-Path $stage "bin") $exe
+          $package = Join-Path $env:RUNNER_TEMP `
+            "Prism-Viewer-0.9.0-windows-x64"
+          New-Item -ItemType Directory -Path $package | Out-Null
+          Copy-Item (Join-Path $stage "bin\*") $package -Recurse
+          Compress-Archive -Path $package `
+            -DestinationPath "Prism-Viewer-0.9.0-windows-x64.zip"
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: prism-viewer-0.9.0-windows-x64
+          if-no-files-found: error
+          path: Prism-Viewer-0.9.0-windows-x64.zip
+
+  linux-x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Viewer
+        uses: actions/checkout@v7
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            qt6-base-dev \
+            qt6-charts-dev \
+            libqt6sql6-sqlite \
+            libusb-1.0-0 \
+            libssl3
+
+      - name: Verify bundled Linux SDK
+        run: |
+          echo "73978662b1124ae77c1e68edd26fd634a0f53be7dd57b20dd4c68931d6ba61b7  vendor/prism-host-sdk/0.9.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
+
+      - name: Configure and build Viewer
+        run: |
+          cmake -S . -B build-linux-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON
+          cmake --build build-linux-ci --parallel
+
+      - name: Test Viewer
+        run: ctest --test-dir build-linux-ci --output-on-failure
+
+      - name: Package Viewer
+        run: |
+          stage="$RUNNER_TEMP/prism-viewer-stage"
+          package="$RUNNER_TEMP/Prism-Viewer-0.9.0-linux-x64"
+          cmake --install build-linux-ci --prefix "$stage"
+          mkdir -p "$package"
+          cp -a "$stage"/. "$package"/
+          ldd "$package/bin/prism-viewer" | tee linux-runtime-dependencies.txt
+          if grep -q "not found" linux-runtime-dependencies.txt; then
+            exit 1
+          fi
+          tar -C "$RUNNER_TEMP" -czf \
+            Prism-Viewer-0.9.0-linux-x64.tar.gz \
+            Prism-Viewer-0.9.0-linux-x64
+          mv "$RUNNER_TEMP/Prism-Viewer-0.9.0-linux-x64.tar.gz" .
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v7
+        with:
+          name: prism-viewer-0.9.0-linux-x64
+          if-no-files-found: error
+          path: Prism-Viewer-0.9.0-linux-x64.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows-x64, linux-x64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: prism-viewer-0.9.0-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes

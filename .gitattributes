@@ -1,0 +1,3 @@
+*.dll binary
+*.so binary
+vendor/prism-host-sdk/**/*.hpp text eol=lf

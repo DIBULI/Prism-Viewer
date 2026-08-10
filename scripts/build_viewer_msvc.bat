@@ -4,7 +4,6 @@ setlocal
 set "ROOT=%~dp0.."
 set "BUILD_DIR=%ROOT%\build-msvc"
 set "QT_PREFIX=%~1"
-set "SDK_PREFIX=%~2"
 
 rem Keep one reusable build directory, but discard CMake's absolute source-path
 rem cache so the Viewer continues to build after the repository is moved.
@@ -23,13 +22,10 @@ if errorlevel 1 (
   )
 )
 
-set "CMAKE_PREFIX=%QT_PREFIX%"
-if not "%SDK_PREFIX%"=="" set "CMAKE_PREFIX=%SDK_PREFIX%;%CMAKE_PREFIX%"
-
-if "%CMAKE_PREFIX%"=="" (
-  cmake -S "%ROOT%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release
+if "%QT_PREFIX%"=="" (
+  cmake -S "%ROOT%" -B "%BUILD_DIR%" -A x64 -DCMAKE_BUILD_TYPE=Release
 ) else (
-  cmake -S "%ROOT%" -B "%BUILD_DIR%" -DCMAKE_PREFIX_PATH="%CMAKE_PREFIX%" -DCMAKE_BUILD_TYPE=Release
+  cmake -S "%ROOT%" -B "%BUILD_DIR%" -A x64 -DCMAKE_PREFIX_PATH="%QT_PREFIX%" -DCMAKE_BUILD_TYPE=Release
 )
 if errorlevel 1 exit /b 1
 
