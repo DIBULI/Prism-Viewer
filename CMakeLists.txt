@@ -143,4 +143,22 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME rosbag-exporter COMMAND rosbag-exporter-test)
 
+  add_executable(camera-encoding-panel-test
+    src/common/ui_text.cpp
+    src/ui/camera_encoding_panel.cpp
+    tests/camera_encoding_panel_test.cpp
+  )
+  target_include_directories(camera-encoding-panel-test PRIVATE src)
+  target_compile_features(camera-encoding-panel-test PRIVATE cxx_std_17)
+  target_link_libraries(camera-encoding-panel-test PRIVATE
+    prism_usb_sdk
+    ${QT_PACKAGE}::Widgets
+  )
+  add_test(NAME camera-encoding-panel COMMAND camera-encoding-panel-test)
+  if(UNIX)
+    set_tests_properties(camera-encoding-panel PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
 endif()

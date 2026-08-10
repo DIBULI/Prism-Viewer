@@ -90,10 +90,12 @@ Exposure settings are runtime-only. The panel does not expose gain because
 automatic mode adjusts exposure time only and the runtime exposure protocol
 does not contain an AGC field.
 
-`CameraEncodingPanel` renders the persistent MJPEG quality setting in a
-separate Encoding tab. It is idle-only and delegates refresh/save transactions
-to `MainWindow`; the complete device-configuration read-back is then published
-back to the panel.
+`CameraEncodingPanel` renders the persistent camera frame rate (10/20/30 FPS)
+and MJPEG quality settings in a separate Stream tab. It is idle-only and
+delegates refresh/save transactions to `MainWindow`; both fields are committed
+atomically, and the complete device-configuration read-back is then published
+back to the panel. The saved values take effect on the next camera-pipeline
+start.
 
 ## Live-view performance policy
 

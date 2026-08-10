@@ -9,13 +9,14 @@
 #include <functional>
 
 class QLabel;
+class QComboBox;
 class QPushButton;
 class QSlider;
 class QSpinBox;
 
 namespace prism_viewer::ui {
 
-// Edits the persistent MJPEG encoder setting without owning the SDK client.
+// Edits the persistent camera stream settings without owning the SDK client.
 // MainWindow serializes the idle-only USB transaction and publishes the
 // complete read-back configuration through setConfiguration().
 class CameraEncodingPanel final : public QWidget {
@@ -31,7 +32,7 @@ class CameraEncodingPanel final : public QWidget {
   void setError(const QString& error);
 
   std::function<void()> on_refresh;
-  std::function<void(uint32_t)> on_apply;
+  std::function<void(const prism::DeviceConfiguration&)> on_apply;
 
  private:
   bool isDirty() const;
@@ -39,7 +40,9 @@ class CameraEncodingPanel final : public QWidget {
   void setMessage(const QString& text, bool warning, bool error);
 
   QLabel* message_label_ = nullptr;
+  QLabel* fps_hint_label_ = nullptr;
   QLabel* quality_hint_label_ = nullptr;
+  QComboBox* fps_combo_ = nullptr;
   QSlider* quality_slider_ = nullptr;
   QSpinBox* quality_spin_ = nullptr;
   QPushButton* refresh_button_ = nullptr;

@@ -1548,7 +1548,7 @@ class MainWindow : public QMainWindow {
     camera_tools->setMinimumWidth(340);
     camera_encoding_panel_ = new CameraEncodingPanel(camera_tools);
     camera_tools->addTab(
-        camera_encoding_panel_, uiText("Encoding", "编码"));
+        camera_encoding_panel_, uiText("Stream", "相机流"));
     camera_exposure_panel_ = new CameraExposurePanel(camera_tools);
     camera_tools->addTab(
         camera_exposure_panel_, uiText("Exposure", "曝光"));
@@ -1873,7 +1873,9 @@ class MainWindow : public QMainWindow {
     camera_encoding_panel_->on_refresh =
         [this]() { startCameraEncodingOperation(std::nullopt); };
     camera_encoding_panel_->on_apply =
-        [this](uint32_t quality) { startCameraEncodingOperation(quality); };
+        [this](const prism::DeviceConfiguration& configuration) {
+          startCameraEncodingOperation(configuration);
+        };
     connect(log_button_, &QPushButton::clicked, this, [this]() {
       log_dialog_->show();
       log_dialog_->raise();
@@ -2023,9 +2025,10 @@ class MainWindow : public QMainWindow {
                "%1 不可用：请先打开设备").arg(section));
   }
 
-  void startCameraEncodingOperation(std::optional<uint32_t> quality) {
+  void startCameraEncodingOperation(
+      std::optional<prism::DeviceConfiguration> requested) {
     if (!client_.isOpen()) {
-      showOpenDeviceHint(uiText("Camera encoding", "相机编码"));
+      showOpenDeviceHint(uiText("Camera stream", "相机流"));
       return;
     }
     if (camera_encoding_operation_running_) return;
@@ -2034,11 +2037,12 @@ class MainWindow : public QMainWindow {
         client_.streamTransferActive()) {
       QMessageBox::warning(
           this,
-          uiText("MJPEG controls unavailable", "MJPEG 控制不可用"),
+          uiText("Camera stream controls unavailable", "相机流控制不可用"),
           uiText("Stop camera and IMU transfer and wait for the current "
-                 "device operation to finish before changing MJPEG quality.",
+                 "device operation to finish before changing frame rate or "
+                 "JPEG quality.",
                  "请先停止相机和 IMU 传输，并等待当前设备操作完成后再修改 "
-                 "MJPEG 质量。"));
+                 "相机帧率或 JPEG 质量。"));
       return;
     }
 
@@ -2046,41 +2050,54 @@ class MainWindow : public QMainWindow {
     camera_encoding_operation_running_ = true;
     camera_encoding_panel_->setBusy(
         true,
-        quality.has_value()
-            ? uiText("Saving persistent MJPEG quality...",
-                     "正在保存持久化 MJPEG 质量……")
-            : uiText("Reading persistent MJPEG quality...",
-                     "正在读取持久化 MJPEG 质量……"));
+        requested.has_value()
+            ? uiText("Saving persistent camera stream settings...",
+                     "正在保存持久化相机流设置……")
+            : uiText("Reading persistent camera stream settings...",
+                     "正在读取持久化相机流设置……"));
     refreshControls();
 
-    operation_controller_.start([this, quality]() {
+    operation_controller_.start([this, requested]() {
       try {
         prism::DeviceConfiguration configuration =
             client_.deviceConfiguration();
-        if (quality.has_value()) {
-          configuration.mjpeg_quality = *quality;
+        if (requested.has_value()) {
+          configuration.camera_fps = requested->camera_fps;
+          configuration.mjpeg_quality = requested->mjpeg_quality;
           configuration = client_.saveDeviceConfiguration(
-              configuration, prism::kDeviceConfigFieldMjpegQuality);
+              configuration, prism::kDeviceConfigFieldCameraFps |
+                                 prism::kDeviceConfigFieldMjpegQuality);
         }
-        post([this, configuration, quality]() {
+        post([this, configuration, requested]() {
           camera_encoding_operation_running_ = false;
           camera_encoding_panel_->setConfiguration(configuration);
           camera_encoding_panel_->setBusy(false);
+          if (latest_device_info_valid_) {
+            latest_device_info_.camera_fps =
+                static_cast<uint16_t>(configuration.camera_fps);
+            device_info_panel_->setInfo(latest_device_info_);
+            renderDeviceInfoStatus();
+          }
           setStatusAppearance(false);
           status_label_->setText(
-              quality.has_value()
-                  ? uiText("MJPEG quality saved: %1",
-                           "MJPEG 质量已保存：%1")
+              requested.has_value()
+                  ? uiText("Camera settings saved: %1 FPS · JPEG %2",
+                           "相机设置已保存：%1 FPS · JPEG %2")
+                        .arg(configuration.camera_fps)
                         .arg(configuration.mjpeg_quality)
-                  : uiText("MJPEG quality refreshed: %1",
-                           "MJPEG 质量已刷新：%1")
+                  : uiText("Camera settings refreshed: %1 FPS · JPEG %2",
+                           "相机设置已刷新：%1 FPS · JPEG %2")
+                        .arg(configuration.camera_fps)
                         .arg(configuration.mjpeg_quality));
           appendLogLine(
               QDateTime::currentDateTime().toString(
                   QStringLiteral("HH:mm:ss.zzz ")) +
-              QStringLiteral("MJPEG quality %1 value=%2 generation=%3")
-                  .arg(quality.has_value() ? QStringLiteral("saved")
-                                           : QStringLiteral("refreshed"))
+              QStringLiteral(
+                  "Camera stream settings %1 fps=%2 jpeg_quality=%3 "
+                  "generation=%4")
+                  .arg(requested.has_value() ? QStringLiteral("saved")
+                                             : QStringLiteral("refreshed"))
+                  .arg(configuration.camera_fps)
                   .arg(configuration.mjpeg_quality)
                   .arg(configuration.generation));
           refreshControls();
@@ -2093,13 +2110,14 @@ class MainWindow : public QMainWindow {
           camera_encoding_panel_->setError(error);
           setStatusAppearance(true);
           status_label_->setText(
-              uiText("MJPEG configuration failed: %1",
-                     "MJPEG 配置失败：%1")
+              uiText("Camera stream configuration failed: %1",
+                     "相机流配置失败：%1")
                   .arg(error));
           appendLogLine(
               QDateTime::currentDateTime().toString(
                   QStringLiteral("HH:mm:ss.zzz ")) +
-              QStringLiteral("MJPEG configuration failed: %1").arg(error));
+              QStringLiteral("Camera stream configuration failed: %1")
+                  .arg(error));
           refreshControls();
         });
       }
@@ -4329,9 +4347,11 @@ class MainWindow : public QMainWindow {
       /*
        * Camera and IMU form one capture transaction.  A camera failure must
        * abort the operation instead of silently leaving an IMU-only stream.
+       * Passing fps=0 (the SDK default) makes the Agent use the persistent
+       * camera_fps selected in the Stream panel.
        */
       aggregate_stream_start_attempted = true;
-      const auto status = client_.startVideo1280x1024(30);
+      const auto status = client_.startVideo1280x1024();
       video_started = true;
       appendLog(QStringLiteral("Video started cameras=%1 fps=%2 size=%3x%4")
                     .arg(status.cameras)
