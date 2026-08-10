@@ -617,6 +617,69 @@ int main(int argc, char** argv) {
       throw std::runtime_error("successful ROS2 bag replacement failed");
     }
 
+    const std::filesystem::path imu_only_root = root / "imu-only";
+    std::filesystem::create_directories(imu_only_root);
+    writeText(imu_only_root / "imu0.tum",
+              "# imu\n1780000001.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
+    writeText(imu_only_root / "imu1.tum",
+              "# imu\n1780000001.000100 0.4 0.5 9.7 0.04 0.05 0.06\n");
+    writeText(imu_only_root / "dataset.info",
+              "format=prism-dataset-v4\nrecording_mode=imu-only\n");
+
+    const std::filesystem::path imu_only_ros1 = root / "imu-only.bag";
+    const auto imu_only_ros1_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            imu_only_root, imu_only_ros1,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (!imu_only_ros1_result.success ||
+        imu_only_ros1_result.camera_messages != 0u ||
+        imu_only_ros1_result.imu_messages != 2u ||
+        imu_only_ros1_result.lidar_messages != 0u) {
+      throw std::runtime_error("IMU-only ROS1 export failed: " +
+                               imu_only_ros1_result.error);
+    }
+    const Bytes imu_only_ros1_bytes = readFile(imu_only_ros1);
+    const Record imu_only_file_header = parseRecord(imu_only_ros1_bytes, 13u);
+    if (fieldU32(imu_only_file_header, "conn_count") != 2u) {
+      throw std::runtime_error("IMU-only ROS1 bag has non-IMU connections");
+    }
+
+    const std::filesystem::path imu_only_ros2 =
+        root / "imu-only.rosbag2";
+    const auto imu_only_ros2_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            imu_only_root, imu_only_ros2,
+            prism_viewer::dataset::RosbagFormat::Ros2, false);
+    if (!imu_only_ros2_result.success ||
+        imu_only_ros2_result.camera_messages != 0u ||
+        imu_only_ros2_result.imu_messages != 2u ||
+        imu_only_ros2_result.lidar_messages != 0u) {
+      throw std::runtime_error("IMU-only ROS2 export failed: " +
+                               imu_only_ros2_result.error);
+    }
+    const std::string imu_only_metadata =
+        readText(imu_only_ros2 / "metadata.yaml");
+    if (imu_only_metadata.find("message_count: 2") == std::string::npos ||
+        imu_only_metadata.find("sensor_msgs/msg/Imu") == std::string::npos ||
+        imu_only_metadata.find("CompressedImage") != std::string::npos ||
+        imu_only_metadata.find("PointCloud2") != std::string::npos) {
+      throw std::runtime_error("IMU-only ROS2 metadata contains other streams");
+    }
+
+    writeText(imu_only_root / "cam0.tum", "# incomplete camera set\n");
+    const std::filesystem::path incomplete_ros1 = root / "incomplete.bag";
+    const auto incomplete_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            imu_only_root, incomplete_ros1,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (incomplete_result.success ||
+        incomplete_result.error.find("incomplete set of camera indexes") ==
+            std::string::npos ||
+        std::filesystem::exists(incomplete_ros1)) {
+      throw std::runtime_error("partial camera indexes were not rejected");
+    }
+    std::filesystem::remove(imu_only_root / "cam0.tum");
+
     if (const char* keep = std::getenv("PRISM_ROSBAG_TEST_KEEP");
         keep != nullptr && keep[0] != '\0') {
       std::filesystem::copy_file(

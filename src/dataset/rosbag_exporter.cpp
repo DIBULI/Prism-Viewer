@@ -1082,16 +1082,18 @@ class DatasetBagWriter {
   DatasetBagWriter(RosbagFormat format,
                    const std::filesystem::path& temporary,
                    const std::filesystem::path& final_output,
-                   bool lidar_present)
+                   bool cameras_present, bool lidar_present)
       : format_(format) {
     if (format_ == RosbagFormat::Ros1) {
       ros1_ = std::make_unique<Ros1BagWriter>(temporary);
-      for (size_t camera = 0; camera < camera_ros1_.size(); ++camera) {
-        camera_ros1_[camera] = &ros1_->addConnection(
-            "/prism/camera" + std::to_string(camera) + "/image/compressed",
-            "sensor_msgs/CompressedImage",
-            "8f7a12909da2c9d3332d540a0977563f",
-            kCompressedImageDefinition);
+      if (cameras_present) {
+        for (size_t camera = 0; camera < camera_ros1_.size(); ++camera) {
+          camera_ros1_[camera] = &ros1_->addConnection(
+              "/prism/camera" + std::to_string(camera) + "/image/compressed",
+              "sensor_msgs/CompressedImage",
+              "8f7a12909da2c9d3332d540a0977563f",
+              kCompressedImageDefinition);
+        }
       }
       for (size_t imu = 0; imu < imu_ros1_.size(); ++imu) {
         imu_ros1_[imu] = &ros1_->addConnection(
@@ -1108,10 +1110,12 @@ class DatasetBagWriter {
     }
 
     ros2_ = std::make_unique<Ros2BagWriter>(temporary, final_output);
-    for (size_t camera = 0; camera < camera_ros2_.size(); ++camera) {
-      camera_ros2_[camera] = ros2_->addTopic(
-          "/prism/camera" + std::to_string(camera) + "/image/compressed",
-          "sensor_msgs/msg/CompressedImage");
+    if (cameras_present) {
+      for (size_t camera = 0; camera < camera_ros2_.size(); ++camera) {
+        camera_ros2_[camera] = ros2_->addTopic(
+            "/prism/camera" + std::to_string(camera) + "/image/compressed",
+            "sensor_msgs/msg/CompressedImage");
+      }
     }
     for (size_t imu = 0; imu < imu_ros2_.size(); ++imu) {
       imu_ros2_[imu] = ros2_->addTopic(
@@ -1235,10 +1239,25 @@ RosbagExportResult exportDatasetToRosbag(
     std::array<uint64_t, 4> camera_rows{};
     std::array<uint64_t, 2> imu_rows{};
     uint64_t total = 0;
+    size_t camera_index_count = 0;
     for (size_t camera = 0; camera < camera_rows.size(); ++camera) {
-      camera_rows[camera] = countRows(
-          dataset_root / ("cam" + std::to_string(camera) + ".tum"), true);
-      total += camera_rows[camera];
+      if (std::filesystem::is_regular_file(
+              dataset_root /
+              ("cam" + std::to_string(camera) + ".tum"))) {
+        ++camera_index_count;
+      }
+    }
+    if (camera_index_count != 0 && camera_index_count != camera_rows.size()) {
+      throw std::runtime_error(
+          "dataset has an incomplete set of camera indexes");
+    }
+    const bool cameras_present = camera_index_count == camera_rows.size();
+    if (cameras_present) {
+      for (size_t camera = 0; camera < camera_rows.size(); ++camera) {
+        camera_rows[camera] = countRows(
+            dataset_root / ("cam" + std::to_string(camera) + ".tum"), true);
+        total += camera_rows[camera];
+      }
     }
     for (size_t imu = 0; imu < imu_rows.size(); ++imu) {
       imu_rows[imu] = countRows(
@@ -1252,57 +1271,63 @@ RosbagExportResult exportDatasetToRosbag(
     if (total == 0) throw std::runtime_error("dataset is empty");
 
     temporary = temporaryPathFor(output_path);
-    DatasetBagWriter writer(format, temporary, output_path, lidar_present);
+    DatasetBagWriter writer(format, temporary, output_path, cameras_present,
+                            lidar_present);
 
     uint64_t completed = 0;
     reportProgress(progress, completed, total,
                    format == RosbagFormat::Ros1 ? "Preparing ROS1 bag"
                                                 : "Preparing ROS2 bag",
                    true);
-    for (size_t camera = 0; camera < camera_rows.size(); ++camera) {
-      checkCancelled(cancelled);
-      const std::string stage = "Exporting camera " + std::to_string(camera);
-      std::ifstream index(
-          dataset_root / ("cam" + std::to_string(camera) + ".tum"));
-      std::ifstream container;
-      std::filesystem::path open_container;
-      std::string line;
-      uint64_t line_number = 0;
-      uint64_t previous_timestamp = 0;
-      uint32_t sequence = 0;
-      while (std::getline(index, line)) {
-        ++line_number;
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream parser(line);
-        std::string timestamp_text;
-        std::string relative_path;
-        uint64_t offset = 0;
-        uint64_t size = 0;
-        uint64_t exposure = 0;
-        std::string trailing;
-        if (!(parser >> timestamp_text >> relative_path >> offset >> size >>
-              exposure) ||
-            (parser >> trailing) || size == 0 || size > kMaximumJpegBytes) {
-          throw std::runtime_error("invalid cam" + std::to_string(camera) +
-                                   ".tum line " +
-                                   std::to_string(line_number));
-        }
-        const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
-        if (sequence != 0 && timestamp_us < previous_timestamp) {
-          throw std::runtime_error("camera timestamps are not monotonic");
-        }
-        previous_timestamp = timestamp_us;
-        Bytes jpeg = readContainerPayload(
-            dataset_root, relative_path, offset, static_cast<uint32_t>(size),
-            &container, &open_container);
-        writer.writeCamera(camera, sequence++, timestamp_us, jpeg);
-        ++result.camera_messages;
-        ++completed;
+    if (cameras_present) {
+      for (size_t camera = 0; camera < camera_rows.size(); ++camera) {
         checkCancelled(cancelled);
-        reportProgress(progress, completed, total, stage, false);
+        const std::string stage =
+            "Exporting camera " + std::to_string(camera);
+        std::ifstream index(
+            dataset_root / ("cam" + std::to_string(camera) + ".tum"));
+        std::ifstream container;
+        std::filesystem::path open_container;
+        std::string line;
+        uint64_t line_number = 0;
+        uint64_t previous_timestamp = 0;
+        uint32_t sequence = 0;
+        while (std::getline(index, line)) {
+          ++line_number;
+          if (line.empty() || line[0] == '#') continue;
+          std::istringstream parser(line);
+          std::string timestamp_text;
+          std::string relative_path;
+          uint64_t offset = 0;
+          uint64_t size = 0;
+          uint64_t exposure = 0;
+          std::string trailing;
+          if (!(parser >> timestamp_text >> relative_path >> offset >> size >>
+                exposure) ||
+              (parser >> trailing) || size == 0 || size > kMaximumJpegBytes) {
+            throw std::runtime_error("invalid cam" + std::to_string(camera) +
+                                     ".tum line " +
+                                     std::to_string(line_number));
+          }
+          const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
+          if (sequence != 0 && timestamp_us < previous_timestamp) {
+            throw std::runtime_error("camera timestamps are not monotonic");
+          }
+          previous_timestamp = timestamp_us;
+          Bytes jpeg = readContainerPayload(
+              dataset_root, relative_path, offset, static_cast<uint32_t>(size),
+              &container, &open_container);
+          writer.writeCamera(camera, sequence++, timestamp_us, jpeg);
+          ++result.camera_messages;
+          ++completed;
+          checkCancelled(cancelled);
+          reportProgress(progress, completed, total, stage, false);
+        }
+        if (!index.eof()) {
+          throw std::runtime_error("camera index read failed");
+        }
+        reportProgress(progress, completed, total, stage, true);
       }
-      if (!index.eof()) throw std::runtime_error("camera index read failed");
-      reportProgress(progress, completed, total, stage, true);
     }
 
     for (size_t imu = 0; imu < imu_rows.size(); ++imu) {
