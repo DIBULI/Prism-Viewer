@@ -72,6 +72,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSlider>
+#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
@@ -1609,6 +1610,31 @@ class MainWindow : public QMainWindow {
     lidar_model_selector_->setToolTip(uiText(
         "Model selection is mandatory; the Agent does not auto-detect it",
         "必须明确选择型号，Agent 不会自动猜测"));
+    auto* lidar_point_size_label = new QLabel(
+        uiText("Point size", "点大小"), lidar_controls);
+    lidar_point_size_spin_ = new QSpinBox(lidar_controls);
+    lidar_point_size_spin_->setObjectName(
+        QStringLiteral("lidarPointSizeSpin"));
+    lidar_point_size_spin_->setRange(
+        prism_viewer::LidarPointCloudWidget::kMinimumPointSize,
+        prism_viewer::LidarPointCloudWidget::kMaximumPointSize);
+    lidar_point_size_spin_->setSuffix(QStringLiteral(" px"));
+    lidar_point_size_spin_->setToolTip(uiText(
+        "Change the live point-cloud rendering size",
+        "调整实时点云的渲染点大小"));
+    bool saved_lidar_point_size_valid = false;
+    const int saved_lidar_point_size_value =
+        QSettings(QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"))
+            .value(QStringLiteral("lidar/point_size"),
+                   prism_viewer::LidarPointCloudWidget::kDefaultPointSize)
+            .toInt(&saved_lidar_point_size_valid);
+    const int saved_lidar_point_size = saved_lidar_point_size_valid
+        ? saved_lidar_point_size_value
+        : prism_viewer::LidarPointCloudWidget::kDefaultPointSize;
+    lidar_point_size_spin_->setValue(std::clamp(
+        saved_lidar_point_size,
+        prism_viewer::LidarPointCloudWidget::kMinimumPointSize,
+        prism_viewer::LidarPointCloudWidget::kMaximumPointSize));
     lidar_status_label_ = new QLabel(
         uiText("LiDAR disabled", "雷达未启用"), lidar_controls);
     lidar_status_label_->setStyleSheet(QStringLiteral(
@@ -1617,6 +1643,8 @@ class MainWindow : public QMainWindow {
     lidar_status_label_->setWordWrap(true);
     lidar_controls_layout->addWidget(lidar_enabled_checkbox_);
     lidar_controls_layout->addWidget(lidar_model_selector_);
+    lidar_controls_layout->addWidget(lidar_point_size_label);
+    lidar_controls_layout->addWidget(lidar_point_size_spin_);
     lidar_controls_layout->addWidget(lidar_status_label_, 1);
     lidar_layout->addWidget(lidar_controls);
 
@@ -1667,6 +1695,8 @@ class MainWindow : public QMainWindow {
     lidar_layout->addWidget(lidar_network_group);
     lidar_point_cloud_widget_ =
         new prism_viewer::LidarPointCloudWidget(lidar_page_);
+    lidar_point_cloud_widget_->setPointSize(
+        lidar_point_size_spin_->value());
     lidar_layout->addWidget(lidar_point_cloud_widget_, 1);
 
     wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);
@@ -1993,6 +2023,14 @@ class MainWindow : public QMainWindow {
                 lidar_status_label_->setText(
                     uiText("LiDAR disabled", "雷达未启用"));
               }
+            });
+    connect(lidar_point_size_spin_,
+            QOverload<int>::of(&QSpinBox::valueChanged),
+            this, [this](int size) {
+              lidar_point_cloud_widget_->setPointSize(size);
+              QSettings(QStringLiteral("DIBULI"),
+                        QStringLiteral("PrismViewer"))
+                  .setValue(QStringLiteral("lidar/point_size"), size);
             });
     connect(lidar_network_refresh_button_, &QPushButton::clicked,
             this, [this]() { startLidarNetworkOperation(0); });
@@ -5340,6 +5378,7 @@ class MainWindow : public QMainWindow {
   QWidget* lidar_page_ = nullptr;
   QCheckBox* lidar_enabled_checkbox_ = nullptr;
   QComboBox* lidar_model_selector_ = nullptr;
+  QSpinBox* lidar_point_size_spin_ = nullptr;
   QLabel* lidar_status_label_ = nullptr;
   QCheckBox* lidar_network_enabled_checkbox_ = nullptr;
   QLineEdit* lidar_network_host_ip_ = nullptr;

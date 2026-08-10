@@ -47,6 +47,18 @@ size_t LidarPointCloudWidget::pointCount() const noexcept {
   return points_.size();
 }
 
+void LidarPointCloudWidget::setPointSize(int size) {
+  const int clamped =
+      std::clamp(size, kMinimumPointSize, kMaximumPointSize);
+  if (point_size_ == clamped) return;
+  point_size_ = clamped;
+  update();
+}
+
+int LidarPointCloudWidget::pointSize() const noexcept {
+  return point_size_;
+}
+
 void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.fillRect(rect(), QColor(7, 14, 25));
@@ -81,13 +93,15 @@ void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
 
   const size_t step =
       std::max<size_t>(1u, points_.size() / kMaximumPaintedPoints);
+  QPen point_pen(Qt::white, point_size_, Qt::SolidLine, Qt::RoundCap);
   for (size_t index = 0; index < points_.size(); index += step) {
     const auto& point = points_[index];
     const QPointF screen = project(point.x_mm / 1000.0,
                                    point.y_mm / 1000.0,
                                    point.z_mm / 1000.0);
     if (!rect().contains(screen.toPoint())) continue;
-    painter.setPen(reflectivityColor(point.reflectivity));
+    point_pen.setColor(reflectivityColor(point.reflectivity));
+    painter.setPen(point_pen);
     painter.drawPoint(screen);
   }
 

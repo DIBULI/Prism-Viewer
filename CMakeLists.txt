@@ -270,6 +270,23 @@ if(BUILD_TESTING)
     )
   endif()
 
+  add_executable(lidar-point-cloud-widget-test
+    src/ui/lidar_point_cloud_widget.cpp
+    tests/lidar_point_cloud_widget_test.cpp
+  )
+  target_include_directories(lidar-point-cloud-widget-test PRIVATE src)
+  target_compile_features(lidar-point-cloud-widget-test PRIVATE cxx_std_17)
+  target_link_libraries(lidar-point-cloud-widget-test PRIVATE
+    prism-viewer-sdk
+    ${QT_PACKAGE}::Widgets
+  )
+  add_test(NAME lidar-point-cloud-widget COMMAND lidar-point-cloud-widget-test)
+  if(UNIX)
+    set_tests_properties(lidar-point-cloud-widget PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
   if(WIN32)
     add_executable(windows-runtime-loader-test
       src/communication/prism_runtime.cpp
