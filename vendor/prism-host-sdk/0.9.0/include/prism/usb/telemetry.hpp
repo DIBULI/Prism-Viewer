@@ -129,6 +129,28 @@ struct LidarStatus {
   std::string error;
 };
 
+struct LidarNetworkConfiguration {
+  bool enabled = true;
+  std::string host_ip = "192.168.1.5";
+  std::string netmask = "255.255.255.0";
+  std::string lidar_ip = "192.168.1.3";
+};
+
+struct LidarNetworkStatus {
+  uint16_t version = 0;
+  LidarNetworkConfiguration configuration;
+  bool interface_present = false;
+  bool link_up = false;
+  bool address_applied = false;
+  bool same_subnet = false;
+  bool target_reachable = false;
+  bool persisted = false;
+  int32_t error_code = 0;
+  uint32_t generation = 0;
+  std::string interface_name;
+  std::string error;
+};
+
 struct LidarPoint {
   int32_t x_mm = 0;
   int32_t y_mm = 0;
@@ -155,6 +177,7 @@ VideoChunk parseVideoChunk(const Frame& frame);
 VideoMeta parseVideoMeta(const Frame& frame);
 ImuSample parseImuSample(const Frame& frame);
 LidarStatus parseLidarStatus(const Frame& frame);
+LidarNetworkStatus parseLidarNetworkStatus(const Frame& frame);
 LidarPointBatch parseLidarPointBatch(const Frame& frame);
 
 }  // namespace prism

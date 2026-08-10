@@ -108,6 +108,10 @@ class Client {
   LidarStatus startLidar(LidarModel model);
   LidarStatus stopLidar();
   LidarStatus lidarStatus();
+  LidarNetworkStatus lidarNetworkStatus();
+  LidarNetworkStatus saveLidarNetworkConfiguration(
+      const LidarNetworkConfiguration& configuration);
+  LidarNetworkStatus probeLidarNetwork();
 
   Frame readFrame(uint32_t timeout_ms = 3000);
   Frame command(FrameType type, const std::vector<uint8_t>& payload = {},

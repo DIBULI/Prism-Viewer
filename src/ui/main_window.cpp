@@ -59,10 +59,12 @@
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMessageBox>
@@ -1537,6 +1539,52 @@ class MainWindow : public QMainWindow {
     lidar_controls_layout->addWidget(lidar_model_selector_);
     lidar_controls_layout->addWidget(lidar_status_label_, 1);
     lidar_layout->addWidget(lidar_controls);
+
+    auto* lidar_network_group = new QGroupBox(
+        uiText("end0 / Mid360 network", "end0 / Mid360 网络"), lidar_page_);
+    auto* lidar_network_root = new QVBoxLayout(lidar_network_group);
+    auto* lidar_network_form = new QFormLayout();
+    lidar_network_enabled_checkbox_ = new QCheckBox(
+        uiText("Enable end0", "启用 end0"), lidar_network_group);
+    lidar_network_host_ip_ = new QLineEdit(
+        QStringLiteral("192.168.1.5"), lidar_network_group);
+    lidar_network_netmask_ = new QLineEdit(
+        QStringLiteral("255.255.255.0"), lidar_network_group);
+    lidar_network_target_ip_ = new QLineEdit(
+        QStringLiteral("192.168.1.3"), lidar_network_group);
+    lidar_network_host_ip_->setMaximumWidth(180);
+    lidar_network_netmask_->setMaximumWidth(180);
+    lidar_network_target_ip_->setMaximumWidth(180);
+    lidar_network_form->addRow(QString(), lidar_network_enabled_checkbox_);
+    lidar_network_form->addRow(
+        uiText("RK end0 IPv4", "RK end0 IPv4"), lidar_network_host_ip_);
+    lidar_network_form->addRow(
+        uiText("Subnet mask", "子网掩码"), lidar_network_netmask_);
+    lidar_network_form->addRow(
+        uiText("Mid360 IPv4", "Mid360 IPv4"), lidar_network_target_ip_);
+    lidar_network_root->addLayout(lidar_network_form);
+    auto* lidar_network_actions = new QHBoxLayout();
+    lidar_network_refresh_button_ = new QPushButton(
+        uiText("Refresh", "刷新"), lidar_network_group);
+    lidar_network_apply_button_ = new QPushButton(
+        uiText("Save and apply", "保存并应用"), lidar_network_group);
+    lidar_network_probe_button_ = new QPushButton(
+        uiText("Test connection", "测试连接"), lidar_network_group);
+    lidar_network_actions->addWidget(lidar_network_refresh_button_);
+    lidar_network_actions->addWidget(lidar_network_apply_button_);
+    lidar_network_actions->addWidget(lidar_network_probe_button_);
+    lidar_network_actions->addStretch(1);
+    lidar_network_root->addLayout(lidar_network_actions);
+    lidar_network_status_label_ = new QLabel(
+        uiText("Open a device to read end0 settings",
+               "打开设备后读取 end0 设置"),
+        lidar_network_group);
+    lidar_network_status_label_->setWordWrap(true);
+    lidar_network_status_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    lidar_network_root->addWidget(lidar_network_status_label_);
+    lidar_layout->addWidget(lidar_network_group);
     lidar_point_cloud_widget_ =
         new prism_viewer::LidarPointCloudWidget(lidar_page_);
     lidar_layout->addWidget(lidar_point_cloud_widget_, 1);
@@ -1927,6 +1975,12 @@ class MainWindow : public QMainWindow {
                     uiText("LiDAR disabled", "雷达未启用"));
               }
             });
+    connect(lidar_network_refresh_button_, &QPushButton::clicked,
+            this, [this]() { startLidarNetworkOperation(0); });
+    connect(lidar_network_apply_button_, &QPushButton::clicked,
+            this, [this]() { startLidarNetworkOperation(1); });
+    connect(lidar_network_probe_button_, &QPushButton::clicked,
+            this, [this]() { startLidarNetworkOperation(2); });
     connect(host_time_sync_button_, &QPushButton::clicked,
             this, [this]() { startHostTimeSync(); });
     connect(system_upgrade_button_, &QPushButton::clicked,
@@ -2535,6 +2589,12 @@ class MainWindow : public QMainWindow {
       } catch (const std::exception& lidar_error) {
         appendLog(QStringLiteral("LiDAR status query failed: %1")
                       .arg(lidar_error.what()));
+      }
+      try {
+        updateLidarNetworkStatus(client_.lidarNetworkStatus());
+      } catch (const std::exception& lidar_network_error) {
+        appendLog(QStringLiteral("LiDAR network status query failed: %1")
+                      .arg(lidar_network_error.what()));
       }
       status_label_->setText(
           serial.isEmpty() ? uiText("Device open", "设备已打开")
@@ -3285,8 +3345,9 @@ class MainWindow : public QMainWindow {
     const bool wifi_busy = wifi_operation_running_;
     const bool exposure_busy = camera_exposure_operation_running_;
     const bool encoding_busy = camera_encoding_operation_running_;
+    const bool lidar_network_busy = lidar_network_operation_running_;
     const bool busy = running || time_syncing || wifi_busy || exposure_busy ||
-                      encoding_busy;
+                      encoding_busy || lidar_network_busy;
     const bool upgrading = upgrade_running_;
     const bool device_open = client_.isOpen();
     const bool selection_valid = device_selector_->currentIndex() >= 0 &&
@@ -3304,6 +3365,24 @@ class MainWindow : public QMainWindow {
       lidar_model_selector_->setEnabled(
           device_open && !busy && !upgrading &&
           lidar_enabled_checkbox_->isChecked());
+    }
+    const bool lidar_network_controls_enabled =
+        device_open && !busy && !upgrading &&
+        !client_.streamTransferActive();
+    if (lidar_network_enabled_checkbox_ != nullptr) {
+      lidar_network_enabled_checkbox_->setEnabled(
+          lidar_network_controls_enabled);
+    }
+    if (lidar_network_host_ip_ != nullptr) {
+      lidar_network_host_ip_->setEnabled(lidar_network_controls_enabled);
+      lidar_network_netmask_->setEnabled(lidar_network_controls_enabled);
+      lidar_network_target_ip_->setEnabled(lidar_network_controls_enabled);
+      lidar_network_refresh_button_->setEnabled(
+          lidar_network_controls_enabled);
+      lidar_network_apply_button_->setEnabled(
+          lidar_network_controls_enabled);
+      lidar_network_probe_button_->setEnabled(
+          lidar_network_controls_enabled);
     }
     if (wifi_hotspot_panel_ != nullptr) {
       wifi_hotspot_panel_->setEnabled(device_open);
@@ -3442,6 +3521,161 @@ class MainWindow : public QMainWindow {
       }
       lidar_status_label_->setText(text);
       lidar_status_label_->setStyleSheet(style);
+    });
+  }
+
+  void updateLidarNetworkStatus(const prism::LidarNetworkStatus& status) {
+    post([this, status]() {
+      if (lidar_network_status_label_ == nullptr) return;
+      {
+        const QSignalBlocker blocker(lidar_network_enabled_checkbox_);
+        lidar_network_enabled_checkbox_->setChecked(
+            status.configuration.enabled);
+      }
+      lidar_network_host_ip_->setText(
+          toQString(status.configuration.host_ip));
+      lidar_network_netmask_->setText(
+          toQString(status.configuration.netmask));
+      lidar_network_target_ip_->setText(
+          toQString(status.configuration.lidar_ip));
+
+      QString text;
+      QString style;
+      if (!status.configuration.enabled) {
+        text = uiText(
+                   "%1 disabled | saved generation %2",
+                   "%1 已禁用 | 已保存代次 %2")
+                   .arg(toQString(status.interface_name))
+                   .arg(status.generation);
+        style = QStringLiteral(
+            "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      } else if (!status.interface_present || !status.link_up ||
+                 !status.address_applied || !status.same_subnet ||
+                 status.error_code != 0) {
+        const QString detail = status.error.empty()
+                                   ? uiText("configuration is not active",
+                                            "配置尚未生效")
+                                   : toQString(status.error);
+        text = uiText(
+                   "%1 %2/%3 -> Mid360 %4 | %5",
+                   "%1 %2/%3 -> Mid360 %4 | %5")
+                   .arg(toQString(status.interface_name),
+                        toQString(status.configuration.host_ip),
+                        toQString(status.configuration.netmask),
+                        toQString(status.configuration.lidar_ip), detail);
+        style = QStringLiteral(
+            "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      } else if (!status.target_reachable) {
+        text = uiText(
+                   "%1 ready at %2 | Mid360 %3 has not passed a connection test",
+                   "%1 已就绪：%2 | Mid360 %3 尚未通过连接测试")
+                   .arg(toQString(status.interface_name),
+                        toQString(status.configuration.host_ip),
+                        toQString(status.configuration.lidar_ip));
+        style = QStringLiteral(
+            "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      } else {
+        text = uiText(
+                   "%1 ready at %2 | Mid360 %3 reachable",
+                   "%1 已就绪：%2 | Mid360 %3 可达")
+                   .arg(toQString(status.interface_name),
+                        toQString(status.configuration.host_ip),
+                        toQString(status.configuration.lidar_ip));
+        style = QStringLiteral(
+            "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      }
+      lidar_network_status_label_->setText(text);
+      lidar_network_status_label_->setStyleSheet(style);
+    });
+  }
+
+  void startLidarNetworkOperation(int operation) {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(QStringLiteral("LiDAR"));
+      return;
+    }
+    if (worker_running_ || time_sync_running_ || wifi_operation_running_ ||
+        camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ ||
+        lidar_network_operation_running_ || upgrade_running_ ||
+        client_.streamTransferActive()) {
+      QMessageBox::warning(
+          this, uiText("LiDAR network controls unavailable",
+                       "LiDAR 网络控制不可用"),
+          uiText("Stop camera, IMU, and LiDAR transfer and wait for the "
+                 "current device operation to finish.",
+                 "请停止相机、IMU 和 LiDAR 传输，并等待当前设备操作完成。"));
+      return;
+    }
+    prism::LidarNetworkConfiguration configuration;
+    configuration.enabled = lidar_network_enabled_checkbox_->isChecked();
+    configuration.host_ip = lidar_network_host_ip_->text().trimmed().toStdString();
+    configuration.netmask = lidar_network_netmask_->text().trimmed().toStdString();
+    configuration.lidar_ip =
+        lidar_network_target_ip_->text().trimmed().toStdString();
+
+    operation_controller_.join();
+    lidar_network_operation_running_ = true;
+    lidar_network_status_label_->setText(
+        operation == 0
+            ? uiText("Reading end0 settings...", "正在读取 end0 设置……")
+            : (operation == 1
+                   ? uiText("Saving and applying end0 settings...",
+                            "正在保存并应用 end0 设置……")
+                   : uiText("Testing Mid360 connection...",
+                            "正在测试 Mid360 连接……")));
+    refreshControls();
+    operation_controller_.start([this, operation, configuration]() {
+      try {
+        const prism::LidarNetworkStatus status =
+            operation == 0
+                ? client_.lidarNetworkStatus()
+                : (operation == 1
+                       ? client_.saveLidarNetworkConfiguration(configuration)
+                       : client_.probeLidarNetwork());
+        post([this, status, operation]() {
+          lidar_network_operation_running_ = false;
+          updateLidarNetworkStatus(status);
+          appendLogLine(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("HH:mm:ss.zzz ")) +
+              QStringLiteral(
+                  "LiDAR network operation=%1 interface=%2 host=%3 mask=%4 "
+                  "target=%5 link=%6 applied=%7 reachable=%8 persisted=%9 error=%10")
+                  .arg(operation)
+                  .arg(toQString(status.interface_name))
+                  .arg(toQString(status.configuration.host_ip))
+                  .arg(toQString(status.configuration.netmask))
+                  .arg(toQString(status.configuration.lidar_ip))
+                  .arg(status.link_up ? 1 : 0)
+                  .arg(status.address_applied ? 1 : 0)
+                  .arg(status.target_reachable ? 1 : 0)
+                  .arg(status.persisted ? 1 : 0)
+                  .arg(status.error_code));
+          refreshControls();
+        });
+      } catch (const std::exception& exception) {
+        const QString error = toQString(exception.what());
+        post([this, error]() {
+          lidar_network_operation_running_ = false;
+          lidar_network_status_label_->setText(
+              uiText("LiDAR network operation failed: %1",
+                     "LiDAR 网络操作失败：%1")
+                  .arg(error));
+          lidar_network_status_label_->setStyleSheet(QStringLiteral(
+              "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+              "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+          appendLogLine(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("HH:mm:ss.zzz ")) +
+              QStringLiteral("LiDAR network operation failed: %1").arg(error));
+          refreshControls();
+        });
+      }
     });
   }
 
@@ -5240,6 +5474,14 @@ class MainWindow : public QMainWindow {
   QCheckBox* lidar_enabled_checkbox_ = nullptr;
   QComboBox* lidar_model_selector_ = nullptr;
   QLabel* lidar_status_label_ = nullptr;
+  QCheckBox* lidar_network_enabled_checkbox_ = nullptr;
+  QLineEdit* lidar_network_host_ip_ = nullptr;
+  QLineEdit* lidar_network_netmask_ = nullptr;
+  QLineEdit* lidar_network_target_ip_ = nullptr;
+  QPushButton* lidar_network_refresh_button_ = nullptr;
+  QPushButton* lidar_network_apply_button_ = nullptr;
+  QPushButton* lidar_network_probe_button_ = nullptr;
+  QLabel* lidar_network_status_label_ = nullptr;
   prism_viewer::LidarPointCloudWidget* lidar_point_cloud_widget_ = nullptr;
   WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
   QWidget* dataset_page_ = nullptr;
@@ -5297,6 +5539,7 @@ class MainWindow : public QMainWindow {
   std::atomic<bool> wifi_operation_running_{false};
   std::atomic<bool> camera_exposure_operation_running_{false};
   std::atomic<bool> camera_encoding_operation_running_{false};
+  std::atomic<bool> lidar_network_operation_running_{false};
   std::atomic<bool> imu_offset_measure_request_{false};
   std::atomic<bool> camera_preview_enabled_{false};
   std::atomic<bool> imu_ui_enabled_{false};

@@ -121,6 +121,16 @@ prism::VideoStatus Client::startVideo1280x1024(uint32_t fps) {
 void Client::stopVideo() { api_->stop_video(handle_); }
 void Client::sendVideoAck(uint32_t id) { api_->send_video_ack(handle_, id); }
 prism::LidarStatus Client::lidarStatus() { return api_->lidar_status(handle_); }
+prism::LidarNetworkStatus Client::lidarNetworkStatus() {
+  return api_->lidar_network_status(handle_);
+}
+prism::LidarNetworkStatus Client::saveLidarNetworkConfiguration(
+    const prism::LidarNetworkConfiguration& configuration) {
+  return api_->save_lidar_network_configuration(handle_, configuration);
+}
+prism::LidarNetworkStatus Client::probeLidarNetwork() {
+  return api_->probe_lidar_network(handle_);
+}
 prism::Frame Client::readFrame(uint32_t timeout) {
   return api_->read_frame(handle_, timeout);
 }

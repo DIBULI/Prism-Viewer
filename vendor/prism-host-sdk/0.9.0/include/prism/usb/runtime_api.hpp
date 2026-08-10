@@ -8,7 +8,7 @@
 
 namespace prism {
 
-constexpr uint32_t kRuntimeApiVersion = 1;
+constexpr uint32_t kRuntimeApiVersion = 2;
 inline constexpr char kRuntimeApiEntryPoint[] =
     "prism_usb_sdk_get_runtime_api";
 
@@ -55,6 +55,10 @@ struct RuntimeApi {
   LidarStatus (*start_lidar)(Client*, LidarModel);
   LidarStatus (*stop_lidar)(Client*);
   LidarStatus (*lidar_status)(Client*);
+  LidarNetworkStatus (*lidar_network_status)(Client*);
+  LidarNetworkStatus (*save_lidar_network_configuration)(
+      Client*, const LidarNetworkConfiguration&);
+  LidarNetworkStatus (*probe_lidar_network)(Client*);
   Frame (*read_frame)(Client*, uint32_t);
 
   SystemUpgradePackageInfo (*inspect_system_upgrade_package)(

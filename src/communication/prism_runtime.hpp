@@ -75,6 +75,10 @@ class Client {
   void stopVideo();
   void sendVideoAck(uint32_t last_frame_id);
   prism::LidarStatus lidarStatus();
+  prism::LidarNetworkStatus lidarNetworkStatus();
+  prism::LidarNetworkStatus saveLidarNetworkConfiguration(
+      const prism::LidarNetworkConfiguration& configuration);
+  prism::LidarNetworkStatus probeLidarNetwork();
   prism::Frame readFrame(uint32_t timeout_ms = 3000);
   prism::SystemUpgradeResult upgradeSystem(
       const std::string& package_path,
