@@ -5176,6 +5176,14 @@ class MainWindow : public QMainWindow {
 namespace prism_viewer {
 
 int runViewerApplication(int argc, char** argv) {
+#if defined(Q_OS_LINUX)
+  // Prism Viewer does not implement XSMP session restore. A stale
+  // SESSION_MANAGER inherited from sudo, SSH, or a detached terminal makes Qt
+  // attempt an ICE connection and print an authentication error before the
+  // window opens. Ignore only that optional session-manager endpoint; the
+  // display and X11/Wayland authentication environment remains untouched.
+  qunsetenv("SESSION_MANAGER");
+#endif
   QApplication app(argc, argv);
   app.setApplicationName(QStringLiteral("Prism Viewer"));
   app.setOrganizationName(QStringLiteral("Prism"));
