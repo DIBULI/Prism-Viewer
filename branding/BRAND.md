@@ -5,7 +5,7 @@ Prism 的核心图形是“单束光进入棱镜并分成四路”：
 - 四条出射光代表四路同步相机；
 - 棱镜代表相机、双 IMU 和时间系统的融合；
 - 左侧单束青色光代表统一时基和统一控制入口；
-- 圆角深色底保证在 Windows 任务栏、Linux desktop 和设备列表中清晰。
+- 圆角深色底保证在 Windows 任务栏、Linux desktop、macOS Dock 和设备列表中清晰。
 
 ## Assets
 

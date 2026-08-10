@@ -137,9 +137,165 @@ jobs:
           if-no-files-found: error
           path: Prism-Viewer-0.10.0-linux-x64.tar.gz
 
+  macos-arm64:
+    # GitHub's runner-images catalog maps this fixed label to the standard
+    # Apple Silicon image. Do not use macos-latest here: its OS version moves
+    # independently, while this package must keep using the arm64 SDK runtime.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out Viewer
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Verify Apple Silicon runner
+        run: |
+          test "$(uname -m)" = "arm64"
+          sw_vers
+
+      - name: Install macOS dependencies
+        run: |
+          brew install cmake ninja
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
+          qt_root="$RUNNER_TEMP/Qt"
+          aqt install-qt mac desktop 6.8.3 clang_64 \
+            -O "$qt_root" -m qtcharts
+          qt_prefix="$qt_root/6.8.3/macos"
+          qt_core="$qt_prefix/lib/QtCore.framework/Versions/A/QtCore"
+          for qt_binary in "$qt_core" "$qt_prefix/bin/macdeployqt"; do
+            case " $(lipo -archs "$qt_binary") " in
+              *" arm64 "*) ;;
+              *)
+                echo "Qt 6.8.3 clang_64 does not contain arm64 code" >&2
+                file "$qt_binary" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "QT_PREFIX=$qt_prefix" >> "$GITHUB_ENV"
+          echo "$qt_prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Verify bundled macOS SDK
+        run: |
+          sdk="vendor/prism-host-sdk/0.10.0/runtime/macos-arm64/libprism_usb_sdk.dylib"
+          libusb="vendor/prism-host-sdk/0.10.0/runtime/macos-arm64/libusb-1.0.0.dylib"
+          license="vendor/prism-host-sdk/0.10.0/runtime/macos-arm64/libusb-COPYING.txt"
+          sdk_expected="dbe0057a339c64ccce9221041e948d421fa32ead2cdd47904187a66ac45e1f8f"
+          libusb_expected="329a4c0ea465b3ebf81c4d95165d25739380b84fbc77c3c7af9e11a83f7cea08"
+          sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
+          libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
+          if [ "$sdk_actual" != "$sdk_expected" ]; then
+            echo "Bundled libprism_usb_sdk.dylib checksum mismatch" >&2
+            echo "expected=$sdk_expected" >&2
+            echo "actual=$sdk_actual" >&2
+            exit 1
+          fi
+          if [ "$libusb_actual" != "$libusb_expected" ]; then
+            echo "Bundled libusb-1.0.0.dylib checksum mismatch" >&2
+            echo "expected=$libusb_expected" >&2
+            echo "actual=$libusb_actual" >&2
+            exit 1
+          fi
+          if [ ! -s "$license" ]; then
+            echo "Bundled libusb license is missing or empty" >&2
+            exit 1
+          fi
+          for runtime in "$sdk" "$libusb"; do
+            if [ "$(lipo -archs "$runtime")" != "arm64" ]; then
+              echo "Bundled runtime is not an arm64-only Mach-O image" >&2
+              file "$runtime" >&2
+              exit 1
+            fi
+            file "$runtime"
+            otool -L "$runtime"
+          done
+
+      - name: Configure and build Viewer
+        run: |
+          cmake -S . -B build-macos-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DBUILD_TESTING=ON
+          cmake --build build-macos-ci --parallel
+
+      - name: Test Viewer
+        run: ctest --test-dir build-macos-ci --output-on-failure
+
+      - name: Package self-contained macOS app
+        run: |
+          stage="$RUNNER_TEMP/prism-viewer-stage"
+          app="$stage/Prism-Viewer.app"
+          frameworks="$app/Contents/Frameworks"
+          executable="$app/Contents/MacOS/Prism-Viewer"
+          sdk="$frameworks/libprism_usb_sdk.dylib"
+
+          cmake --install build-macos-ci --prefix "$stage"
+          test -d "$app"
+          test -x "$executable"
+          test -f "$sdk"
+          test -f "$frameworks/libusb-1.0.0.dylib"
+
+          "$QT_PREFIX/bin/macdeployqt" "$app" \
+            -always-overwrite -no-codesign -verbose=2
+          scripts/deploy_macos_offscreen_plugin.sh "$app" "$QT_PREFIX"
+          scripts/restore_macos_sdk_runtime.sh "$app"
+          scripts/fixup_macos_bundle.sh "$app"
+
+          # The shipped application must not refer back to the runner's build
+          # directories, and every Mach-O image must contain arm64 code.
+          find "$app" -type f -print0 | while IFS= read -r -d '' binary; do
+            if ! file -b "$binary" | grep -q 'Mach-O'; then
+              continue
+            fi
+            architectures="$(lipo -archs "$binary")"
+            case " $architectures " in
+              *" arm64 "*) ;;
+              *)
+                echo "Mach-O file does not contain arm64 code: $binary" >&2
+                file "$binary" >&2
+                exit 1
+                ;;
+            esac
+            otool -L "$binary"
+            while IFS= read -r dependency; do
+              case "$dependency" in
+                /System/Library/* | /usr/lib/* | @rpath/* | \
+                @loader_path/* | @executable_path/*)
+                  ;;
+                *)
+                  echo "Non-portable dependency in $binary: $dependency" >&2
+                  exit 1
+                  ;;
+              esac
+            done < <(otool -L "$binary" | tail -n +2 | awk '{print $1}')
+          done
+
+          codesign --force --deep --sign - "$app"
+          scripts/verify_macos_bundle.sh "$app"
+          QT_QPA_PLATFORM=offscreen \
+            "$executable" --imu-only-recorder-self-test \
+            "$RUNNER_TEMP/macos-package-smoke"
+
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "$GITHUB_WORKSPACE/Prism-Viewer-0.10.0-macos-arm64.zip"
+          unzip -t Prism-Viewer-0.10.0-macos-arm64.zip
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: prism-viewer-0.10.0-macos-arm64
+          if-no-files-found: error
+          path: Prism-Viewer-0.10.0-macos-arm64.zip
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows-x64, linux-x64]
+    needs: [windows-x64, linux-x64, macos-arm64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

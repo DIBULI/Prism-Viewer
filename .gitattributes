@@ -1,3 +1,5 @@
 *.dll binary
 *.so binary
+*.dylib binary
 vendor/prism-host-sdk/**/*.hpp text eol=lf
+vendor/prism-host-sdk/**/libusb-COPYING.txt -whitespace

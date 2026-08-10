@@ -20,9 +20,12 @@ is versioned directly in this repository under
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
   `GetProcAddress` (the import `.lib` is deliberately not used);
 - `libprism_usb_sdk.so` on Linux, linked as a bundled shared library.
+- `libprism_usb_sdk.dylib` plus its relocatable `libusb` runtime on Apple
+  Silicon macOS, linked from the app's `Contents/Frameworks` directory.
 
-The Viewer and bundled Host SDK versions must match exactly. Windows and Linux
-builds therefore need no Prism-agent checkout or separately installed SDK.
+The Viewer and bundled Host SDK versions must match exactly. Windows, Linux,
+and macOS builds therefore need no Prism-agent checkout or separately
+installed SDK.
 
 ## Build
 
@@ -47,19 +50,38 @@ On Windows, pass only the Qt prefix:
 scripts\build_viewer_msvc.bat C:\Qt\6.11.1\msvc2022_64
 ```
 
+On an Apple Silicon Mac, install Qt and run the native build script:
+
+```sh
+brew install cmake qtbase qtcharts qtdeclarative qtsvg
+./scripts/build_macos.sh
+open build-macos/stage/Prism-Viewer.app
+```
+
+Set `QT_ROOT` before invoking the script when Qt is installed under a custom
+prefix. The script builds and tests arm64, installs the Viewer as a macOS app,
+runs `macdeployqt`, and applies an ad-hoc local signature. The native Viewer
+and SDK runtime use a macOS 13.0 deployment target. Distribution builds are not
+notarized, so a downloaded archive may require **Open** from Finder's context
+menu the first time it is launched.
+
 The Viewer build does not need or look for an SDK import library. Its bundled
 DLL exports `prism_usb_sdk_get_runtime_api` and uses the compatible MSVC 14.x
 DLL runtime.
 
-The build copies the Prism SDK runtime beside development/test executables.
-Linux installation uses `$ORIGIN/../lib`; Windows deployment bundles the SDK
-runtime together with the required Qt runtime.
+The build copies the Prism SDK runtime into the platform's application runtime
+directory. Linux installation uses `$ORIGIN/../lib`; Windows deployment
+bundles the SDK beside the executable; and macOS installs it in
+`Prism-Viewer.app/Contents/Frameworks` with an
+`@executable_path/../Frameworks` rpath. The dynamically bundled libusb uses
+LGPL-2.1-or-later; its `libusb-COPYING.txt` license is included under the app's
+`Contents/Resources/licenses` directory.
 
 ## Automated builds and releases
 
-Every push and pull request builds and tests Windows x64 and Linux x64. A tag
-matching `v*` additionally publishes both packaged Viewer archives as a GitHub
-Release. For example:
+Every push and pull request builds and tests Windows x64, Linux x64, and macOS
+arm64. A tag matching `v*` additionally publishes all packaged Viewer archives
+as a GitHub Release. For example:
 
 ```sh
 git tag v0.10.0
