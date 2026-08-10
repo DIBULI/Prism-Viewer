@@ -26,6 +26,10 @@ struct TumFileSummary {
 };
 
 uint64_t parseTumTimestampUs(const std::string& token);
+bool inspectDatasetCameraIndexes(const std::filesystem::path& root,
+                                 size_t camera_count,
+                                 size_t* present_count,
+                                 std::string* error);
 bool loadDatasetImageIndex(const std::filesystem::path& root, size_t camera,
                            std::vector<DatasetImageEntry>* entries,
                            std::string* error);

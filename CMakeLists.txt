@@ -204,6 +204,26 @@ if(BUILD_TESTING)
     )
   endif()
 
+  add_executable(dataset-browser-test
+    src/common/ui_text.cpp
+    src/dataset/dataset_browser.cpp
+    tests/dataset_browser_test.cpp
+  )
+  target_include_directories(dataset-browser-test PRIVATE src)
+  target_compile_features(dataset-browser-test PRIVATE cxx_std_17)
+  target_link_libraries(dataset-browser-test PRIVATE
+    prism-viewer-sdk
+    ${QT_PACKAGE}::Gui
+  )
+  if(MSVC)
+    target_compile_options(
+      dataset-browser-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(
+      dataset-browser-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME dataset-browser COMMAND dataset-browser-test)
+
   add_executable(rosbag-exporter-test
     src/dataset/rosbag_exporter.cpp
     tests/rosbag_exporter_test.cpp

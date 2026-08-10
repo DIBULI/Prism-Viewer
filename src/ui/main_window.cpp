@@ -135,6 +135,7 @@ using prism_viewer::common::wideToQString;
 using prism_viewer::dataset::DatasetImageEntry;
 using prism_viewer::dataset::RosbagFormat;
 using prism_viewer::dataset::TumFileSummary;
+using prism_viewer::dataset::inspectDatasetCameraIndexes;
 using prism_viewer::dataset::loadDatasetImage;
 using prism_viewer::dataset::loadDatasetImageIndex;
 using prism_viewer::dataset::summarizeTumFile;
@@ -3774,24 +3775,19 @@ class MainWindow : public QMainWindow {
     const TumFileSummary imu1 = summarizeTumFile(root / "imu1.tum");
     const TumFileSummary lidar = summarizeTumFile(root / "lidar.tum");
 
-    std::error_code filesystem_error;
     size_t camera_index_count = 0;
-    for (size_t camera = 0; camera < camera_entries.size(); ++camera) {
-      if (std::filesystem::is_regular_file(
-              root / ("cam" + std::to_string(camera) + ".tum"),
-              filesystem_error)) {
-        ++camera_index_count;
+    std::string camera_index_error;
+    if (!inspectDatasetCameraIndexes(root, camera_entries.size(),
+                                     &camera_index_count,
+                                     &camera_index_error)) {
+      if (show_errors) {
+        QMessageBox::critical(
+            this, uiText("Unable to open dataset", "无法打开数据集"),
+            uiText("Cannot inspect camera indexes in:\n%1\n\n%2",
+                   "无法检查以下目录中的相机索引：\n%1\n\n%2")
+                .arg(directory, toQString(camera_index_error)));
       }
-      if (filesystem_error) {
-        if (show_errors) {
-          QMessageBox::critical(
-              this, uiText("Unable to open dataset", "无法打开数据集"),
-              uiText("Cannot inspect camera indexes in:\n%1",
-                     "无法检查以下目录中的相机索引：\n%1")
-                  .arg(directory));
-        }
-        return;
-      }
+      return;
     }
     if (camera_index_count != 0 &&
         camera_index_count != camera_entries.size()) {

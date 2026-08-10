@@ -28,6 +28,47 @@ uint64_t parseTumTimestampUs(const std::string& token) {
   return seconds * 1000000ULL + microseconds;
 }
 
+bool inspectDatasetCameraIndexes(const std::filesystem::path& root,
+                                 size_t camera_count,
+                                 size_t* present_count,
+                                 std::string* error) {
+  if (present_count == nullptr) {
+    if (error != nullptr) *error = "camera index count output is required";
+    return false;
+  }
+
+  *present_count = 0;
+  if (error != nullptr) error->clear();
+  for (size_t camera = 0; camera < camera_count; ++camera) {
+    const std::filesystem::path path =
+        root / ("cam" + std::to_string(camera) + ".tum");
+    std::error_code filesystem_error;
+    const std::filesystem::file_status status =
+        std::filesystem::status(path, filesystem_error);
+    if (filesystem_error) {
+      if (filesystem_error == std::errc::no_such_file_or_directory) {
+        continue;
+      }
+      if (error != nullptr) {
+        *error = "cannot inspect " + path.filename().string() + ": " +
+                 filesystem_error.message();
+      }
+      return false;
+    }
+    if (std::filesystem::is_regular_file(status)) {
+      ++*present_count;
+      continue;
+    }
+    if (std::filesystem::exists(status)) {
+      if (error != nullptr) {
+        *error = path.filename().string() + " is not a regular file";
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
 bool loadDatasetImageIndex(const std::filesystem::path& root, size_t camera,
                            std::vector<DatasetImageEntry>* entries,
                            std::string* error) {
