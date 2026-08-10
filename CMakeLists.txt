@@ -42,6 +42,17 @@ add_executable(prism-viewer
 )
 set_target_properties(prism-viewer PROPERTIES AUTORCC ON)
 
+if(APPLE)
+  set_target_properties(prism-viewer PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_BUNDLE_NAME "Prism Viewer"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.dibuli.prism-viewer"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    OUTPUT_NAME "Prism Viewer"
+  )
+endif()
+
 target_compile_features(prism-viewer PRIVATE cxx_std_17)
 target_include_directories(prism-viewer PRIVATE src)
 
@@ -73,6 +84,7 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS prism-viewer
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  BUNDLE DESTINATION .
 )
 if(UNIX AND NOT APPLE)
   install(FILES packaging/prism-viewer.desktop
