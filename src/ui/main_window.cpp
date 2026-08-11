@@ -4,6 +4,7 @@
 #include "control/operation_controller.hpp"
 #include "dataset/dataset_browser.hpp"
 #include "dataset/rosbag_exporter.hpp"
+#include "imu_units.hpp"
 #include "imu_timestamp_policy.hpp"
 #include "transfer/camera_frame_assembler.hpp"
 #include "ui/camera_encoding_panel.hpp"
@@ -142,6 +143,12 @@ using prism_viewer::dataset::inspectDatasetCameraIndexes;
 using prism_viewer::dataset::loadDatasetImage;
 using prism_viewer::dataset::loadDatasetImageIndex;
 using prism_viewer::dataset::summarizeTumFile;
+using prism_viewer::imu_units::AccelerationUnit;
+using prism_viewer::imu_units::AngularVelocityUnit;
+using prism_viewer::imu_units::TemperatureUnit;
+using prism_viewer::imu_units::convertAcceleration;
+using prism_viewer::imu_units::convertAngularVelocity;
+using prism_viewer::imu_units::convertTemperature;
 using prism_viewer::ui::CameraEncodingPanel;
 using prism_viewer::ui::CameraExposurePanel;
 using prism_viewer::ui::CameraZoomDialog;
@@ -149,6 +156,75 @@ using prism_viewer::ui::DeviceInfoPanel;
 using prism_viewer::ui::WifiHotspotPanel;
 using prism_viewer::ui::WifiHotspotViewState;
 using prism_viewer::ui::decodePreviewJpeg;
+
+QString accelerationUnitText(AccelerationUnit unit) {
+  switch (unit) {
+    case AccelerationUnit::MilliGravity:
+      return QStringLiteral("mg");
+    case AccelerationUnit::Gravity:
+      return QStringLiteral("g");
+    case AccelerationUnit::MetresPerSecondSquared:
+      return QStringLiteral("m/s") + QChar(0x00b2);
+  }
+  return QStringLiteral("g");
+}
+
+QString angularVelocityUnitText(AngularVelocityUnit unit) {
+  switch (unit) {
+    case AngularVelocityUnit::MilliDegreesPerSecond:
+      return QStringLiteral("mdps");
+    case AngularVelocityUnit::DegreesPerSecond:
+      return QChar(0x00b0) + QStringLiteral("/s");
+    case AngularVelocityUnit::RadiansPerSecond:
+      return QStringLiteral("rad/s");
+  }
+  return QChar(0x00b0) + QStringLiteral("/s");
+}
+
+QString temperatureUnitText(TemperatureUnit unit) {
+  switch (unit) {
+    case TemperatureUnit::MilliCelsius:
+      return QStringLiteral("m") + QChar(0x00b0) + QStringLiteral("C");
+    case TemperatureUnit::Celsius:
+      return QChar(0x00b0) + QStringLiteral("C");
+  }
+  return QChar(0x00b0) + QStringLiteral("C");
+}
+
+QString unitTokenText(AccelerationUnit unit) {
+  const std::string_view value = prism_viewer::imu_units::token(unit);
+  return QString::fromLatin1(value.data(), static_cast<int>(value.size()));
+}
+
+QString unitTokenText(AngularVelocityUnit unit) {
+  const std::string_view value = prism_viewer::imu_units::token(unit);
+  return QString::fromLatin1(value.data(), static_cast<int>(value.size()));
+}
+
+QString unitTokenText(TemperatureUnit unit) {
+  const std::string_view value = prism_viewer::imu_units::token(unit);
+  return QString::fromLatin1(value.data(), static_cast<int>(value.size()));
+}
+
+int accelerationDisplayPrecision(AccelerationUnit unit) {
+  return unit == AccelerationUnit::MilliGravity ? 0 : 4;
+}
+
+int angularVelocityDisplayPrecision(AngularVelocityUnit unit) {
+  switch (unit) {
+    case AngularVelocityUnit::MilliDegreesPerSecond:
+      return 0;
+    case AngularVelocityUnit::DegreesPerSecond:
+      return 3;
+    case AngularVelocityUnit::RadiansPerSecond:
+      return 5;
+  }
+  return 3;
+}
+
+int temperatureDisplayPrecision(TemperatureUnit unit) {
+  return unit == TemperatureUnit::MilliCelsius ? 0 : 2;
+}
 
 struct CameraPreviewJob {
   uint32_t frame_id = 0;
@@ -1324,6 +1400,7 @@ class ImuPlotWidget : public QWidget {
                 uiText("Angular rate (", "角速度 (") + QChar(0x00b0) +
                     QStringLiteral("/s)"),
                 10.0);
+    updateUnitAppearance();
     layout->addWidget(accel_panel_.view, 1);
     layout->addWidget(gyro_panel_.view, 1);
 
@@ -1340,6 +1417,19 @@ class ImuPlotWidget : public QWidget {
   void setSensor(int sensor) {
     if (sensor < 0 || sensor >= static_cast<int>(series_.size())) return;
     selected_sensor_ = sensor;
+    dirty_ = true;
+    if (active_) refreshCharts();
+  }
+
+  void setUnits(AccelerationUnit acceleration_unit,
+                AngularVelocityUnit angular_velocity_unit) {
+    if (acceleration_unit_ == acceleration_unit &&
+        angular_velocity_unit_ == angular_velocity_unit) {
+      return;
+    }
+    acceleration_unit_ = acceleration_unit;
+    angular_velocity_unit_ = angular_velocity_unit;
+    updateUnitAppearance();
     dirty_ = true;
     if (active_) refreshCharts();
   }
@@ -1370,8 +1460,8 @@ class ImuPlotWidget : public QWidget {
     point.time_s = std::chrono::duration<double>(
         received_at.time_since_epoch()).count();
     for (size_t axis = 0; axis < 3; ++axis) {
-      point.accel[axis] = static_cast<double>(sample.accel_mg[axis]) / 1000.0;
-      point.gyro[axis] = static_cast<double>(sample.gyro_mdps[axis]) / 1000.0;
+      point.accel_mg[axis] = static_cast<double>(sample.accel_mg[axis]);
+      point.gyro_mdps[axis] = static_cast<double>(sample.gyro_mdps[axis]);
     }
     samples.push_back(point);
     while (!samples.empty() &&
@@ -1384,8 +1474,8 @@ class ImuPlotWidget : public QWidget {
  private:
   struct PlotSample {
     double time_s = 0.0;
-    std::array<double, 3> accel{};
-    std::array<double, 3> gyro{};
+    std::array<double, 3> accel_mg{};
+    std::array<double, 3> gyro_mdps{};
   };
 
   struct ChartPanel {
@@ -1396,6 +1486,7 @@ class ImuPlotWidget : public QWidget {
     std::array<QLineSeries*, 3> series{};
     QLineSeries* zero_line = nullptr;
     double initial_scale = 1.0;
+    double minimum_span = 0.01;
   };
 
   void createPanel(ChartPanel* panel, const QString& title,
@@ -1460,6 +1551,55 @@ class ImuPlotWidget : public QWidget {
     panel->view->setMinimumHeight(132);
   }
 
+  void updateUnitAppearance() {
+    const QString acceleration_unit = accelerationUnitText(acceleration_unit_);
+    accel_panel_.chart->setTitle(
+        uiText("Acceleration XYZ (%1)", "加速度 XYZ (%1)")
+            .arg(acceleration_unit));
+    accel_panel_.y_axis->setTitleText(
+        uiText("Acceleration (%1)", "加速度 (%1)")
+            .arg(acceleration_unit));
+    accel_panel_.initial_scale = std::abs(convertAcceleration(
+        1200.0, AccelerationUnit::MilliGravity, acceleration_unit_));
+    accel_panel_.minimum_span = std::abs(convertAcceleration(
+        2.0, AccelerationUnit::MilliGravity, acceleration_unit_));
+    switch (acceleration_unit_) {
+      case AccelerationUnit::MilliGravity:
+        accel_panel_.y_axis->setLabelFormat("%.1f");
+        break;
+      case AccelerationUnit::Gravity:
+        accel_panel_.y_axis->setLabelFormat("%.4f");
+        break;
+      case AccelerationUnit::MetresPerSecondSquared:
+        accel_panel_.y_axis->setLabelFormat("%.3f");
+        break;
+    }
+
+    const QString angular_velocity_unit =
+        angularVelocityUnitText(angular_velocity_unit_);
+    gyro_panel_.chart->setTitle(
+        uiText("Gyroscope XYZ (%1)", "角速度 XYZ (%1)")
+            .arg(angular_velocity_unit));
+    gyro_panel_.y_axis->setTitleText(
+        uiText("Angular rate (%1)", "角速度 (%1)")
+            .arg(angular_velocity_unit));
+    gyro_panel_.initial_scale = std::abs(convertAngularVelocity(
+        10000.0, AngularVelocityUnit::MilliDegreesPerSecond,
+        angular_velocity_unit_));
+    gyro_panel_.minimum_span = std::abs(convertAngularVelocity(
+        20.0, AngularVelocityUnit::MilliDegreesPerSecond,
+        angular_velocity_unit_));
+    if (angular_velocity_unit_ ==
+        AngularVelocityUnit::MilliDegreesPerSecond) {
+      gyro_panel_.y_axis->setLabelFormat("%.0f");
+    } else if (angular_velocity_unit_ ==
+               AngularVelocityUnit::RadiansPerSecond) {
+      gyro_panel_.y_axis->setLabelFormat("%.5f");
+    } else {
+      gyro_panel_.y_axis->setLabelFormat("%.3f");
+    }
+  }
+
   void refreshPanel(ChartPanel* panel, bool acceleration) {
     const auto& samples = series_[selected_sensor_];
     const double end_time = samples.empty() ? 0.0 : samples.back().time_s;
@@ -1472,8 +1612,15 @@ class ImuPlotWidget : public QWidget {
       for (const auto& point : samples) {
         const double x = point.time_s - end_time;
         if (x < -10.0) continue;
-        const auto& values = acceleration ? point.accel : point.gyro;
-        const double value = values[axis];
+        const double value =
+            acceleration
+                ? convertAcceleration(point.accel_mg[axis],
+                                      AccelerationUnit::MilliGravity,
+                                      acceleration_unit_)
+                : convertAngularVelocity(
+                      point.gyro_mdps[axis],
+                      AngularVelocityUnit::MilliDegreesPerSecond,
+                      angular_velocity_unit_);
         points.append(QPointF(x, value));
         if (!have_visible_value) {
           visible_min = value;
@@ -1493,7 +1640,7 @@ class ImuPlotWidget : public QWidget {
 
     // Use the extrema of exactly the samples currently visible on the chart.
     // Only widen a constant-value range enough for QValueAxis to remain valid.
-    const double minimum_span = acceleration ? 0.002 : 0.02;
+    const double minimum_span = panel->minimum_span;
     if (visible_max - visible_min < minimum_span) {
       const double center = (visible_min + visible_max) * 0.5;
       visible_min = center - minimum_span * 0.5;
@@ -1512,6 +1659,10 @@ class ImuPlotWidget : public QWidget {
   ChartPanel accel_panel_;
   ChartPanel gyro_panel_;
   QTimer* refresh_timer_ = nullptr;
+  AccelerationUnit acceleration_unit_ =
+      prism_viewer::imu_units::kDefaultAccelerationUnit;
+  AngularVelocityUnit angular_velocity_unit_ =
+      prism_viewer::imu_units::kDefaultAngularVelocityUnit;
   int selected_sensor_ = 0;
   bool active_ = false;
   bool dirty_ = true;
@@ -2067,23 +2218,42 @@ class MainWindow : public QMainWindow {
     dataset_layout->addWidget(dataset_details_);
     dataset_camera_zoom_dialog_ = new CameraZoomDialog(this);
 
+    QSettings imu_unit_settings(QStringLiteral("DIBULI"),
+                                QStringLiteral("PrismViewer"));
+    const auto stored_acceleration_unit =
+        prism_viewer::imu_units::parseAccelerationUnit(
+            imu_unit_settings
+                .value(QStringLiteral("imu/acceleration_unit"),
+                       unitTokenText(
+                           prism_viewer::imu_units::kDefaultAccelerationUnit))
+                .toString()
+                .toStdString());
+    acceleration_unit_ = stored_acceleration_unit.value_or(
+        prism_viewer::imu_units::kDefaultAccelerationUnit);
+    const auto stored_angular_velocity_unit =
+        prism_viewer::imu_units::parseAngularVelocityUnit(
+            imu_unit_settings
+                .value(
+                    QStringLiteral("imu/angular_velocity_unit"),
+                    unitTokenText(prism_viewer::imu_units::
+                                      kDefaultAngularVelocityUnit))
+                .toString()
+                .toStdString());
+    angular_velocity_unit_ = stored_angular_velocity_unit.value_or(
+        prism_viewer::imu_units::kDefaultAngularVelocityUnit);
+    const auto stored_temperature_unit =
+        prism_viewer::imu_units::parseTemperatureUnit(
+            imu_unit_settings
+                .value(QStringLiteral("imu/temperature_unit"),
+                       unitTokenText(
+                           prism_viewer::imu_units::kDefaultTemperatureUnit))
+                .toString()
+                .toStdString());
+    temperature_unit_ = stored_temperature_unit.value_or(
+        prism_viewer::imu_units::kDefaultTemperatureUnit);
+
     imu_table_ = new QTableWidget(2, 13, imu_page_);
-    const QString degrees_per_second = QChar(0x00b0) + QStringLiteral("/s");
-    imu_table_->setHorizontalHeaderLabels({
-        QStringLiteral("IMU"),
-        uiText("Samples", "样本数"),
-        QStringLiteral("Hz"),
-        uiText("Timestamp", "时间戳"),
-        QStringLiteral("Ax g"),
-        QStringLiteral("Ay g"),
-        QStringLiteral("Az g"),
-        QStringLiteral("Gx ") + degrees_per_second,
-        QStringLiteral("Gy ") + degrees_per_second,
-        QStringLiteral("Gz ") + degrees_per_second,
-        uiText("Temp C", "温度 C"),
-        QStringLiteral("FSYNC"),
-        uiText("Flags", "标志"),
-    });
+    updateImuTableUnitHeaders();
     imu_table_->verticalHeader()->setVisible(false);
     imu_table_->verticalHeader()->setDefaultSectionSize(24);
     imu_table_->horizontalHeader()->setMinimumSectionSize(48);
@@ -2134,8 +2304,82 @@ class MainWindow : public QMainWindow {
         "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
     imu_plot_controls->addWidget(imu_alarm_label_);
     imu_layout->addLayout(imu_plot_controls);
+
+    auto* imu_unit_controls = new QHBoxLayout();
+    imu_unit_controls->setSpacing(8);
+    imu_unit_controls->addWidget(
+        new QLabel(uiText("Acceleration:", "加速度："), imu_group));
+    imu_acceleration_unit_selector_ = new QComboBox(imu_group);
+    imu_acceleration_unit_selector_->setObjectName(
+        QStringLiteral("imuAccelerationUnitCombo"));
+    imu_acceleration_unit_selector_->addItem(
+        accelerationUnitText(AccelerationUnit::Gravity),
+        static_cast<int>(AccelerationUnit::Gravity));
+    imu_acceleration_unit_selector_->addItem(
+        accelerationUnitText(AccelerationUnit::MetresPerSecondSquared),
+        static_cast<int>(AccelerationUnit::MetresPerSecondSquared));
+    imu_acceleration_unit_selector_->addItem(
+        accelerationUnitText(AccelerationUnit::MilliGravity),
+        static_cast<int>(AccelerationUnit::MilliGravity));
+    imu_acceleration_unit_selector_->setCurrentIndex(
+        imu_acceleration_unit_selector_->findData(
+            static_cast<int>(acceleration_unit_)));
+    imu_acceleration_unit_selector_->setToolTip(uiText(
+        "Choose g, SI acceleration, or milli-g for the live table and plot. "
+        "Recorded datasets remain in m/s².",
+        "选择实时表格和曲线使用 g、SI 加速度或 mg；录制的数据集仍使用 "
+        "m/s²。"));
+    imu_unit_controls->addWidget(imu_acceleration_unit_selector_);
+
+    imu_unit_controls->addWidget(
+        new QLabel(uiText("Angular rate:", "角速度："), imu_group));
+    imu_angular_velocity_unit_selector_ = new QComboBox(imu_group);
+    imu_angular_velocity_unit_selector_->setObjectName(
+        QStringLiteral("imuAngularVelocityUnitCombo"));
+    imu_angular_velocity_unit_selector_->addItem(
+        angularVelocityUnitText(AngularVelocityUnit::DegreesPerSecond),
+        static_cast<int>(AngularVelocityUnit::DegreesPerSecond));
+    imu_angular_velocity_unit_selector_->addItem(
+        angularVelocityUnitText(AngularVelocityUnit::RadiansPerSecond),
+        static_cast<int>(AngularVelocityUnit::RadiansPerSecond));
+    imu_angular_velocity_unit_selector_->addItem(
+        angularVelocityUnitText(
+            AngularVelocityUnit::MilliDegreesPerSecond),
+        static_cast<int>(AngularVelocityUnit::MilliDegreesPerSecond));
+    imu_angular_velocity_unit_selector_->setCurrentIndex(
+        imu_angular_velocity_unit_selector_->findData(
+            static_cast<int>(angular_velocity_unit_)));
+    imu_angular_velocity_unit_selector_->setToolTip(uiText(
+        "Choose degrees/s, radians/s, or mdps for the live table and plot. "
+        "Recorded datasets remain in rad/s.",
+        "选择实时表格和曲线使用度/秒、弧度/秒或 mdps；录制的数据集仍使用 "
+        "rad/s。"));
+    imu_unit_controls->addWidget(imu_angular_velocity_unit_selector_);
+
+    imu_unit_controls->addWidget(
+        new QLabel(uiText("Temperature:", "温度："), imu_group));
+    imu_temperature_unit_selector_ = new QComboBox(imu_group);
+    imu_temperature_unit_selector_->setObjectName(
+        QStringLiteral("imuTemperatureUnitCombo"));
+    imu_temperature_unit_selector_->addItem(
+        temperatureUnitText(TemperatureUnit::Celsius),
+        static_cast<int>(TemperatureUnit::Celsius));
+    imu_temperature_unit_selector_->addItem(
+        temperatureUnitText(TemperatureUnit::MilliCelsius),
+        static_cast<int>(TemperatureUnit::MilliCelsius));
+    imu_temperature_unit_selector_->setCurrentIndex(
+        imu_temperature_unit_selector_->findData(
+            static_cast<int>(temperature_unit_)));
+    imu_temperature_unit_selector_->setToolTip(uiText(
+        "Choose degrees Celsius or milli-degrees Celsius for the live table.",
+        "选择实时表格使用摄氏度或毫摄氏度。"));
+    imu_unit_controls->addWidget(imu_temperature_unit_selector_);
+    imu_unit_controls->addStretch(1);
+    imu_layout->addLayout(imu_unit_controls);
+
     imu_layout->addWidget(imu_table_);
     imu_plot_ = new ImuPlotWidget(imu_group);
+    imu_plot_->setUnits(acceleration_unit_, angular_velocity_unit_);
     imu_layout->addWidget(imu_plot_, 1);
     imu_page_layout->addWidget(imu_group, 4);
 
@@ -2255,6 +2499,50 @@ class MainWindow : public QMainWindow {
     connect(imu_selector_group_, &QButtonGroup::idToggled,
             this, [this](int sensor, bool checked) {
               if (checked && imu_plot_ != nullptr) imu_plot_->setSensor(sensor);
+            });
+    connect(imu_acceleration_unit_selector_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+              if (index < 0) return;
+              acceleration_unit_ = static_cast<AccelerationUnit>(
+                  imu_acceleration_unit_selector_->itemData(index).toInt());
+              QSettings(QStringLiteral("DIBULI"),
+                        QStringLiteral("PrismViewer"))
+                  .setValue(QStringLiteral("imu/acceleration_unit"),
+                            unitTokenText(acceleration_unit_));
+              updateImuTableUnitHeaders();
+              refreshLatestImuTableValues();
+              imu_plot_->setUnits(acceleration_unit_,
+                                  angular_velocity_unit_);
+            });
+    connect(imu_angular_velocity_unit_selector_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+              if (index < 0) return;
+              angular_velocity_unit_ = static_cast<AngularVelocityUnit>(
+                  imu_angular_velocity_unit_selector_->itemData(index)
+                      .toInt());
+              QSettings(QStringLiteral("DIBULI"),
+                        QStringLiteral("PrismViewer"))
+                  .setValue(QStringLiteral("imu/angular_velocity_unit"),
+                            unitTokenText(angular_velocity_unit_));
+              updateImuTableUnitHeaders();
+              refreshLatestImuTableValues();
+              imu_plot_->setUnits(acceleration_unit_,
+                                  angular_velocity_unit_);
+            });
+    connect(imu_temperature_unit_selector_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+              if (index < 0) return;
+              temperature_unit_ = static_cast<TemperatureUnit>(
+                  imu_temperature_unit_selector_->itemData(index).toInt());
+              QSettings(QStringLiteral("DIBULI"),
+                        QStringLiteral("PrismViewer"))
+                  .setValue(QStringLiteral("imu/temperature_unit"),
+                            unitTokenText(temperature_unit_));
+              updateImuTableUnitHeaders();
+              refreshLatestImuTableValues();
             });
     connect(imu_record_stop_button_, &QPushButton::clicked,
             this, [this]() { stopImuRecording(); });
@@ -3504,6 +3792,12 @@ class MainWindow : public QMainWindow {
     imu_fsync_events_.fill(0);
     imu_timestamp_alarm_.fill(false);
     imu_timestamp_alarm_detail_.fill(QString());
+    {
+      std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+      pending_imu_ui_ = {};
+      pending_imu_ui_dirty_.fill(false);
+      for (auto& samples : pending_imu_plot_samples_) samples.clear();
+    }
     latest_device_info_valid_ = false;
     latest_rk_heartbeat_time_us_ = 0;
     if (imu_alarm_label_ != nullptr) {
@@ -4703,6 +4997,29 @@ class MainWindow : public QMainWindow {
     pending_imu_ui_dirty_[sensor] = true;
   }
 
+  void updateImuTableUnitHeaders() {
+    if (imu_table_ == nullptr) return;
+    const QString acceleration_unit = accelerationUnitText(acceleration_unit_);
+    const QString angular_velocity_unit =
+        angularVelocityUnitText(angular_velocity_unit_);
+    const QString temperature_unit = temperatureUnitText(temperature_unit_);
+    imu_table_->setHorizontalHeaderLabels({
+        QStringLiteral("IMU"),
+        uiText("Samples", "样本数"),
+        QStringLiteral("Hz"),
+        uiText("Timestamp", "时间戳"),
+        QStringLiteral("Ax ") + acceleration_unit,
+        QStringLiteral("Ay ") + acceleration_unit,
+        QStringLiteral("Az ") + acceleration_unit,
+        QStringLiteral("Gx ") + angular_velocity_unit,
+        QStringLiteral("Gy ") + angular_velocity_unit,
+        QStringLiteral("Gz ") + angular_velocity_unit,
+        uiText("Temp %1", "温度 %1").arg(temperature_unit),
+        QStringLiteral("FSYNC"),
+        uiText("Flags", "标志"),
+    });
+  }
+
   void queueImuPlotSample(
       const prism::ImuSample& sample,
       std::chrono::steady_clock::time_point received_at) {
@@ -4716,6 +5033,32 @@ class MainWindow : public QMainWindow {
       samples.pop_front();
     }
     samples.push_back({sample, received_at});
+  }
+
+  void updateImuMeasurementCells(const prism::ImuSample& sample) {
+    const int sensor = static_cast<int>(sample.sensor_id);
+    if (sensor < 0 || sensor >= imu_table_->rowCount()) return;
+    for (size_t axis = 0; axis < 3; ++axis) {
+      const double acceleration = convertAcceleration(
+          static_cast<double>(sample.accel_mg[axis]),
+          AccelerationUnit::MilliGravity, acceleration_unit_);
+      imu_table_->item(sensor, 4 + static_cast<int>(axis))
+          ->setText(QString::number(
+              acceleration, 'f',
+              accelerationDisplayPrecision(acceleration_unit_)));
+      const double angular_velocity = convertAngularVelocity(
+          static_cast<double>(sample.gyro_mdps[axis]),
+          AngularVelocityUnit::MilliDegreesPerSecond,
+          angular_velocity_unit_);
+      imu_table_->item(sensor, 7 + static_cast<int>(axis))
+          ->setText(QString::number(
+              angular_velocity, 'f',
+              angularVelocityDisplayPrecision(angular_velocity_unit_)));
+    }
+    imu_table_->item(sensor, 10)->setText(QString::number(
+        convertTemperature(static_cast<double>(sample.temp_milli_c),
+                           TemperatureUnit::MilliCelsius, temperature_unit_),
+        'f', temperatureDisplayPrecision(temperature_unit_)));
   }
 
   void applyImuUiSnapshot(const ImuUiSnapshot& snapshot) {
@@ -4745,20 +5088,7 @@ class MainWindow : public QMainWindow {
       imu_table_->item(sensor, 3)->setText(timestamp_text);
       imu_table_->item(sensor, 3)->setToolTip(
           QStringLiteral("raw timestamp: %1 us").arg(sample.timestamp_us));
-      imu_table_->item(sensor, 4)->setText(
-          QString::number(static_cast<double>(sample.accel_mg[0]) / 1000.0, 'f', 4));
-      imu_table_->item(sensor, 5)->setText(
-          QString::number(static_cast<double>(sample.accel_mg[1]) / 1000.0, 'f', 4));
-      imu_table_->item(sensor, 6)->setText(
-          QString::number(static_cast<double>(sample.accel_mg[2]) / 1000.0, 'f', 4));
-      imu_table_->item(sensor, 7)->setText(
-          QString::number(static_cast<double>(sample.gyro_mdps[0]) / 1000.0, 'f', 3));
-      imu_table_->item(sensor, 8)->setText(
-          QString::number(static_cast<double>(sample.gyro_mdps[1]) / 1000.0, 'f', 3));
-      imu_table_->item(sensor, 9)->setText(
-          QString::number(static_cast<double>(sample.gyro_mdps[2]) / 1000.0, 'f', 3));
-      imu_table_->item(sensor, 10)->setText(
-          QString::number(static_cast<double>(sample.temp_milli_c) / 1000.0, 'f', 2));
+      updateImuMeasurementCells(sample);
       if (fsync_event_count == 0) {
         imu_table_->item(sensor, 11)->setText(uiText("waiting", "等待中"));
       } else {
@@ -4785,6 +5115,26 @@ class MainWindow : public QMainWindow {
       }
       imu_table_->item(sensor, 12)->setText(
           QStringLiteral("0x%1").arg(sample.flags, 4, 16, QLatin1Char('0')));
+  }
+
+  void refreshLatestImuTableValues() {
+    std::array<ImuUiSnapshot, 2> snapshots;
+    std::array<bool, 2> valid{};
+    {
+      std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+      snapshots = pending_imu_ui_;
+      for (size_t sensor = 0; sensor < snapshots.size(); ++sensor) {
+        valid[sensor] = snapshots[sensor].received_count != 0;
+      }
+    }
+    if (!valid[0] && !valid[1]) return;
+
+    imu_table_->setUpdatesEnabled(false);
+    for (size_t sensor = 0; sensor < snapshots.size(); ++sensor) {
+      if (valid[sensor]) updateImuMeasurementCells(snapshots[sensor].sample);
+    }
+    imu_table_->setUpdatesEnabled(true);
+    imu_table_->viewport()->update();
   }
 
   void flushPendingImuUiUpdates() {
@@ -5652,6 +6002,9 @@ class MainWindow : public QMainWindow {
   QButtonGroup* imu_selector_group_ = nullptr;
   QPushButton* imu0_selector_ = nullptr;
   QPushButton* imu1_selector_ = nullptr;
+  QComboBox* imu_acceleration_unit_selector_ = nullptr;
+  QComboBox* imu_angular_velocity_unit_selector_ = nullptr;
+  QComboBox* imu_temperature_unit_selector_ = nullptr;
   QPushButton* imu_record_start_button_ = nullptr;
   QPushButton* imu_record_stop_button_ = nullptr;
   QLabel* imu_alarm_label_ = nullptr;
@@ -5706,6 +6059,12 @@ class MainWindow : public QMainWindow {
   std::array<uint64_t, 2> imu_fsync_events_{};
   std::array<bool, 2> imu_timestamp_alarm_{};
   std::array<QString, 2> imu_timestamp_alarm_detail_{};
+  AccelerationUnit acceleration_unit_ =
+      prism_viewer::imu_units::kDefaultAccelerationUnit;
+  AngularVelocityUnit angular_velocity_unit_ =
+      prism_viewer::imu_units::kDefaultAngularVelocityUnit;
+  TemperatureUnit temperature_unit_ =
+      prism_viewer::imu_units::kDefaultTemperatureUnit;
   prism::DeviceInfo latest_device_info_;
   prism::DeviceVersions latest_device_versions_;
   uint64_t latest_rk_heartbeat_time_us_ = 0;

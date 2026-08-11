@@ -6,6 +6,7 @@ the executable entry point and must stay small.
 ```text
 src/
   main.cpp                         process entry point
+  imu_units.*                      pure onboard-IMU display-unit conversion
   common/
     ui_text.*                      language and Qt/path conversion helpers
   communication/
@@ -60,7 +61,7 @@ main
 | Camera/IMU frame assembly, stream validation, rate accounting | `transfer/` |
 | Local dataset recording, indexing, browsing and ROS1/ROS2 export | `dataset/` |
 | Charts, dialogs, tables and window layout | `ui/` |
-| Pure calibration or synchronization math | a dedicated algorithm class |
+| Pure calibration, unit-conversion or synchronization math | a dedicated algorithm class |
 
 ## Wi-Fi hotspot UI
 

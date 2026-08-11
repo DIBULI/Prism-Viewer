@@ -105,6 +105,12 @@ else()
   set(QT_PACKAGE Qt5)
 endif()
 
+add_library(prism-viewer-imu-units STATIC
+  src/imu_units.cpp
+)
+target_include_directories(prism-viewer-imu-units PUBLIC src)
+target_compile_features(prism-viewer-imu-units PUBLIC cxx_std_17)
+
 add_executable(prism-viewer
   resources/prism.qrc
   src/common/ui_text.cpp
@@ -131,6 +137,7 @@ target_compile_features(prism-viewer PRIVATE cxx_std_17)
 target_include_directories(prism-viewer PRIVATE src)
 
 target_link_libraries(prism-viewer PRIVATE
+  prism-viewer-imu-units
   prism-viewer-sdk
   ${QT_PACKAGE}::Widgets
   ${QT_PACKAGE}::Charts
@@ -233,6 +240,13 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(imu-units-test
+    tests/imu_units_test.cpp
+  )
+  target_compile_features(imu-units-test PRIVATE cxx_std_17)
+  target_link_libraries(imu-units-test PRIVATE prism-viewer-imu-units)
+  add_test(NAME imu-units COMMAND imu-units-test)
+
   add_executable(imu-timestamp-policy-test
     tests/imu_timestamp_policy_test.cpp
   )
