@@ -4116,13 +4116,13 @@ class MainWindow : public QMainWindow {
             "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
       } else if (!status.target_reachable) {
         text = uiText(
-                   "%1 ready at %2 | Mid360 %3 has not passed a connection test",
-                   "%1 已就绪：%2 | Mid360 %3 尚未通过连接测试")
+                   "Saved | %1 %2 | Mid360 %3",
+                   "已保存 | %1 %2 | Mid360 %3")
                    .arg(toQString(status.interface_name),
                         toQString(status.configuration.host_ip),
                         toQString(status.configuration.lidar_ip));
         style = QStringLiteral(
-            "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+            "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
             "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
       } else {
         text = uiText(
