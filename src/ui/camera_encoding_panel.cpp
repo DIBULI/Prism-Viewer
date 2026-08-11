@@ -21,12 +21,12 @@ using prism_viewer::common::uiText;
 QString qualityHint(int quality) {
   if (quality >= 90) {
     return uiText(
-        "Very high detail · maximum USB bandwidth (92 is the default)",
-        "极高细节 · USB 带宽占用最大（默认值为 92）");
+        "Very high detail · maximum USB bandwidth",
+        "极高细节 · USB 带宽占用最大");
   }
   if (quality >= 80) {
-    return uiText("High detail · increased bandwidth",
-                  "高细节 · 带宽占用增加");
+    return uiText("High detail · increased bandwidth (88 is the default)",
+                  "高细节 · 带宽占用增加（默认值为 88）");
   }
   if (quality >= 60) {
     return uiText("Balanced detail and bandwidth",

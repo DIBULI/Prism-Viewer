@@ -12,7 +12,7 @@ constexpr uint32_t kDeviceConfigFieldAll =
     kDeviceConfigFieldMjpegQuality;
 constexpr uint32_t kMjpegQualityMin = 1u;
 constexpr uint32_t kMjpegQualityMax = 99u;
-constexpr uint32_t kMjpegQualityDefault = 92u;
+constexpr uint32_t kMjpegQualityDefault = 88u;
 
 struct DeviceConfiguration {
   uint32_t camera_fps = 30;
