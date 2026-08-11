@@ -105,6 +105,13 @@ else()
   set(QT_PACKAGE Qt5)
 endif()
 
+add_library(prism-viewer-app-theme STATIC
+  src/ui/app_theme.cpp
+)
+target_include_directories(prism-viewer-app-theme PUBLIC src)
+target_compile_features(prism-viewer-app-theme PUBLIC cxx_std_17)
+target_link_libraries(prism-viewer-app-theme PUBLIC ${QT_PACKAGE}::Widgets)
+
 add_library(prism-viewer-imu-units STATIC
   src/imu_units.cpp
 )
@@ -137,6 +144,7 @@ target_compile_features(prism-viewer PRIVATE cxx_std_17)
 target_include_directories(prism-viewer PRIVATE src)
 
 target_link_libraries(prism-viewer PRIVATE
+  prism-viewer-app-theme
   prism-viewer-imu-units
   prism-viewer-sdk
   ${QT_PACKAGE}::Widgets
@@ -240,6 +248,18 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(app-theme-test
+    tests/app_theme_test.cpp
+  )
+  target_compile_features(app-theme-test PRIVATE cxx_std_17)
+  target_link_libraries(app-theme-test PRIVATE prism-viewer-app-theme)
+  add_test(NAME app-theme COMMAND app-theme-test)
+  if(UNIX)
+    set_tests_properties(app-theme PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
   add_executable(imu-units-test
     tests/imu_units_test.cpp
   )

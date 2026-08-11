@@ -7,6 +7,7 @@
 #include "imu_units.hpp"
 #include "imu_timestamp_policy.hpp"
 #include "transfer/camera_frame_assembler.hpp"
+#include "ui/app_theme.hpp"
 #include "ui/camera_encoding_panel.hpp"
 #include "ui/camera_exposure_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
@@ -1711,9 +1712,13 @@ class MainWindow : public QMainWindow {
         "              padding: 7px 13px; }"
         "QPushButton:hover { background: #edf4ff; border-color: #7ba7e7; }"
         "QPushButton:pressed { background: #dbeafe; }"
-        "QComboBox, QSpinBox { background: #ffffff; border: 1px solid #c9d4e2;"
-        "                       border-radius: 7px; padding: 6px 9px; }"
-        "QComboBox:focus, QSpinBox:focus { border-color: #4b83d1; }"
+        "QComboBox, QAbstractSpinBox, QLineEdit { background: #ffffff;"
+        "                       color: #182230; border: 1px solid #c9d4e2;"
+        "                       border-radius: 7px; padding: 6px 9px;"
+        "                       selection-background-color: #1557d2;"
+        "                       selection-color: #ffffff; }"
+        "QComboBox:focus, QAbstractSpinBox:focus, QLineEdit:focus {"
+        "                       border-color: #4b83d1; }"
         "QTabWidget::pane { background: #f5f7fb; border: 1px solid #dfe6ef;"
         "                   border-radius: 9px; top: -1px; }"
         "QTabBar::tab { background: #e9eef5; color: #52637a; padding: 8px 16px;"
@@ -1734,10 +1739,18 @@ class MainWindow : public QMainWindow {
         "QPushButton:disabled, QPushButton#startButton:disabled,"
         "QPushButton#stopButton:disabled, QPushButton#imuSelectButton:disabled {"
         "  background: #e4e7ec; color: #98a2b3; border-color: #d0d5dd; }"
-        "QComboBox:disabled { background: #e4e7ec; color: #98a2b3;"
-        "                     border-color: #d0d5dd; }"
+        "QComboBox:disabled, QAbstractSpinBox:disabled, QLineEdit:disabled {"
+        "  background: #e4e7ec; color: #98a2b3; border-color: #d0d5dd; }"
+        "QHeaderView { background: #f5f7fb; }"
+        "QHeaderView::section, QTableCornerButton::section {"
+        "  background: #e9eef5; color: #24364d; border: 0;"
+        "  border-right: 1px solid #c9d4e2;"
+        "  border-bottom: 1px solid #c9d4e2; padding: 6px 8px;"
+        "  font-weight: 600; }"
         "QPlainTextEdit, QTableWidget { background: #ffffff; border: 1px solid #d9e2ef;"
-        "                              border-radius: 7px; }"
+        "  alternate-background-color: #f7f9fc; gridline-color: #d9e2ef;"
+        "  selection-background-color: #dbeafe; selection-color: #182230;"
+        "  border-radius: 7px; }"
         "QFrame#cameraTile { background: #ffffff; border: 1px solid #dfe6ef;"
         "                    border-radius: 10px; }"
         "QFrame#cameraTile:hover { border-color: #93b4df; }"
@@ -6086,6 +6099,7 @@ int runViewerApplication(int argc, char** argv) {
   qunsetenv("SESSION_MANAGER");
 #endif
   QApplication app(argc, argv);
+  ui::applyLightApplicationTheme(app);
   app.setApplicationName(QStringLiteral("Prism Viewer"));
   app.setOrganizationName(QStringLiteral("Prism"));
   app.setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
