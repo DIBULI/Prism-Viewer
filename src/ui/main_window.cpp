@@ -1976,6 +1976,22 @@ class MainWindow : public QMainWindow {
         saved_lidar_point_size,
         prism_viewer::LidarPointCloudWidget::kMinimumPointSize,
         prism_viewer::LidarPointCloudWidget::kMaximumPointSize));
+    auto* lidar_top_view_button = new QPushButton(
+        uiText("Top view", "俯视"), lidar_controls);
+    lidar_top_view_button->setObjectName(
+        QStringLiteral("lidarTopViewButton"));
+    lidar_top_view_button->setMinimumWidth(96);
+    lidar_top_view_button->setToolTip(uiText(
+        "Look straight down at the LiDAR XY plane",
+        "垂直俯视雷达 XY 平面"));
+    auto* lidar_reset_view_button = new QPushButton(
+        uiText("Reset view", "重置视角"), lidar_controls);
+    lidar_reset_view_button->setObjectName(
+        QStringLiteral("lidarResetViewButton"));
+    lidar_reset_view_button->setMinimumWidth(96);
+    lidar_reset_view_button->setToolTip(uiText(
+        "Restore the default LiDAR view and zoom",
+        "恢复默认雷达视角和缩放"));
     lidar_status_label_ = new QLabel(
         uiText("LiDAR disabled", "雷达未启用"), lidar_controls);
     lidar_status_label_->setStyleSheet(QStringLiteral(
@@ -1986,6 +2002,8 @@ class MainWindow : public QMainWindow {
     lidar_controls_layout->addWidget(lidar_model_selector_);
     lidar_controls_layout->addWidget(lidar_point_size_label);
     lidar_controls_layout->addWidget(lidar_point_size_spin_);
+    lidar_controls_layout->addWidget(lidar_top_view_button);
+    lidar_controls_layout->addWidget(lidar_reset_view_button);
     lidar_controls_layout->addWidget(lidar_status_label_, 1);
     lidar_layout->addWidget(lidar_controls);
 
@@ -2038,6 +2056,12 @@ class MainWindow : public QMainWindow {
         new prism_viewer::LidarPointCloudWidget(lidar_page_);
     lidar_point_cloud_widget_->setPointSize(
         lidar_point_size_spin_->value());
+    connect(lidar_top_view_button, &QPushButton::clicked,
+            lidar_point_cloud_widget_,
+            &prism_viewer::LidarPointCloudWidget::setTopView);
+    connect(lidar_reset_view_button, &QPushButton::clicked,
+            lidar_point_cloud_widget_,
+            &prism_viewer::LidarPointCloudWidget::resetView);
     lidar_layout->addWidget(lidar_point_cloud_widget_, 1);
 
     wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);

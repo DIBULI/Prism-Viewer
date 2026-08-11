@@ -59,6 +59,24 @@ int LidarPointCloudWidget::pointSize() const noexcept {
   return point_size_;
 }
 
+LidarPointCloudWidget::ViewState LidarPointCloudWidget::viewState()
+    const noexcept {
+  return {yaw_, pitch_, pixels_per_meter_};
+}
+
+void LidarPointCloudWidget::setTopView() {
+  yaw_ = kTopViewYawRadians;
+  pitch_ = kTopViewPitchRadians;
+  update();
+}
+
+void LidarPointCloudWidget::resetView() {
+  yaw_ = kDefaultYawRadians;
+  pitch_ = kDefaultPitchRadians;
+  pixels_per_meter_ = kDefaultPixelsPerMeter;
+  update();
+}
+
 void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.fillRect(rect(), QColor(7, 14, 25));
@@ -75,7 +93,8 @@ void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
     const double pitched_y = cosine_pitch * rotated_y - sine_pitch * z;
     const double pitched_z = sine_pitch * rotated_y + cosine_pitch * z;
     return QPointF(center.x() + rotated_x * pixels_per_meter_,
-                   center.y() + pitched_y * pixels_per_meter_ * 0.34 -
+                   center.y() + pitched_y * pixels_per_meter_ *
+                                    kProjectionVerticalScale -
                        pitched_z * pixels_per_meter_);
   };
 
@@ -136,7 +155,7 @@ void LidarPointCloudWidget::mouseMoveEvent(QMouseEvent* event) {
   last_mouse_position_ = event->pos();
   yaw_ += static_cast<double>(delta.x()) * 0.008;
   pitch_ = std::clamp(pitch_ + static_cast<double>(delta.y()) * 0.006,
-                      -1.2, 1.2);
+                      kMinimumPitchRadians, kMaximumPitchRadians);
   update();
 }
 
