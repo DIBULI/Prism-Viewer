@@ -2688,6 +2688,7 @@ class MainWindow : public QMainWindow {
         post([this, configuration, requested]() {
           camera_encoding_operation_running_ = false;
           camera_encoding_panel_->setConfiguration(configuration);
+          camera_exposure_panel_->setCameraFps(configuration.camera_fps);
           camera_encoding_panel_->setBusy(false);
           if (latest_device_info_valid_) {
             latest_device_info_.camera_fps =
@@ -3078,6 +3079,7 @@ class MainWindow : public QMainWindow {
       updateDeviceInfo(device_info);
       updateDeviceVersions(versions);
       camera_encoding_panel_->setConfiguration(configuration);
+      camera_exposure_panel_->setCameraFps(configuration.camera_fps);
       camera_exposure_panel_->setConfiguration(opened.exposure);
       try {
         updateLidarStatus(client_.lidarStatus());

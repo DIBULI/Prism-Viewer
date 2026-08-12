@@ -92,9 +92,11 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
     settings->addWidget(camera_mode_[camera], camera + 1, 1);
 
     manual_exposure_us_[camera] = new QSpinBox(group);
+    manual_exposure_us_[camera]->setObjectName(
+        QStringLiteral("camera%1ExposureSpin").arg(camera));
     manual_exposure_us_[camera]->setRange(
         static_cast<int>(prism::kCameraMinExposureUs),
-        static_cast<int>(prism::kCameraMaxExposureUs));
+        static_cast<int>(prism::cameraMaxExposureUs(camera_fps_)));
     manual_exposure_us_[camera]->setValue(
         static_cast<int>(prism::kCameraDefaultExposureUs));
     manual_exposure_us_[camera]->setSuffix(
@@ -195,6 +197,30 @@ void CameraExposurePanel::setControlsLocked(bool locked) {
 
 void CameraExposurePanel::setCaptureActive(bool active) {
   capture_active_ = active;
+  refreshView();
+}
+
+void CameraExposurePanel::setCameraFps(uint32_t camera_fps) {
+  const uint32_t maximum_us = prism::cameraMaxExposureUs(camera_fps);
+  if (maximum_us == 0u) return;
+  camera_fps_ = camera_fps;
+  for (size_t camera = 0; camera < manual_exposure_us_.size(); ++camera) {
+    const QSignalBlocker blocker(manual_exposure_us_[camera]);
+    manual_exposure_us_[camera]->setMaximum(static_cast<int>(maximum_us));
+    if (has_configuration_ &&
+        configuration_.manual_exposure_time_us[camera] > maximum_us) {
+      configuration_.manual_exposure_time_us[camera] = maximum_us;
+    }
+    if (has_configuration_) {
+      manual_exposure_us_[camera]->setValue(static_cast<int>(
+          configuration_.manual_exposure_time_us[camera]));
+    }
+    manual_exposure_us_[camera]->setToolTip(
+        uiText("Maximum at %1 FPS: %2 us (frame period minus 5 ms)",
+               "%1 FPS 下最大值：%2 微秒（帧周期减 5 毫秒）")
+            .arg(camera_fps_)
+            .arg(maximum_us));
+  }
   refreshView();
 }
 

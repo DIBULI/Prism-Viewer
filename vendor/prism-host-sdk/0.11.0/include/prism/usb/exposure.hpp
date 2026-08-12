@@ -26,12 +26,19 @@ constexpr uint8_t kAutoExposureMinTargetBrightness = 1;
 constexpr uint8_t kAutoExposureMaxTargetBrightness = 255;
 constexpr uint8_t kAutoExposureDefaultTargetBrightness = 80;
 constexpr uint32_t kCameraMinExposureUs = 200;
-constexpr uint32_t kCameraMaxExposureUs = 15000;
+constexpr uint32_t kCameraMaxExposureUs = 95000;
+constexpr uint32_t kCameraExposureHeadroomUs = 5000;
 constexpr uint32_t kCameraDefaultExposureUs = 200;
 constexpr uint32_t kCameraMinGainX1024 = 1024;
 constexpr uint32_t kCameraMaxGainX1024 = 126976;
 constexpr uint32_t kCameraGainStepX1024 = 32;
-constexpr uint32_t kCameraDefaultGainX1024 = 2048;
+constexpr uint32_t kCameraDefaultGainX1024 = 1024;
+
+constexpr uint32_t cameraMaxExposureUs(uint32_t camera_fps) {
+  return camera_fps == 10u || camera_fps == 20u || camera_fps == 30u
+             ? 1000000u / camera_fps - kCameraExposureHeadroomUs
+             : 0u;
+}
 
 enum class CameraExposureMode : uint8_t {
   Automatic = 0,

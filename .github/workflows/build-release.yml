@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "vendor/prism-host-sdk/0.11.0/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "c36707501abc95fa90604ade73e822be44ca2eebaa435fdec40a30ddc0c3ffbb"
+          $expected = "6fb130754480e31329ae43a8d9d8ede65e9d823e20da946d0e8c440cd5e2fe99"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -103,7 +103,7 @@ jobs:
 
       - name: Verify bundled Linux SDK
         run: |
-          echo "6510750ece0e2d1dc145f3c463635c03b068e5683a372c07dd1a99ce7a4a2819  vendor/prism-host-sdk/0.11.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
+          echo "1fa6375dc8a606d9d7725d5ac39132cc73151250402b4c77fb7dad547cdfd9ce  vendor/prism-host-sdk/0.11.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
 
       - name: Configure and build Viewer
         run: |
@@ -184,7 +184,7 @@ jobs:
           sdk="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="293c4c519bec4c3026cf7b460f03aa63501a062eae84275caeea63c2e7dd8981"
+          sdk_expected="01267230552b62fd6b38345c275b26dba547edd2336fd0ba3cd9f6e5b6ab1251"
           libusb_expected="329a4c0ea465b3ebf81c4d95165d25739380b84fbc77c3c7af9e11a83f7cea08"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"

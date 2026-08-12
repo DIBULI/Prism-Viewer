@@ -3,6 +3,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSpinBox>
 
 #include <cmath>
 #include <cstdlib>
@@ -34,6 +35,18 @@ int main(int argc, char** argv) {
   require(near(gain0->minimum(), 1.0) && near(gain0->maximum(), 124.0) &&
               near(gain0->singleStep(), 0.03125),
           "gain range and 1/32x step match SC130GS");
+  require(near(gain0->value(), 1.0), "default sensor gain is 1x");
+  auto* exposure0 = panel.findChild<QSpinBox*>(
+      QStringLiteral("camera0ExposureSpin"));
+  require(exposure0 != nullptr, "camera 0 exposure control is discoverable");
+  require(exposure0->maximum() == 28333,
+          "30 fps exposure maximum is frame period minus 5 ms");
+  panel.setCameraFps(20u);
+  require(exposure0->maximum() == 45000,
+          "20 fps exposure maximum is frame period minus 5 ms");
+  panel.setCameraFps(10u);
+  require(exposure0->maximum() == 95000,
+          "10 fps exposure maximum uses the 32-bit path");
 
   prism::ExposureConfiguration loaded;
   loaded.gain_x1024 = {1024u, 2048u, 4096u, 126976u};
