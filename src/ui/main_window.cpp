@@ -131,6 +131,11 @@ constexpr auto kCameraStatusUiPeriod = std::chrono::milliseconds(250);
 constexpr size_t kMaximumQueuedPreviewFrameSets = 1;
 constexpr int kCameraPreviewWidth = 640;
 constexpr int kCameraPreviewHeight = 512;
+// Keep the top-level minimum below a common 1600x900 desktop. Individual tab
+// pages may contain larger controls, but hidden pages must not prevent the
+// window manager from honoring maximize on the active screen.
+constexpr int kMaximumMainWindowMinimumWidth = 1600;
+constexpr int kMaximumMainWindowMinimumHeight = 900;
 using prism_viewer::common::fromFilesystemPath;
 using prism_viewer::common::toFilesystemPath;
 using prism_viewer::common::toQString;
@@ -1844,6 +1849,14 @@ class MainWindow : public QMainWindow {
     root->addLayout(status_strip);
 
     tabs_ = new QTabWidget(central);
+    // QTabWidget normally contributes the maximum minimum-size hint of every
+    // page to its parent. The LiDAR controls and point-cloud canvas can then
+    // make the main window taller than the Linux desktop work area even while
+    // another tab is selected. The window manager marks such a window as
+    // maximized but cannot shrink it to the work area. Let the root layout
+    // treat the tab viewport as shrinkable; each active page still receives
+    // all available space and its own layouts remain intact.
+    tabs_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 
     device_info_panel_ = new DeviceInfoPanel(tabs_);
     tabs_->addTab(device_info_panel_, uiText("Device Info", "设备信息"));
@@ -6528,6 +6541,25 @@ int runViewerApplication(int argc, char** argv) {
         language.startsWith(QStringLiteral("zh"), Qt::CaseInsensitive));
   }
   MainWindow window;
+  if (command_line.contains(QStringLiteral("--window-layout-self-test"))) {
+    window.ensurePolished();
+    if (window.centralWidget() != nullptr &&
+        window.centralWidget()->layout() != nullptr) {
+      window.centralWidget()->layout()->activate();
+    }
+    const QSize minimum =
+        window.minimumSizeHint().expandedTo(window.minimumSize());
+    const bool success =
+        minimum.width() <= kMaximumMainWindowMinimumWidth &&
+        minimum.height() <= kMaximumMainWindowMinimumHeight;
+    std::cout << "main_window_layout_self_test="
+              << (success ? "PASS" : "FAIL")
+              << " minimum=" << minimum.width() << "x"
+              << minimum.height() << " limit="
+              << kMaximumMainWindowMinimumWidth << "x"
+              << kMaximumMainWindowMinimumHeight << "\n";
+    return success ? 0 : 12;
+  }
   window.show();
   return app.exec();
 }

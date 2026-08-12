@@ -345,13 +345,17 @@ if(BUILD_TESTING)
     COMMAND prism-viewer --imu-only-recorder-self-test
             "${CMAKE_CURRENT_BINARY_DIR}/test-output/dataset-recorder-imu-only"
   )
+  add_test(
+    NAME main-window-layout
+    COMMAND prism-viewer --window-layout-self-test
+  )
   set_tests_properties(
     dataset-recorder-full dataset-recorder-imu-only
     PROPERTIES RUN_SERIAL TRUE
   )
   if(UNIX)
     set_tests_properties(
-      dataset-recorder-full dataset-recorder-imu-only
+      dataset-recorder-full dataset-recorder-imu-only main-window-layout
       PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
   endif()
