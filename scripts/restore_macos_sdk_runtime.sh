@@ -3,7 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_bundle="${1:-}"
-runtime_dir="${2:-${root}/vendor/prism-host-sdk/0.10.0/runtime/macos-arm64}"
+runtime_dir="${2:-${root}/vendor/prism-host-sdk/0.11.0/runtime/macos-arm64}"
 if [[ -z "${app_bundle}" || ! -d "${app_bundle}" ]]; then
   echo "Usage: $0 /path/to/Prism-Viewer.app [SDK-runtime-directory]" >&2
   exit 2

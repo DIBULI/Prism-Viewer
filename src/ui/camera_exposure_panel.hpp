@@ -10,6 +10,7 @@
 
 class QLabel;
 class QComboBox;
+class QDoubleSpinBox;
 class QPushButton;
 class QSpinBox;
 
@@ -43,6 +44,7 @@ class CameraExposurePanel final : public QWidget {
   QSpinBox* target_brightness_ = nullptr;
   std::array<QComboBox*, 4> camera_mode_{};
   std::array<QSpinBox*, 4> manual_exposure_us_{};
+  std::array<QDoubleSpinBox*, 4> sensor_gain_{};
   QPushButton* refresh_button_ = nullptr;
   QPushButton* apply_button_ = nullptr;
 

@@ -12,6 +12,7 @@
 #include "ui/camera_exposure_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
 #include "ui/device_info_panel.hpp"
+#include "ui/image_view_label.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
 #include "ui/main_window.hpp"
 #include "ui/preview_image_decoder.hpp"
@@ -47,11 +48,9 @@
 #include <QtGui/QColor>
 #include <QtGui/QImage>
 #include <QtGui/QIcon>
-#include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
 #include <QtGui/QPixmap>
-#include <QtGui/QResizeEvent>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
@@ -299,64 +298,7 @@ class SampleRateTracker {
   uint64_t total_samples_ = 0;
 };
 
-class ImageViewLabel : public QLabel {
- public:
-  explicit ImageViewLabel(QWidget* parent = nullptr) : QLabel(parent) {
-    setAlignment(Qt::AlignCenter);
-  }
-
-  void setTransformationMode(Qt::TransformationMode mode) {
-    transformation_mode_ = mode;
-    refreshPixmap();
-  }
-
-  void setImage(const QImage& image) {
-    source_pixmap_ = QPixmap::fromImage(image);
-    refreshPixmap();
-  }
-
-  void clearImage(const QString& text) {
-    source_pixmap_ = QPixmap();
-    setPixmap(QPixmap());
-    setText(text);
-  }
-
-  std::function<void()> on_click;
-  std::function<void(const QSize&)> on_resize;
-
- protected:
-  void resizeEvent(QResizeEvent* event) override {
-    QLabel::resizeEvent(event);
-    refreshPixmap();
-    if (on_resize) on_resize(event->size());
-  }
-
-  void mousePressEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton &&
-        !source_pixmap_.isNull() && on_click) {
-      on_click();
-      event->accept();
-      return;
-    }
-    QLabel::mousePressEvent(event);
-  }
-
- private:
-  void refreshPixmap() {
-    if (source_pixmap_.isNull() || width() <= 0 || height() <= 0) return;
-    const QSize target_size =
-        source_pixmap_.size().scaled(size(), Qt::KeepAspectRatio);
-    if (target_size == source_pixmap_.size()) {
-      setPixmap(source_pixmap_);
-      return;
-    }
-    setPixmap(source_pixmap_.scaled(
-        target_size, Qt::IgnoreAspectRatio, transformation_mode_));
-  }
-
-  QPixmap source_pixmap_;
-  Qt::TransformationMode transformation_mode_ = Qt::SmoothTransformation;
-};
+using prism_viewer::ui::ImageViewLabel;
 
 enum class DatasetRecordingMode {
   Full,
@@ -2822,7 +2764,7 @@ class MainWindow : public QMainWindow {
               QStringLiteral("HH:mm:ss.zzz ")) +
           QStringLiteral(
               "Camera exposure %1 target=%2 automatic-mask=0x%3 "
-              "manual-us=[%4,%5,%6,%7]")
+              "manual-us=[%4,%5,%6,%7] gain-x1024=[%8,%9,%10,%11]")
               .arg(applied ? QStringLiteral("applied")
                            : QStringLiteral("refreshed"))
               .arg(configuration.target_brightness)
@@ -2831,7 +2773,11 @@ class MainWindow : public QMainWindow {
               .arg(configuration.manual_exposure_time_us[0])
               .arg(configuration.manual_exposure_time_us[1])
               .arg(configuration.manual_exposure_time_us[2])
-              .arg(configuration.manual_exposure_time_us[3]));
+              .arg(configuration.manual_exposure_time_us[3])
+              .arg(configuration.gain_x1024[0])
+              .arg(configuration.gain_x1024[1])
+              .arg(configuration.gain_x1024[2])
+              .arg(configuration.gain_x1024[3]));
       refreshControls();
     });
   }

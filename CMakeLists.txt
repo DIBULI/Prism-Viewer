@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 0.10.0 LANGUAGES CXX)
+project(prism_viewer VERSION 0.11.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -132,6 +132,7 @@ add_executable(prism-viewer
   src/ui/camera_encoding_panel.cpp
   src/ui/camera_exposure_panel.cpp
   src/ui/device_info_panel.cpp
+  src/ui/image_view_label.cpp
   src/ui/lidar_point_cloud_widget.cpp
   src/ui/main_window.cpp
   src/ui/preview_image_decoder.cpp
@@ -369,6 +370,40 @@ if(BUILD_TESTING)
   add_test(NAME camera-encoding-panel COMMAND camera-encoding-panel-test)
   if(UNIX)
     set_tests_properties(camera-encoding-panel PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
+  add_executable(camera-exposure-panel-test
+    src/common/ui_text.cpp
+    src/ui/camera_exposure_panel.cpp
+    tests/camera_exposure_panel_test.cpp
+  )
+  target_include_directories(camera-exposure-panel-test PRIVATE src)
+  target_compile_features(camera-exposure-panel-test PRIVATE cxx_std_17)
+  target_link_libraries(camera-exposure-panel-test PRIVATE
+    prism-viewer-sdk
+    ${QT_PACKAGE}::Widgets
+  )
+  add_test(NAME camera-exposure-panel COMMAND camera-exposure-panel-test)
+  if(UNIX)
+    set_tests_properties(camera-exposure-panel PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
+  add_executable(image-view-label-test
+    src/ui/image_view_label.cpp
+    tests/image_view_label_test.cpp
+  )
+  target_include_directories(image-view-label-test PRIVATE src)
+  target_compile_features(image-view-label-test PRIVATE cxx_std_17)
+  target_link_libraries(image-view-label-test PRIVATE
+    ${QT_PACKAGE}::Widgets
+  )
+  add_test(NAME image-view-label COMMAND image-view-label-test)
+  if(UNIX)
+    set_tests_properties(image-view-label PROPERTIES
       ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
   endif()

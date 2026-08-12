@@ -4,6 +4,7 @@
 
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
@@ -13,6 +14,7 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace prism_viewer::ui {
 namespace {
@@ -32,7 +34,7 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
   root->setSpacing(8);
 
   auto* group =
-      new QGroupBox(uiText("Runtime Exposure", "运行时曝光"), this);
+      new QGroupBox(uiText("Runtime Exposure and Gain", "运行时曝光与增益"), this);
   auto* group_layout = new QVBoxLayout(group);
   group_layout->setSpacing(8);
 
@@ -54,10 +56,10 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       prism::kAutoExposureDefaultTargetBrightness);
   target_brightness_->setToolTip(
       uiText("PL uses RAW8 mean brightness to adjust each automatic camera's "
-             "exposure time. All cameras share this target and gain stays "
-             "fixed.",
+             "exposure time. All cameras share this target; sensor gain is "
+             "configured independently below.",
              "PL 根据 RAW8 平均亮度闭环调整各路自动曝光时间；所有相机共用此"
-             "目标，增益保持固定。"));
+             "目标；传感器增益在下方分别设置。"));
   target_row->addWidget(target_label);
   target_row->addStretch(1);
   target_row->addWidget(target_brightness_);
@@ -72,6 +74,8 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       new QLabel(uiText("Exposure mode", "曝光模式"), group), 0, 1);
   settings->addWidget(
       new QLabel(uiText("Manual exposure", "手动曝光时间"), group), 0, 2);
+  settings->addWidget(
+      new QLabel(uiText("SC130GS gain", "SC130GS 增益"), group), 0, 3);
 
   for (int camera = 0; camera < 4; ++camera) {
     settings->addWidget(
@@ -80,8 +84,7 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
 
     camera_mode_[camera] = new QComboBox(group);
     camera_mode_[camera]->addItem(
-        uiText("PL automatic exposure (fixed gain)",
-               "PL 自动曝光（固定增益）"),
+        uiText("PL automatic exposure", "PL 自动曝光"),
         kAutomaticModeValue);
     camera_mode_[camera]->addItem(
         uiText("Manual", "手动"), kManualModeValue);
@@ -99,9 +102,30 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
     manual_exposure_us_[camera]->setSingleStep(10);
     manual_exposure_us_[camera]->setMinimumWidth(110);
     settings->addWidget(manual_exposure_us_[camera], camera + 1, 2);
+
+    sensor_gain_[camera] = new QDoubleSpinBox(group);
+    sensor_gain_[camera]->setObjectName(
+        QStringLiteral("camera%1GainSpin").arg(camera));
+    sensor_gain_[camera]->setRange(
+        static_cast<double>(prism::kCameraMinGainX1024) / 1024.0,
+        static_cast<double>(prism::kCameraMaxGainX1024) / 1024.0);
+    sensor_gain_[camera]->setDecimals(5);
+    sensor_gain_[camera]->setSingleStep(
+        static_cast<double>(prism::kCameraGainStepX1024) / 1024.0);
+    sensor_gain_[camera]->setValue(
+        static_cast<double>(prism::kCameraDefaultGainX1024) / 1024.0);
+    sensor_gain_[camera]->setSuffix(QStringLiteral("×"));
+    sensor_gain_[camera]->setMinimumWidth(105);
+    sensor_gain_[camera]->setToolTip(
+        uiText("SC130GS analog sensor gain; valid steps are 1/32×. Higher "
+               "gain brightens the image but also increases noise.",
+               "SC130GS 传感器模拟增益，步进为 1/32×。提高增益会提亮画面，"
+               "也会增加噪声。"));
+    settings->addWidget(sensor_gain_[camera], camera + 1, 3);
   }
   settings->setColumnStretch(1, 1);
   settings->setColumnStretch(2, 1);
+  settings->setColumnStretch(3, 1);
   group_layout->addLayout(settings);
 
   auto* actions = new QHBoxLayout();
@@ -109,6 +133,8 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       uiText("Refresh Exposure", "刷新曝光设置"), group);
   apply_button_ = new QPushButton(
       uiText("Apply Runtime Settings", "应用运行时设置"), group);
+  refresh_button_->setObjectName(QStringLiteral("cameraExposureRefreshButton"));
+  apply_button_->setObjectName(QStringLiteral("cameraExposureApplyButton"));
   refresh_button_->setMinimumWidth(120);
   apply_button_->setMinimumWidth(150);
   apply_button_->setToolTip(
@@ -137,6 +163,9 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
     connect(manual_exposure_us_[camera],
             QOverload<int>::of(&QSpinBox::valueChanged),
             this, [this](int) { refreshView(); });
+    connect(sensor_gain_[camera],
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double) { refreshView(); });
   }
 
   clear();
@@ -187,6 +216,7 @@ void CameraExposurePanel::setConfiguration(
   for (int camera = 0; camera < 4; ++camera) {
     const QSignalBlocker mode_blocker(camera_mode_[camera]);
     const QSignalBlocker exposure_blocker(manual_exposure_us_[camera]);
+    const QSignalBlocker gain_blocker(sensor_gain_[camera]);
     const bool automatic =
         (configuration.automatic_camera_mask & (1u << camera)) != 0u;
     camera_mode_[camera]->setCurrentIndex(
@@ -194,6 +224,10 @@ void CameraExposurePanel::setConfiguration(
             automatic ? kAutomaticModeValue : kManualModeValue));
     manual_exposure_us_[camera]->setValue(static_cast<int>(
         configuration.manual_exposure_time_us[static_cast<size_t>(camera)]));
+    sensor_gain_[camera]->setValue(
+        static_cast<double>(
+            configuration.gain_x1024[static_cast<size_t>(camera)]) /
+        1024.0);
   }
   refreshView();
 }
@@ -217,6 +251,9 @@ CameraExposurePanel::editedConfiguration() const {
     }
     edited.manual_exposure_time_us[static_cast<size_t>(camera)] =
         static_cast<uint32_t>(manual_exposure_us_[camera]->value());
+    edited.gain_x1024[static_cast<size_t>(camera)] =
+        static_cast<uint32_t>(
+            std::llround(sensor_gain_[camera]->value() * 1024.0));
   }
   return edited;
 }
@@ -228,7 +265,8 @@ bool CameraExposurePanel::isDirty() const {
              configuration_.automatic_camera_mask ||
          edited.target_brightness != configuration_.target_brightness ||
          edited.manual_exposure_time_us !=
-             configuration_.manual_exposure_time_us;
+             configuration_.manual_exposure_time_us ||
+         edited.gain_x1024 != configuration_.gain_x1024;
 }
 
 void CameraExposurePanel::setMessage(
@@ -299,6 +337,7 @@ void CameraExposurePanel::refreshView() {
     const bool manual =
         camera_mode_[camera]->currentData().toInt() == kManualModeValue;
     manual_exposure_us_[camera]->setEnabled(can_interact && manual);
+    sensor_gain_[camera]->setEnabled(can_interact);
   }
   refresh_button_->setEnabled(
       device_open_ && !busy_ && !controls_locked_);
