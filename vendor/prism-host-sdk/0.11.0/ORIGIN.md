@@ -35,9 +35,9 @@ through 30 fps. It must be used with Agent 0.11.0.
   macOS 13.0.
 - Host SDK CTest: 6/6 passed.
 - SDK file: `runtime/macos-arm64/libprism_usb_sdk.dylib`.
-- SDK SHA-256: `2edd7504146fb5d74c631171c7327d348af54522d28552747a6c88d3b46f41c7`.
+- SDK SHA-256: `6754ded41584578f8e62719f139c5a3c4115a7bc0a032738763218265e6034c1`.
 - libusb file: `runtime/macos-arm64/libusb-1.0.0.dylib`.
-- libusb SHA-256: `329a4c0ea465b3ebf81c4d95165d25739380b84fbc77c3c7af9e11a83f7cea08`.
+- libusb SHA-256: `6f65716831f5072bbae4286903c1efce7588ecdbf9d9d4df01122a30cded3b01`.
 - libusb source: official libusb 1.0.30 release archive, SHA-256
   `fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf`.
 - License file: `runtime/macos-arm64/libusb-COPYING.txt`, SHA-256

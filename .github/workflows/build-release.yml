@@ -184,8 +184,8 @@ jobs:
           sdk="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="2edd7504146fb5d74c631171c7327d348af54522d28552747a6c88d3b46f41c7"
-          libusb_expected="329a4c0ea465b3ebf81c4d95165d25739380b84fbc77c3c7af9e11a83f7cea08"
+          sdk_expected="6754ded41584578f8e62719f139c5a3c4115a7bc0a032738763218265e6034c1"
+          libusb_expected="6f65716831f5072bbae4286903c1efce7588ecdbf9d9d4df01122a30cded3b01"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
           if [ "$sdk_actual" != "$sdk_expected" ]; then
