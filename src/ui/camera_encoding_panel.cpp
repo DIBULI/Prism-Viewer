@@ -4,7 +4,6 @@
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/Qt>
-#include <QtWidgets/QComboBox>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
@@ -37,11 +36,15 @@ QString qualityHint(int quality) {
 }
 
 QString fpsHint(uint32_t fps) {
-  if (fps == 10u) {
+  if (fps <= 5u) {
     return uiText("Lowest USB bandwidth and processing load",
                   "USB 带宽与处理负载最低");
   }
-  if (fps == 20u) {
+  if (fps <= 15u) {
+    return uiText("Reduced bandwidth and processing load",
+                  "较低的 USB 带宽与处理负载");
+  }
+  if (fps <= 25u) {
     return uiText("Balanced motion smoothness and bandwidth",
                   "运动流畅度与带宽均衡");
   }
@@ -70,16 +73,15 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
 
   auto* fps_header = new QHBoxLayout();
   auto* fps_label = new QLabel(uiText("Frame rate", "相机帧率"), group);
-  fps_combo_ = new QComboBox(group);
-  fps_combo_->setObjectName(QStringLiteral("cameraFpsCombo"));
-  fps_combo_->addItem(QStringLiteral("10 FPS"), 10u);
-  fps_combo_->addItem(QStringLiteral("20 FPS"), 20u);
-  fps_combo_->addItem(QStringLiteral("30 FPS"), 30u);
-  fps_combo_->setCurrentIndex(2);
-  fps_combo_->setMinimumWidth(112);
+  fps_spin_ = new QSpinBox(group);
+  fps_spin_->setObjectName(QStringLiteral("cameraFpsSpin"));
+  fps_spin_->setRange(1, 30);
+  fps_spin_->setValue(30);
+  fps_spin_->setSuffix(QStringLiteral(" FPS"));
+  fps_spin_->setMinimumWidth(112);
   fps_header->addWidget(fps_label);
   fps_header->addStretch(1);
-  fps_header->addWidget(fps_combo_);
+  fps_header->addWidget(fps_spin_);
   group_layout->addLayout(fps_header);
 
   fps_hint_label_ = new QLabel(group);
@@ -154,13 +156,13 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
   connect(apply_button_, &QPushButton::clicked, this, [this]() {
     if (!on_apply) return;
     prism::DeviceConfiguration requested = configuration_;
-    requested.camera_fps = fps_combo_->currentData().toUInt();
+    requested.camera_fps = static_cast<uint32_t>(fps_spin_->value());
     requested.mjpeg_quality =
         static_cast<uint32_t>(quality_spin_->value());
     on_apply(requested);
   });
-  connect(fps_combo_,
-          QOverload<int>::of(&QComboBox::currentIndexChanged),
+  connect(fps_spin_,
+          QOverload<int>::of(&QSpinBox::valueChanged),
           this, [this](int) { refreshView(); });
   connect(quality_slider_, &QSlider::valueChanged, this, [this](int value) {
     const QSignalBlocker blocker(quality_spin_);
@@ -187,10 +189,10 @@ void CameraEncodingPanel::clear() {
   busy_message_.clear();
   operation_error_.clear();
   {
-    const QSignalBlocker fps_blocker(fps_combo_);
+    const QSignalBlocker fps_blocker(fps_spin_);
     const QSignalBlocker slider_blocker(quality_slider_);
     const QSignalBlocker spin_blocker(quality_spin_);
-    fps_combo_->setCurrentIndex(fps_combo_->findData(30u));
+    fps_spin_->setValue(30);
     quality_slider_->setValue(static_cast<int>(prism::kMjpegQualityDefault));
     quality_spin_->setValue(static_cast<int>(prism::kMjpegQualityDefault));
   }
@@ -226,11 +228,10 @@ void CameraEncodingPanel::setConfiguration(
   has_configuration_ = true;
   operation_error_.clear();
   {
-    const QSignalBlocker fps_blocker(fps_combo_);
+    const QSignalBlocker fps_blocker(fps_spin_);
     const QSignalBlocker slider_blocker(quality_slider_);
     const QSignalBlocker spin_blocker(quality_spin_);
-    fps_combo_->setCurrentIndex(
-        fps_combo_->findData(configuration.camera_fps));
+    fps_spin_->setValue(static_cast<int>(configuration.camera_fps));
     quality_slider_->setValue(static_cast<int>(configuration.mjpeg_quality));
     quality_spin_->setValue(static_cast<int>(configuration.mjpeg_quality));
   }
@@ -244,7 +245,8 @@ void CameraEncodingPanel::setError(const QString& error) {
 
 bool CameraEncodingPanel::isDirty() const {
   return has_configuration_ &&
-         (fps_combo_->currentData().toUInt() != configuration_.camera_fps ||
+         (static_cast<uint32_t>(fps_spin_->value()) !=
+              configuration_.camera_fps ||
           static_cast<uint32_t>(quality_spin_->value()) !=
               configuration_.mjpeg_quality);
 }
@@ -268,7 +270,8 @@ void CameraEncodingPanel::setMessage(
 }
 
 void CameraEncodingPanel::refreshView() {
-  fps_hint_label_->setText(fpsHint(fps_combo_->currentData().toUInt()));
+  fps_hint_label_->setText(
+      fpsHint(static_cast<uint32_t>(fps_spin_->value())));
   quality_hint_label_->setText(qualityHint(quality_spin_->value()));
   if (!device_open_) {
     setMessage(uiText("Open a device to configure camera stream settings",
@@ -311,7 +314,7 @@ void CameraEncodingPanel::refreshView() {
 
   const bool can_edit = device_open_ && has_configuration_ && !busy_ &&
                         !controls_locked_ && !capture_active_;
-  fps_combo_->setEnabled(can_edit);
+  fps_spin_->setEnabled(can_edit);
   quality_slider_->setEnabled(can_edit);
   quality_spin_->setEnabled(can_edit);
   refresh_button_->setEnabled(device_open_ && !busy_ && !controls_locked_ &&

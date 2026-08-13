@@ -9,7 +9,6 @@
 #include <functional>
 
 class QLabel;
-class QComboBox;
 class QPushButton;
 class QSlider;
 class QSpinBox;
@@ -42,7 +41,7 @@ class CameraEncodingPanel final : public QWidget {
   QLabel* message_label_ = nullptr;
   QLabel* fps_hint_label_ = nullptr;
   QLabel* quality_hint_label_ = nullptr;
-  QComboBox* fps_combo_ = nullptr;
+  QSpinBox* fps_spin_ = nullptr;
   QSlider* quality_slider_ = nullptr;
   QSpinBox* quality_spin_ = nullptr;
   QPushButton* refresh_button_ = nullptr;

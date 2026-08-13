@@ -1,15 +1,15 @@
 # Prism Host SDK 0.11.0 provenance
 
 This directory contains the public headers and frozen platform runtimes used by
-Prism Viewer 0.11.0. This release exposes Runtime API v4 and runtime SC130GS
-gain control through exposure protocol v2. The exposure range supports the
-10/20/30 FPS limits of 95000/45000/28333 us and defaults to 1x sensor gain.
-It must be used with Agent 0.11.0.
+Prism Viewer 0.11.0. This release exposes Runtime API v4, runtime SC130GS gain
+control, dynamic exposure ceilings, and every integer camera frame rate from 1
+through 30 fps. It must be used with Agent 0.11.0.
 
 ## Public headers
 
-- Source tree: `prism-sdk/usb-sdk/include` from the 0.11.0 exposure-window build.
-- Runtime build source commit: `499c347` (`feat(camera): derive exposure limits from frame rate`).
+- Source tree: `prism-sdk/usb-sdk/include` from the 0.11.0 FPS build.
+- Release source commit: `9cff8a701069684d51112bf1b3dc64b0c4ff8c0d`.
+- Windows build source commit: `9cff8a701069684d51112bf1b3dc64b0c4ff8c0d`.
 - The vendored include tree is an exact copy of the headers used to build all
   three runtimes.
 
@@ -18,16 +18,16 @@ It must be used with Agent 0.11.0.
 - Build environment: Ubuntu 24.04, GCC 13.3, Release.
 - Host SDK CTest: 6/6 passed.
 - File: `runtime/linux-x64/libprism_usb_sdk.so`.
-- SHA-256: `1fa6375dc8a606d9d7725d5ac39132cc73151250402b4c77fb7dad547cdfd9ce`.
+- SHA-256: `b03d1dc616e5a489f519fd7816805ef985542329019c05b517c01dc0cbdbe9d0`.
 
 ## Windows x86-64 runtime
 
 - Build environment: GitHub Actions `windows-2022`, MSVC x64, Release.
 - Host SDK CTest: 6/6 passed before artifact publication.
-- Workflow run: https://github.com/DIBULI/Prism-agent/actions/runs/31627472687
-- Source commit: `499c347` (`feat(camera): derive exposure limits from frame rate`).
+- Workflow run: https://github.com/DIBULI/Prism-agent/actions/runs/31666461070
+- Source commit: `9cff8a701069684d51112bf1b3dc64b0c4ff8c0d`.
 - File: `runtime/windows-x64/prism_usb_sdk.dll`.
-- SHA-256: `6fb130754480e31329ae43a8d9d8ede65e9d823e20da946d0e8c440cd5e2fe99`.
+- SHA-256: `e252a51b54fb03c4615ca54d14d7b217c810f99933518e6e83102e82de2df7f6`.
 
 ## macOS arm64 runtime
 
@@ -35,7 +35,7 @@ It must be used with Agent 0.11.0.
   macOS 13.0.
 - Host SDK CTest: 6/6 passed.
 - SDK file: `runtime/macos-arm64/libprism_usb_sdk.dylib`.
-- SDK SHA-256: `01267230552b62fd6b38345c275b26dba547edd2336fd0ba3cd9f6e5b6ab1251`.
+- SDK SHA-256: `2edd7504146fb5d74c631171c7327d348af54522d28552747a6c88d3b46f41c7`.
 - libusb file: `runtime/macos-arm64/libusb-1.0.0.dylib`.
 - libusb SHA-256: `329a4c0ea465b3ebf81c4d95165d25739380b84fbc77c3c7af9e11a83f7cea08`.
 - libusb source: official libusb 1.0.30 release archive, SHA-256

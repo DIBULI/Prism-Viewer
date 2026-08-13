@@ -1,7 +1,6 @@
 #include "ui/camera_encoding_panel.hpp"
 
 #include <QtWidgets/QApplication>
-#include <QtWidgets/QComboBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
@@ -24,7 +23,7 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   prism_viewer::ui::CameraEncodingPanel panel;
 
-  auto* fps = panel.findChild<QComboBox*>(QStringLiteral("cameraFpsCombo"));
+  auto* fps = panel.findChild<QSpinBox*>(QStringLiteral("cameraFpsSpin"));
   auto* quality =
       panel.findChild<QSpinBox*>(QStringLiteral("mjpegQualitySpin"));
   auto* slider =
@@ -36,6 +35,8 @@ int main(int argc, char** argv) {
   require(fps != nullptr && quality != nullptr && slider != nullptr &&
               apply != nullptr && refresh != nullptr,
           "camera stream controls are discoverable");
+  require(fps->minimum() == 1 && fps->maximum() == 30,
+          "camera FPS editor accepts every integer from 1 through 30");
   require(!fps->isEnabled() && !quality->isEnabled() && !apply->isEnabled(),
           "controls are disabled before a device is opened");
 
@@ -46,7 +47,7 @@ int main(int argc, char** argv) {
   loaded.persisted = true;
   panel.setDeviceOpen(true);
   panel.setConfiguration(loaded);
-  require(fps->currentData().toUInt() == 20u,
+  require(fps->value() == 20,
           "loaded camera FPS is selected");
   require(quality->value() == 92 && slider->value() == 92,
           "loaded JPEG quality is selected");
@@ -58,11 +59,11 @@ int main(int argc, char** argv) {
     apply_called = true;
     requested = configuration;
   };
-  fps->setCurrentIndex(fps->findData(10u));
+  fps->setValue(17);
   require(apply->isEnabled(), "changing FPS enables save");
   apply->click();
   require(apply_called, "save invokes the apply callback");
-  require(requested.camera_fps == 10u && requested.mjpeg_quality == 92u,
+  require(requested.camera_fps == 17u && requested.mjpeg_quality == 92u,
           "apply callback includes FPS and JPEG quality");
 
   panel.setConfiguration(requested);
@@ -71,7 +72,7 @@ int main(int argc, char** argv) {
           "changing JPEG quality keeps the slider synchronized");
   apply_called = false;
   apply->click();
-  require(apply_called && requested.camera_fps == 10u &&
+  require(apply_called && requested.camera_fps == 17u &&
               requested.mjpeg_quality == 84u,
           "quality-only changes retain the selected FPS");
 

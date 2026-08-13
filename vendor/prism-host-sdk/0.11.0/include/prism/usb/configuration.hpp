@@ -14,6 +14,10 @@ constexpr uint32_t kMjpegQualityMin = 1u;
 constexpr uint32_t kMjpegQualityMax = 99u;
 constexpr uint32_t kMjpegQualityDefault = 88u;
 
+constexpr bool isCameraFpsSupported(uint32_t fps) {
+  return fps >= 1u && fps <= 30u;
+}
+
 struct DeviceConfiguration {
   uint32_t camera_fps = 30;
   uint32_t imu_rate_hz = 1000;

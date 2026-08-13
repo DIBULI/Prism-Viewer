@@ -30,23 +30,24 @@ int main(int argc, char** argv) {
 
   auto* gain0 = panel.findChild<QDoubleSpinBox*>(
       QStringLiteral("camera0GainSpin"));
-  require(gain0 != nullptr, "camera 0 gain control is discoverable");
+  auto* exposure0 = panel.findChild<QSpinBox*>(
+      QStringLiteral("camera0ExposureSpin"));
+  require(gain0 != nullptr && exposure0 != nullptr,
+          "camera 0 exposure and gain controls are discoverable");
   require(!gain0->isEnabled(), "gain is disabled before opening a device");
   require(near(gain0->minimum(), 1.0) && near(gain0->maximum(), 124.0) &&
               near(gain0->singleStep(), 0.03125),
           "gain range and 1/32x step match SC130GS");
   require(near(gain0->value(), 1.0), "default sensor gain is 1x");
-  auto* exposure0 = panel.findChild<QSpinBox*>(
-      QStringLiteral("camera0ExposureSpin"));
-  require(exposure0 != nullptr, "camera 0 exposure control is discoverable");
+  panel.setCameraFps(1u);
+  require(exposure0->maximum() == 995000,
+          "1 FPS exposes the 995 ms manual ceiling");
+  panel.setCameraFps(15u);
+  require(exposure0->maximum() == 61666,
+          "15 FPS exposes the derived manual ceiling");
+  panel.setCameraFps(30u);
   require(exposure0->maximum() == 28333,
-          "30 fps exposure maximum is frame period minus 5 ms");
-  panel.setCameraFps(20u);
-  require(exposure0->maximum() == 45000,
-          "20 fps exposure maximum is frame period minus 5 ms");
-  panel.setCameraFps(10u);
-  require(exposure0->maximum() == 95000,
-          "10 fps exposure maximum uses the 32-bit path");
+          "30 FPS exposes the 28.333 ms manual ceiling");
 
   prism::ExposureConfiguration loaded;
   loaded.gain_x1024 = {1024u, 2048u, 4096u, 126976u};

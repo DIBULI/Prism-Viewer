@@ -181,6 +181,7 @@ void CameraExposurePanel::clear() {
   busy_ = false;
   busy_message_.clear();
   operation_error_.clear();
+  setCameraFps(30u);
   refreshView();
 }
 
