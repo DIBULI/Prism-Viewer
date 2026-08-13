@@ -212,11 +212,18 @@ if(WIN32)
   )
   set_target_properties(prism-viewer PROPERTIES WIN32_EXECUTABLE TRUE)
 elseif(APPLE)
+  set(PRISM_MACOS_APP_ICON
+      "${CMAKE_CURRENT_LIST_DIR}/branding/prism-viewer.icns")
+  target_sources(prism-viewer PRIVATE "${PRISM_MACOS_APP_ICON}")
+  set_source_files_properties("${PRISM_MACOS_APP_ICON}" PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources"
+  )
   set_target_properties(prism-viewer PROPERTIES
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_BUNDLE_NAME "Prism Viewer"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.dibuli.prism-viewer"
+    MACOSX_BUNDLE_ICON_FILE "prism-viewer.icns"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     OUTPUT_NAME "Prism-Viewer"
   )

@@ -12,6 +12,8 @@ Prism 的核心图形是“单束光进入棱镜并分成四路”：
 - `prism-mark.svg`：正方形产品标识，透明画布外无额外留白；
 - `prism-logo.svg`：标识与 PRISM 字标的横向组合；
 - `prism-mark-256.png`：应用运行时图标和 Linux 安装图标；
+- `prism-viewer.icns`：macOS App Bundle 的多分辨率 Finder、Dock 和
+  Launchpad 图标；
 - `prism-viewer.ico`：兼容旧版 Windows resource compiler 的 executable 图标；
   Viewer 运行时使用 256 px PNG，因此标题栏和任务栏仍使用高清源。
 
