@@ -142,7 +142,11 @@ using prism_viewer::common::toQString;
 using prism_viewer::common::uiText;
 using prism_viewer::common::wideToQString;
 using prism_viewer::dataset::DatasetImageEntry;
+using prism_viewer::dataset::DatasetTimestampSummary;
+using prism_viewer::dataset::DatasetValidationResult;
+using prism_viewer::dataset::DatasetValidationSeverity;
 using prism_viewer::dataset::RosbagFormat;
+using prism_viewer::dataset::validatePrismDataset;
 using prism_viewer::dataset::TumFileSummary;
 using prism_viewer::dataset::inspectDatasetCameraIndexes;
 using prism_viewer::dataset::loadDatasetImage;
@@ -2123,6 +2127,14 @@ class MainWindow : public QMainWindow {
     auto* dataset_controls = new QHBoxLayout();
     dataset_open_button_ = new QPushButton(
         uiText("Open Dataset...", "打开数据集..."), dataset_page_);
+    dataset_validate_button_ = new QPushButton(
+        uiText("Validate Dataset...", "验证数据集..."), dataset_page_);
+    dataset_validate_button_->setObjectName(
+        QStringLiteral("datasetValidateButton"));
+    dataset_validate_button_->setToolTip(uiText(
+        "Check manifests, required streams, timestamps, container ranges, "
+        "JPEG payloads, and LiDAR record sizes",
+        "检查清单、必需数据流、时间戳、容器边界、JPEG 数据和雷达记录长度"));
     dataset_export_rosbag_button_ = new QPushButton(
         uiText("Export ROS Bag...", "导出 ROS Bag..."), dataset_page_);
     dataset_export_rosbag_button_->setEnabled(false);
@@ -2143,6 +2155,7 @@ class MainWindow : public QMainWindow {
         "background: #ffffff; border: 1px solid #d9e2ef; border-radius: 6px;"
         "padding: 7px 10px; color: #344054;"));
     dataset_controls->addWidget(dataset_open_button_);
+    dataset_controls->addWidget(dataset_validate_button_);
     dataset_controls->addWidget(dataset_export_rosbag_button_);
     dataset_controls->addWidget(dataset_path_label_, 1);
     dataset_layout->addLayout(dataset_controls);
@@ -2540,6 +2553,8 @@ class MainWindow : public QMainWindow {
             this, [this]() { stopImuRecording(); });
     connect(dataset_open_button_, &QPushButton::clicked,
             this, [this]() { openRecordedDataset(); });
+    connect(dataset_validate_button_, &QPushButton::clicked,
+            this, [this]() { validateRecordedDataset(); });
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) { showDatasetFrame(frame); });
     connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
@@ -3944,6 +3959,11 @@ class MainWindow : public QMainWindow {
           !loaded_dataset_root_.isEmpty() && !imu_recording &&
           !worker_running_ && !rosbag_export_running_);
     }
+    if (dataset_validate_button_ != nullptr) {
+      dataset_validate_button_->setEnabled(
+          !dataset_recorder_.isActive() && !worker_running_ &&
+          !rosbag_export_running_);
+    }
   }
 
   void setRunningUi(bool running) {
@@ -4390,6 +4410,148 @@ class MainWindow : public QMainWindow {
     if (!directory.isEmpty()) loadRecordedDataset(directory, true);
   }
 
+  QString describeTimestampValidation(
+      const DatasetTimestampSummary& summary) const {
+    if (summary.rows == 0u) return uiText("not present", "不存在");
+    if (summary.rows == 1u) {
+      return uiText("1 record", "1 条记录");
+    }
+    return uiText(
+               "%1 records, median/min/max interval %2 / %3 / %4 us, "
+               "discontinuities %5",
+               "%1 条记录，中位/最小/最大间隔 %2 / %3 / %4 us，跳变 %5")
+        .arg(summary.rows)
+        .arg(summary.median_interval_us)
+        .arg(summary.minimum_interval_us)
+        .arg(summary.maximum_interval_us)
+        .arg(summary.discontinuities);
+  }
+
+  QString formatDatasetValidationReport(
+      const DatasetValidationResult& validation,
+      const QString& directory) const {
+    QString report =
+        uiText("Dataset: %1\nResult: %2\nFormat: %3\nChecked records: "
+               "%4\nErrors: %5  Warnings: %6\n\n",
+               "数据集：%1\n结果：%2\n格式：%3\n已检查记录：%4\n"
+               "错误：%5  警告：%6\n\n")
+            .arg(directory)
+            .arg(validation.valid
+                     ? (validation.warningCount() == 0u
+                            ? uiText("VALID", "有效")
+                            : uiText("VALID WITH WARNINGS", "有效，但有警告"))
+                     : uiText("INVALID", "无效"))
+            .arg(validation.format_version == 0u
+                     ? uiText("legacy / unspecified", "旧版或未声明")
+                     : QStringLiteral("prism-dataset-v%1")
+                           .arg(validation.format_version))
+            .arg(validation.checked_records)
+            .arg(validation.errorCount())
+            .arg(validation.warningCount());
+    for (size_t camera = 0; camera < validation.cameras.size(); ++camera) {
+      report += QStringLiteral("Camera%1: %2\n")
+                    .arg(camera)
+                    .arg(describeTimestampValidation(
+                        validation.cameras[camera]));
+    }
+    for (size_t imu = 0; imu < validation.onboard_imus.size(); ++imu) {
+      report += QStringLiteral("IMU%1: %2\n")
+                    .arg(imu)
+                    .arg(describeTimestampValidation(
+                        validation.onboard_imus[imu]));
+    }
+    report += QStringLiteral("LiDAR: %1\nLiDAR IMU: %2\n")
+                  .arg(describeTimestampValidation(validation.lidar),
+                       describeTimestampValidation(validation.lidar_imu));
+    if (!validation.issues.empty()) report += QLatin1Char('\n');
+    for (const auto& issue : validation.issues) {
+      const QString severity =
+          issue.severity == DatasetValidationSeverity::Error
+              ? uiText("ERROR", "错误")
+              : uiText("WARNING", "警告");
+      QString location = toQString(issue.file);
+      if (issue.line != 0u) {
+        location += QStringLiteral(":%1").arg(issue.line);
+      }
+      if (!location.isEmpty()) location += QStringLiteral(": ");
+      report += QStringLiteral("[%1] %2%3\n")
+                    .arg(severity, location, toQString(issue.message));
+    }
+    return report;
+  }
+
+  DatasetValidationResult runDatasetValidation(
+      const QString& directory, bool show_progress) {
+    QProgressDialog progress(
+        uiText("Validating dataset...", "正在验证数据集……"),
+        uiText("Cancel", "取消"), 0, 0, this);
+    progress.setWindowTitle(
+        uiText("Validate Dataset", "验证数据集"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(show_progress ? 0 : 1000);
+    if (show_progress) progress.show();
+    auto result = validatePrismDataset(
+        toFilesystemPath(directory),
+        [&progress](uint64_t checked, const std::string& file) {
+          progress.setLabelText(
+              uiText("Checking %1\n%2 records", "正在检查 %1\n%2 条记录")
+                  .arg(toQString(file))
+                  .arg(checked));
+          QApplication::processEvents();
+        },
+        [&progress]() {
+          QApplication::processEvents();
+          return progress.wasCanceled();
+        });
+    progress.close();
+    return result;
+  }
+
+  void validateRecordedDataset() {
+    QString directory = loaded_dataset_root_;
+    if (directory.isEmpty()) {
+      directory = QFileDialog::getExistingDirectory(
+          this, uiText("Select Prism dataset to validate",
+                       "选择要验证的 Prism 数据集"),
+          QDir::homePath(),
+          QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
+    }
+    if (directory.isEmpty()) return;
+    const DatasetValidationResult validation =
+        runDatasetValidation(directory, true);
+    if (validation.cancelled) return;
+    const QString report = formatDatasetValidationReport(validation, directory);
+    appendLog(QStringLiteral("Dataset validation %1: %2 errors=%3 warnings=%4")
+                  .arg(validation.valid ? QStringLiteral("passed")
+                                        : QStringLiteral("failed"),
+                       directory)
+                  .arg(validation.errorCount())
+                  .arg(validation.warningCount()));
+    QMessageBox message(this);
+    message.setWindowTitle(uiText("Dataset validation", "数据集验证"));
+    message.setIcon(!validation.valid
+                        ? QMessageBox::Critical
+                        : (validation.warningCount() != 0u
+                               ? QMessageBox::Warning
+                               : QMessageBox::Information));
+    message.setText(
+        validation.valid
+            ? (validation.warningCount() == 0u
+                   ? uiText("The dataset is valid.", "数据集有效。")
+                   : uiText("The dataset is valid, but timestamp or data "
+                            "warnings were found.",
+                            "数据集有效，但发现时间戳或数据警告。"))
+            : uiText("The dataset is invalid.", "数据集无效。"));
+    message.setInformativeText(
+        uiText("Checked %1 records. Errors: %2, warnings: %3.",
+               "已检查 %1 条记录。错误：%2，警告：%3。")
+            .arg(validation.checked_records)
+            .arg(validation.errorCount())
+            .arg(validation.warningCount()));
+    message.setDetailedText(report);
+    message.exec();
+  }
+
   void exportLoadedDatasetRosbag(RosbagFormat format) {
     if (loaded_dataset_root_.isEmpty() || worker_running_ ||
         rosbag_export_running_ ||
@@ -4597,7 +4759,6 @@ class MainWindow : public QMainWindow {
     loaded_dataset_root_ = directory;
     dataset_path_label_->setText(directory);
     dataset_path_label_->setToolTip(directory);
-
     if (has_cameras) {
       dataset_summary_label_->setText(
           uiText("Loaded %1 complete four-camera frame sets | onboard "
@@ -5978,6 +6139,7 @@ class MainWindow : public QMainWindow {
   std::array<QImage, 4> latest_camera_images_{};
   uint32_t latest_camera_frame_id_ = 0;
   QPushButton* dataset_open_button_ = nullptr;
+  QPushButton* dataset_validate_button_ = nullptr;
   QPushButton* dataset_export_rosbag_button_ = nullptr;
   QLabel* dataset_path_label_ = nullptr;
   QLabel* dataset_summary_label_ = nullptr;
@@ -6379,6 +6541,10 @@ int runViewerApplication(int argc, char** argv) {
     const bool mode_ok =
         summary.mode == (test_imu_only ? DatasetRecordingMode::ImuOnly
                                        : DatasetRecordingMode::Full);
+    const DatasetValidationResult recorded_validation =
+        validatePrismDataset(test_root);
+    const bool recorded_validation_ok =
+        recorded_validation.valid && recorded_validation.errorCount() == 0u;
 
     // Exercise the complementary file set as well. A capture started without
     // LiDAR must not leave an empty point index, LiDAR IMU stream, or manifest
@@ -6431,6 +6597,8 @@ int runViewerApplication(int argc, char** argv) {
       }
       no_lidar_ok = no_lidar_ok && manifest_lidar_none &&
                     manifest_lidar_imu_none;
+      no_lidar_ok =
+          no_lidar_ok && validatePrismDataset(no_lidar_root).valid;
     }
     const bool expected_full_unsynced_drops =
         test_imu_only ||
@@ -6491,7 +6659,8 @@ int runViewerApplication(int argc, char** argv) {
                          unsynced_only_fails && in_progress_manifest_ok &&
                          summary.sample_count[0] == 1 &&
                          summary.sample_count[1] == 1 && browser_load_ok &&
-                         auxiliary_streams_ok && no_lidar_ok;
+                         auxiliary_streams_ok && no_lidar_ok &&
+                         recorded_validation_ok;
     std::cout << (test_imu_only ? "imu_only_recorder_self_test="
                                 : "dataset_recorder_self_test=")
               << (success ? "PASS" : "FAIL")
@@ -6517,6 +6686,8 @@ int runViewerApplication(int argc, char** argv) {
               << " lidar_imu_v6_source="
               << (lidar_imu_v6_source_ok ? "PASS" : "FAIL")
               << " browser_load=" << (browser_load_ok ? "PASS" : "FAIL")
+              << " validation="
+              << (recorded_validation_ok ? "PASS" : "FAIL")
               << " no_lidar=" << (no_lidar_ok ? "PASS" : "FAIL")
               << " queue_order="
               << (writer_queue_order_ok ? "PASS" : "FAIL")
