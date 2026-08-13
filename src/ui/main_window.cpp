@@ -3,6 +3,7 @@
 #include "communication/device_session.hpp"
 #include "control/operation_controller.hpp"
 #include "dataset/dataset_browser.hpp"
+#include "dataset/imu_time_alignment.hpp"
 #include "dataset/rosbag_exporter.hpp"
 #include "imu_units.hpp"
 #include "imu_timestamp_policy.hpp"
@@ -145,7 +146,10 @@ using prism_viewer::dataset::DatasetImageEntry;
 using prism_viewer::dataset::DatasetTimestampSummary;
 using prism_viewer::dataset::DatasetValidationResult;
 using prism_viewer::dataset::DatasetValidationSeverity;
+using prism_viewer::dataset::ImuTimeAlignmentResult;
+using prism_viewer::dataset::ImuTimeAlignmentStatus;
 using prism_viewer::dataset::RosbagFormat;
+using prism_viewer::dataset::analyzeImu0LidarImuTimeOffset;
 using prism_viewer::dataset::validatePrismDataset;
 using prism_viewer::dataset::TumFileSummary;
 using prism_viewer::dataset::inspectDatasetCameraIndexes;
@@ -2135,6 +2139,15 @@ class MainWindow : public QMainWindow {
         "Check manifests, required streams, timestamps, container ranges, "
         "JPEG payloads, and LiDAR record sizes",
         "检查清单、必需数据流、时间戳、容器边界、JPEG 数据和雷达记录长度"));
+    dataset_imu_alignment_button_ = new QPushButton(
+        uiText("Analyze IMU Offset...", "分析 IMU 时间偏移..."),
+        dataset_page_);
+    dataset_imu_alignment_button_->setObjectName(
+        QStringLiteral("datasetImuAlignmentButton"));
+    dataset_imu_alignment_button_->setToolTip(uiText(
+        "Estimate the LiDAR IMU timestamp offset relative to onboard IMU0 "
+        "from synchronized gyroscope motion",
+        "利用同步的陀螺仪运动，估算雷达 IMU 相对板载 IMU0 的时间戳偏移"));
     dataset_export_rosbag_button_ = new QPushButton(
         uiText("Export ROS Bag...", "导出 ROS Bag..."), dataset_page_);
     dataset_export_rosbag_button_->setEnabled(false);
@@ -2156,6 +2169,7 @@ class MainWindow : public QMainWindow {
         "padding: 7px 10px; color: #344054;"));
     dataset_controls->addWidget(dataset_open_button_);
     dataset_controls->addWidget(dataset_validate_button_);
+    dataset_controls->addWidget(dataset_imu_alignment_button_);
     dataset_controls->addWidget(dataset_export_rosbag_button_);
     dataset_controls->addWidget(dataset_path_label_, 1);
     dataset_layout->addLayout(dataset_controls);
@@ -2555,6 +2569,8 @@ class MainWindow : public QMainWindow {
             this, [this]() { openRecordedDataset(); });
     connect(dataset_validate_button_, &QPushButton::clicked,
             this, [this]() { validateRecordedDataset(); });
+    connect(dataset_imu_alignment_button_, &QPushButton::clicked,
+            this, [this]() { analyzeLoadedDatasetImuOffset(); });
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) { showDatasetFrame(frame); });
     connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
@@ -3964,6 +3980,13 @@ class MainWindow : public QMainWindow {
           !dataset_recorder_.isActive() && !worker_running_ &&
           !rosbag_export_running_);
     }
+    if (dataset_imu_alignment_button_ != nullptr) {
+      dataset_imu_alignment_button_->setEnabled(
+          !loaded_dataset_root_.isEmpty() &&
+          dataset_has_imu_alignment_inputs_ &&
+          !dataset_recorder_.isActive() && !worker_running_ &&
+          !rosbag_export_running_);
+    }
   }
 
   void setRunningUi(bool running) {
@@ -4552,6 +4575,104 @@ class MainWindow : public QMainWindow {
     message.exec();
   }
 
+  void analyzeLoadedDatasetImuOffset() {
+    if (loaded_dataset_root_.isEmpty() ||
+        !dataset_has_imu_alignment_inputs_ || worker_running_ ||
+        rosbag_export_running_ || dataset_recorder_.isActive()) {
+      return;
+    }
+    QProgressDialog progress(
+        uiText("Analyzing IMU0 and LiDAR IMU motion...",
+               "正在分析 IMU0 与雷达 IMU 的运动……"),
+        uiText("Cancel", "取消"), 0, 0, this);
+    progress.setWindowTitle(
+        uiText("IMU Time Alignment", "IMU 时间对齐"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.show();
+    const ImuTimeAlignmentResult result = analyzeImu0LidarImuTimeOffset(
+        toFilesystemPath(loaded_dataset_root_),
+        [&progress](uint64_t checked, const std::string& file) {
+          progress.setLabelText(
+              uiText("Analyzing %1\n%2 operations",
+                     "正在分析 %1\n%2 次操作")
+                  .arg(toQString(file))
+                  .arg(checked));
+          QApplication::processEvents();
+        },
+        [&progress]() {
+          QApplication::processEvents();
+          return progress.wasCanceled();
+        });
+    progress.close();
+    if (result.cancelled) return;
+
+    QString details =
+        uiText("Dataset: %1\nIMU0 samples: %2\nLiDAR IMU samples: %3\n"
+               "Common RK time: %4 to %5 us\nAnalyzed duration: %6 s\n"
+               "Motion standard deviation: %7 deg/s\n"
+               "Motion peak-to-peak: %8 deg/s\nCorrelation: %9\n"
+               "Correlation peak width: %10 us",
+               "数据集：%1\nIMU0 样本：%2\n雷达 IMU 样本：%3\n"
+               "共同 RK 时间：%4 至 %5 us\n分析时长：%6 s\n"
+               "运动标准差：%7 deg/s\n运动峰峰值：%8 deg/s\n"
+               "相关系数：%9\n相关峰宽度：%10 us")
+            .arg(loaded_dataset_root_)
+            .arg(result.imu0_rows)
+            .arg(result.lidar_imu_rows)
+            .arg(result.common_start_us)
+            .arg(result.common_end_us)
+            .arg(result.analyzed_duration_s, 0, 'f', 3)
+            .arg(result.motion_stddev_dps, 0, 'f', 3)
+            .arg(result.motion_peak_to_peak_dps, 0, 'f', 3)
+            .arg(result.correlation, 0, 'f', 6)
+            .arg(result.correlation_peak_width_us, 0, 'f', 1);
+    QMessageBox message(this);
+    message.setWindowTitle(uiText("IMU Time Alignment", "IMU 时间对齐"));
+    if (result.valid) {
+      message.setIcon(QMessageBox::Information);
+      message.setText(
+          uiText("LiDAR IMU timestamp offset relative to IMU0: %1 us",
+                 "雷达 IMU 相对 IMU0 的时间戳偏移：%1 us")
+              .arg(result.offset_us, 0, 'f', 1));
+      message.setInformativeText(uiText(
+          "Definition: offset = LiDAR IMU timestamp - IMU0 timestamp for "
+          "the same motion. Subtract %1 us from LiDAR IMU timestamps to "
+          "align them to IMU0. The dataset was not modified.",
+          "定义：对于同一运动，偏移 = 雷达 IMU 时间戳 - IMU0 时间戳。"
+          "将雷达 IMU 时间戳减去 %1 us 即可对齐到 IMU0。数据集未被修改。")
+              .arg(result.offset_us, 0, 'f', 1));
+      appendLog(QStringLiteral(
+                    "Dataset IMU time alignment: lidar_imu_minus_imu0=%1 us "
+                    "correlation=%2 peak_width=%3 us root=%4")
+                    .arg(result.offset_us, 0, 'f', 1)
+                    .arg(result.correlation, 0, 'f', 6)
+                    .arg(result.correlation_peak_width_us, 0, 'f', 1)
+                    .arg(loaded_dataset_root_));
+    } else {
+      message.setIcon(QMessageBox::Warning);
+      message.setText(uiText("A reliable IMU time offset could not be "
+                             "estimated.",
+                             "无法可靠估算 IMU 时间偏移。"));
+      const bool insufficient_motion =
+          result.status == ImuTimeAlignmentStatus::InsufficientMotion;
+      message.setInformativeText(
+          insufficient_motion
+              ? uiText("Record at least 10 seconds while rotating the whole "
+                       "device around multiple axes, then try again. The "
+                       "dataset was not modified.",
+                       "请在绕多个轴转动整机的同时至少录制 10 秒，然后重试。"
+                       "数据集未被修改。")
+              : toQString(result.message));
+      appendLog(QStringLiteral("Dataset IMU time alignment unavailable: %1 "
+                               "root=%2")
+                    .arg(toQString(result.message), loaded_dataset_root_));
+    }
+    details += QStringLiteral("\nstatus: %1").arg(toQString(result.message));
+    message.setDetailedText(details);
+    message.exec();
+  }
+
   void exportLoadedDatasetRosbag(RosbagFormat format) {
     if (loaded_dataset_root_.isEmpty() || worker_running_ ||
         rosbag_export_running_ ||
@@ -4757,6 +4878,8 @@ class MainWindow : public QMainWindow {
     dataset_camera_entries_ = std::move(camera_entries);
     dataset_frame_count_ = complete_frames;
     loaded_dataset_root_ = directory;
+    dataset_has_imu_alignment_inputs_ =
+        imu0.rows != 0u && lidar_imu.rows != 0u;
     dataset_path_label_->setText(directory);
     dataset_path_label_->setToolTip(directory);
     if (has_cameras) {
@@ -6140,6 +6263,7 @@ class MainWindow : public QMainWindow {
   uint32_t latest_camera_frame_id_ = 0;
   QPushButton* dataset_open_button_ = nullptr;
   QPushButton* dataset_validate_button_ = nullptr;
+  QPushButton* dataset_imu_alignment_button_ = nullptr;
   QPushButton* dataset_export_rosbag_button_ = nullptr;
   QLabel* dataset_path_label_ = nullptr;
   QLabel* dataset_summary_label_ = nullptr;
@@ -6153,6 +6277,7 @@ class MainWindow : public QMainWindow {
   size_t dataset_frame_count_ = 0;
   int dataset_current_frame_ = 0;
   QString loaded_dataset_root_;
+  bool dataset_has_imu_alignment_inputs_ = false;
   bool rosbag_export_running_ = false;
   QPlainTextEdit* meta_text_ = nullptr;
   QPlainTextEdit* log_text_ = nullptr;
@@ -6720,15 +6845,21 @@ int runViewerApplication(int argc, char** argv) {
     }
     const QSize minimum =
         window.minimumSizeHint().expandedTo(window.minimumSize());
+    const auto* imu_alignment_button = window.findChild<QPushButton*>(
+        QStringLiteral("datasetImuAlignmentButton"));
     const bool success =
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
-        minimum.height() <= kMaximumMainWindowMinimumHeight;
+        minimum.height() <= kMaximumMainWindowMinimumHeight &&
+        imu_alignment_button != nullptr;
     std::cout << "main_window_layout_self_test="
               << (success ? "PASS" : "FAIL")
               << " minimum=" << minimum.width() << "x"
               << minimum.height() << " limit="
               << kMaximumMainWindowMinimumWidth << "x"
-              << kMaximumMainWindowMinimumHeight << "\n";
+              << kMaximumMainWindowMinimumHeight
+              << " imu_alignment_button="
+              << (imu_alignment_button != nullptr ? "PASS" : "FAIL")
+              << "\n";
     return success ? 0 : 12;
   }
   window.show();
