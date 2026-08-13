@@ -75,14 +75,6 @@ timestamp_s ax_m_s2 ay_m_s2 az_m_s2 gx_rad_s gy_rad_s gz_rad_s model device_type
 导入器继续接受旧数据集的七字段紧凑行和 v5 的六字段来源后缀；v6 录制器始终
 写入上述完整来源信息。
 
-Viewer 的“本地数据集”页面在同时存在 `imu0.tum` 和 `lidar_imu.tum` 时，可用
-“分析 IMU 时间偏移”离线估算两路时钟的相对偏移。分析会在两路共同的 RK 时间
-范围内选择运动最明显的区间，插值到共同网格，并在考虑两颗 IMU 安装方向不同的
-情况下相关三轴陀螺仪运动。结果定义为
-`LiDAR IMU timestamp - IMU0 timestamp`；要对齐到 IMU0，应从雷达 IMU 时间戳
-减去结果。该功能只报告偏移，不修改数据集或 ROS Bag。静止、共同时间不足、相关峰
-不明确或偏移超出 ±50 ms 时不会输出看似有效的数值。
-
 ## 相机
 
 `cam0.tum` 到 `cam3.tum` 每行固定格式：

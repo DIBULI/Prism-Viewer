@@ -125,7 +125,6 @@ add_executable(prism-viewer
   src/communication/prism_runtime.cpp
   src/control/operation_controller.cpp
   src/dataset/dataset_browser.cpp
-  src/dataset/imu_time_alignment.cpp
   src/dataset/rosbag_exporter.cpp
   src/main.cpp
   src/transfer/camera_frame_assembler.cpp
@@ -335,21 +334,6 @@ if(BUILD_TESTING)
       rosbag-exporter-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME rosbag-exporter COMMAND rosbag-exporter-test)
-
-  add_executable(imu-time-alignment-test
-    src/dataset/imu_time_alignment.cpp
-    tests/imu_time_alignment_test.cpp
-  )
-  target_include_directories(imu-time-alignment-test PRIVATE src)
-  target_compile_features(imu-time-alignment-test PRIVATE cxx_std_17)
-  if(MSVC)
-    target_compile_options(
-      imu-time-alignment-test PRIVATE /W4 /permissive- /utf-8)
-  else()
-    target_compile_options(
-      imu-time-alignment-test PRIVATE -Wall -Wextra -Wpedantic)
-  endif()
-  add_test(NAME imu-time-alignment COMMAND imu-time-alignment-test)
 
   add_test(
     NAME dataset-recorder-full
