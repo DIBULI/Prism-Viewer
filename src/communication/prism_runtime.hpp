@@ -46,8 +46,12 @@ class Client {
   static std::vector<prism::DeviceInfo> enumerate(
       uint16_t vid = prism::kDefaultVid, uint16_t pid = prism::kDefaultPid);
   void openDevice(const prism::DeviceInfo& device);
+  void openTcpDevice(
+      const std::string& host,
+      uint16_t port = prism::kDefaultWifiTcpPort);
   void closeDevice();
   bool isOpen() const;
+  bool isTcpTransport() const noexcept;
   std::wstring path() const;
   std::wstring serialNumber() const;
   bool keepaliveEnabled() const;

@@ -31,14 +31,19 @@ class Client {
                                            uint16_t pid = kDefaultPid);
   static Client openFirst(uint16_t vid = kDefaultVid, uint16_t pid = kDefaultPid);
   static Client open(const DeviceInfo& device);
+  static Client openTcp(const std::string& host,
+                        uint16_t port = kDefaultWifiTcpPort);
 
   // Explicit device lifecycle for applications that keep one Client object.
   // The static factories provide the same strict version-checked lifecycle.
   void openFirstDevice(uint16_t vid = kDefaultVid, uint16_t pid = kDefaultPid);
   void openDevice(const DeviceInfo& device);
+  void openTcpDevice(const std::string& host,
+                     uint16_t port = kDefaultWifiTcpPort);
   void closeDevice();
 
   bool isOpen() const;
+  bool isTcpTransport() const noexcept;
   std::wstring path() const;
   std::wstring serialNumber() const;
   void close();
@@ -70,6 +75,7 @@ class Client {
   // WiFi hotspot control shares the USB receive endpoint with live streams.
   // Both calls are therefore rejected while any streaming transfer is active.
   WifiHotspotStatus wifiHotspotStatus();
+  // Mutation is USB-only so a TCP client cannot disable its own hotspot.
   WifiHotspotStatus setWifiHotspotEnabled(bool enabled);
 
   // Persistent device configuration. Rate writes are idle-only and are

@@ -25,6 +25,7 @@ class DeviceSession {
  public:
   const std::vector<prism::DeviceInfo>& refresh();
   OpenedDevice open(size_t device_index);
+  OpenedDevice openTcp(const std::string& host, uint16_t port);
   void close() noexcept;
 
   bool isOpen() const;

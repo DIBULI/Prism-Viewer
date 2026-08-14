@@ -75,8 +75,14 @@ std::vector<prism::DeviceInfo> Client::enumerate(uint16_t vid, uint16_t pid) {
 void Client::openDevice(const prism::DeviceInfo& d) {
   api_->open_device(handle_, d);
 }
+void Client::openTcpDevice(const std::string& host, uint16_t port) {
+  api_->open_tcp_device(handle_, host, port);
+}
 void Client::closeDevice() { api_->close_device(handle_); }
 bool Client::isOpen() const { return api_->is_open(handle_); }
+bool Client::isTcpTransport() const noexcept {
+  return api_->is_tcp_transport(handle_);
+}
 std::wstring Client::path() const { return api_->path(handle_); }
 std::wstring Client::serialNumber() const { return api_->serial_number(handle_); }
 bool Client::keepaliveEnabled() const {
