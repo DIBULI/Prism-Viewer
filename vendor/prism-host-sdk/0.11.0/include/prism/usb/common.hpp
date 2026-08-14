@@ -11,8 +11,6 @@ constexpr uint16_t kDefaultVid = 0x2207;
 constexpr uint16_t kDefaultPid = 0x1201;
 constexpr uint8_t kProtocolVersion = 10;
 constexpr uint32_t kDefaultKeepaliveIntervalMs = 1000;
-constexpr uint16_t kDefaultWifiTcpPort = 56555;
-constexpr uint32_t kWifiTcpMaxCameraFps = 20;
 
 enum class AgentUpdateResult : uint16_t {
   None = 0,
@@ -44,7 +42,6 @@ enum class FrameType : uint8_t {
   LidarNetworkGet = 0x14,
   LidarNetworkSet = 0x15,
   LidarNetworkProbe = 0x16,
-  HostDisconnect = 0x17,
   UpgradeBegin = 0x20,
   UpgradeChunk = 0x21,
   UpgradeCommit = 0x22,

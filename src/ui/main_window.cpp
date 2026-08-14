@@ -1744,41 +1744,10 @@ class MainWindow : public QMainWindow {
     device_label->setStyleSheet(QStringLiteral(
         "color: #52637a; font-weight: 600;"));
     header->addWidget(device_label);
-    transport_selector_ = new QComboBox(header_card);
-    transport_selector_->setObjectName(QStringLiteral("transportSelector"));
-    transport_selector_->addItem(QStringLiteral("USB"), 0);
-    transport_selector_->addItem(
-        uiText("5 GHz WiFi (TCP)", "5GHz WiFi（TCP）"), 1);
-    transport_selector_->setToolTip(uiText(
-        "USB and WiFi TCP may stay connected; capture has one owner",
-        "USB 与 WiFi TCP 可同时连接；采集流只有一个所有者"));
     device_selector_ = new QComboBox(header_card);
     device_selector_->setMinimumWidth(250);
     device_selector_->setToolTip(
         uiText("Select a Prism USB serial number", "选择 Prism USB 序列号"));
-    wifi_tcp_host_ = new QLineEdit(header_card);
-    wifi_tcp_host_->setObjectName(QStringLiteral("wifiTcpHost"));
-    wifi_tcp_host_->setText(QStringLiteral("10.42.200.1"));
-    wifi_tcp_host_->setPlaceholderText(QStringLiteral("10.42.200.1"));
-    wifi_tcp_host_->setMinimumWidth(145);
-    wifi_tcp_host_->setToolTip(
-        uiText("RK hotspot IPv4 address", "RK 热点 IPv4 地址"));
-    wifi_tcp_port_ = new QSpinBox(header_card);
-    wifi_tcp_port_->setObjectName(QStringLiteral("wifiTcpPort"));
-    wifi_tcp_port_->setRange(1024, 65535);
-    wifi_tcp_port_->setValue(prism::kDefaultWifiTcpPort);
-    wifi_tcp_port_->setToolTip(
-        uiText("Prism TCP transport port", "Prism TCP 传输端口"));
-    QSettings connection_settings(
-        QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"));
-    wifi_tcp_host_->setText(connection_settings.value(
-        QStringLiteral("connection/tcp_host"),
-        QStringLiteral("10.42.200.1")).toString());
-    wifi_tcp_port_->setValue(connection_settings.value(
-        QStringLiteral("connection/tcp_port"),
-        prism::kDefaultWifiTcpPort).toInt());
-    transport_selector_->setCurrentIndex(connection_settings.value(
-        QStringLiteral("connection/mode"), 0).toInt() == 1 ? 1 : 0);
     refresh_devices_button_ = new QPushButton(uiText("Refresh", "刷新"), header_card);
     open_device_button_ = new QPushButton(uiText("Open Device", "打开设备"), header_card);
     close_device_button_ = new QPushButton(uiText("Close Device", "关闭设备"), header_card);
@@ -1834,10 +1803,7 @@ class MainWindow : public QMainWindow {
     imu_record_stop_button_->setEnabled(false);
     host_time_sync_button_->setEnabled(false);
     system_upgrade_button_->setEnabled(false);
-    header->addWidget(transport_selector_);
     header->addWidget(device_selector_);
-    header->addWidget(wifi_tcp_host_);
-    header->addWidget(wifi_tcp_port_);
     header->addWidget(refresh_devices_button_);
     header->addWidget(open_device_button_);
     header->addWidget(close_device_button_);
@@ -2456,13 +2422,6 @@ class MainWindow : public QMainWindow {
             this, [this]() { openDevice(); });
     connect(refresh_devices_button_, &QPushButton::clicked,
             this, [this]() { refreshDeviceList(); });
-    connect(transport_selector_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-              QSettings(QStringLiteral("DIBULI"),
-                        QStringLiteral("PrismViewer"))
-                  .setValue(QStringLiteral("connection/mode"), index == 1 ? 1 : 0);
-              refreshDeviceList();
-            });
     connect(language_selector_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
               const QString language = language_selector_->itemData(index).toString();
@@ -3062,16 +3021,6 @@ class MainWindow : public QMainWindow {
 
     const QString previous_serial = device_selector_->currentData().toString();
     device_selector_->clear();
-    if (transport_selector_->currentIndex() == 1) {
-      status_label_->setText(uiText(
-          "WiFi TCP ready; connect to the Prism 5 GHz hotspot, then open %1:%2",
-          "WiFi TCP 已就绪；请连接 Prism 5GHz 热点，然后打开 %1:%2")
-          .arg(wifi_tcp_host_->text().trimmed())
-          .arg(wifi_tcp_port_->value()));
-      setStatusAppearance(false);
-      refreshControls();
-      return;
-    }
     try {
       device_session_.refresh();
       int restore_index = -1;
@@ -3110,37 +3059,18 @@ class MainWindow : public QMainWindow {
     }
     operation_controller_.join();
 
-    const bool tcp = transport_selector_->currentIndex() == 1;
     const int selected = device_selector_->currentIndex();
-    if (!tcp &&
-        (selected < 0 || selected >= static_cast<int>(devices_.size()))) {
+    if (selected < 0 || selected >= static_cast<int>(devices_.size())) {
       showOpenDeviceHint(uiText("Camera/IMU", "相机/IMU"));
       return;
     }
 
     setStatusAppearance(false);
-    status_label_->setText(
-        tcp ? uiText("Opening WiFi TCP device", "正在打开 WiFi TCP 设备")
-            : uiText("Opening USB device", "正在打开 USB 设备"));
-    appendLog(tcp ? QStringLiteral("Opening device through 5 GHz WiFi TCP")
-                  : QStringLiteral("Opening USB device through prism_usb_sdk"));
+    status_label_->setText(uiText("Opening USB device", "正在打开 USB 设备"));
+    appendLog(QStringLiteral("Opening USB device through prism_usb_sdk"));
     try {
-      prism_viewer::communication::OpenedDevice opened;
-      if (tcp) {
-        const QString host = wifi_tcp_host_->text().trimmed();
-        if (host.isEmpty()) {
-          throw std::invalid_argument("WiFi TCP host is empty");
-        }
-        QSettings settings(QStringLiteral("DIBULI"),
-                           QStringLiteral("PrismViewer"));
-        settings.setValue(QStringLiteral("connection/tcp_host"), host);
-        settings.setValue(QStringLiteral("connection/tcp_port"),
-                          wifi_tcp_port_->value());
-        opened = device_session_.openTcp(
-            host.toStdString(), static_cast<uint16_t>(wifi_tcp_port_->value()));
-      } else {
-        opened = device_session_.open(static_cast<size_t>(selected));
-      }
+      const auto opened =
+          device_session_.open(static_cast<size_t>(selected));
       const auto& hello = opened.hello;
       const auto& versions = opened.versions;
       const auto& device_info = opened.device_info;
@@ -3220,11 +3150,8 @@ class MainWindow : public QMainWindow {
     }
     if (dataset_recorder_.isActive()) stopImuRecording();
     if (client_.isOpen()) {
-      const bool was_tcp = client_.isTcpTransport();
       client_.closeDevice();
-      appendLog(was_tcp
-                    ? QStringLiteral("WiFi TCP device closed")
-                    : QStringLiteral("USB device closed"));
+      appendLog(QStringLiteral("USB device closed"));
     }
     latest_device_info_valid_ = false;
     latest_device_versions_valid_ = false;
@@ -3949,18 +3876,9 @@ class MainWindow : public QMainWindow {
                       encoding_busy || lidar_network_busy;
     const bool upgrading = upgrade_running_;
     const bool device_open = client_.isOpen();
-    const bool tcp_open = device_open && client_.isTcpTransport();
-    const bool tcp_selected = transport_selector_->currentIndex() == 1;
-    const bool selection_valid = tcp_selected ||
-        (device_selector_->currentIndex() >= 0 &&
-         device_selector_->currentIndex() < static_cast<int>(devices_.size()));
-    transport_selector_->setEnabled(!busy && !device_open);
+    const bool selection_valid = device_selector_->currentIndex() >= 0 &&
+        device_selector_->currentIndex() < static_cast<int>(devices_.size());
     device_selector_->setEnabled(!busy && !device_open);
-    device_selector_->setVisible(!tcp_selected);
-    wifi_tcp_host_->setEnabled(!busy && !device_open && tcp_selected);
-    wifi_tcp_host_->setVisible(tcp_selected);
-    wifi_tcp_port_->setEnabled(!busy && !device_open && tcp_selected);
-    wifi_tcp_port_->setVisible(tcp_selected);
     language_selector_->setEnabled(!busy && !device_open);
     refresh_devices_button_->setEnabled(!busy && !device_open);
     if (camera_page_ != nullptr) camera_page_->setEnabled(device_open);
@@ -3975,7 +3893,7 @@ class MainWindow : public QMainWindow {
           lidar_enabled_checkbox_->isChecked());
     }
     const bool lidar_network_controls_enabled =
-        device_open && !tcp_open && !busy && !upgrading &&
+        device_open && !busy && !upgrading &&
         !client_.streamTransferActive();
     if (lidar_network_enabled_checkbox_ != nullptr) {
       lidar_network_enabled_checkbox_->setEnabled(
@@ -3997,26 +3915,26 @@ class MainWindow : public QMainWindow {
       wifi_hotspot_panel_->setDeviceOpen(device_open);
       wifi_hotspot_panel_->setControlsLocked(
           running || time_syncing || exposure_busy || encoding_busy ||
-          upgrading || client_.isTcpTransport() ||
+          upgrading ||
           client_.streamTransferActive());
     }
     if (device_info_panel_ != nullptr) {
       device_info_panel_->setDeviceOpen(device_open);
       device_info_panel_->setControlsLocked(
-          tcp_open || busy || upgrading || client_.streamTransferActive());
+          busy || upgrading || client_.streamTransferActive());
     }
     if (camera_exposure_panel_ != nullptr) {
       camera_exposure_panel_->setDeviceOpen(device_open);
       camera_exposure_panel_->setCaptureActive(running && !upgrading);
       camera_exposure_panel_->setControlsLocked(
-          tcp_open || time_syncing || wifi_busy || encoding_busy || upgrading);
+          time_syncing || wifi_busy || encoding_busy || upgrading);
     }
     if (camera_encoding_panel_ != nullptr) {
       camera_encoding_panel_->setDeviceOpen(device_open);
       camera_encoding_panel_->setCaptureActive(
           running || client_.streamTransferActive());
       camera_encoding_panel_->setControlsLocked(
-          tcp_open || time_syncing || wifi_busy || exposure_busy || upgrading);
+          time_syncing || wifi_busy || exposure_busy || upgrading);
     }
     if (imu0_selector_ != nullptr) imu0_selector_->setEnabled(device_open);
     if (imu1_selector_ != nullptr) imu1_selector_->setEnabled(device_open);
@@ -4027,12 +3945,11 @@ class MainWindow : public QMainWindow {
     start_button_->setEnabled(!busy && device_open);
     stop_button_->setEnabled(running);
     host_time_sync_button_->setEnabled(
-        !tcp_open && !busy && device_open && !client_.streamTransferActive());
-    system_upgrade_button_->setEnabled(!tcp_open && !busy && device_open);
+        !busy && device_open && !client_.streamTransferActive());
+    system_upgrade_button_->setEnabled(!busy && device_open);
     const bool imu_recording = dataset_recorder_.isActive();
     if (imu_record_start_button_ != nullptr) {
-      imu_record_start_button_->setEnabled(
-          running && !tcp_open && !imu_recording);
+      imu_record_start_button_->setEnabled(running && !imu_recording);
     }
     if (imu_record_stop_button_ != nullptr) {
       imu_record_stop_button_->setEnabled(imu_recording);
@@ -5519,17 +5436,7 @@ class MainWindow : public QMainWindow {
        * camera_fps selected in the Stream panel.
        */
       aggregate_stream_start_attempted = true;
-      uint32_t transport_fps = 0u;
-      if (client_.isTcpTransport()) {
-        const auto saved = client_.deviceConfiguration();
-        transport_fps = std::min<uint32_t>(
-            prism::kWifiTcpMaxCameraFps, saved.camera_fps);
-        appendLog(QStringLiteral(
-            "WiFi TCP capture limited to %1 FPS (saved device value=%2)")
-                      .arg(transport_fps)
-                      .arg(saved.camera_fps));
-      }
-      const auto status = client_.startVideo1280x1024(transport_fps);
+      const auto status = client_.startVideo1280x1024();
       video_started = true;
       appendLog(QStringLiteral("Video started cameras=%1 fps=%2 size=%3x%4")
                     .arg(status.cameras)
@@ -6192,9 +6099,6 @@ class MainWindow : public QMainWindow {
   }
 
   QComboBox* device_selector_ = nullptr;
-  QComboBox* transport_selector_ = nullptr;
-  QLineEdit* wifi_tcp_host_ = nullptr;
-  QSpinBox* wifi_tcp_port_ = nullptr;
   QPushButton* refresh_devices_button_ = nullptr;
   QPushButton* open_device_button_ = nullptr;
   QPushButton* close_device_button_ = nullptr;
@@ -6816,31 +6720,15 @@ int runViewerApplication(int argc, char** argv) {
     }
     const QSize minimum =
         window.minimumSizeHint().expandedTo(window.minimumSize());
-    const auto* transport_selector =
-        window.findChild<QComboBox*>(QStringLiteral("transportSelector"));
-    const auto* tcp_host =
-        window.findChild<QLineEdit*>(QStringLiteral("wifiTcpHost"));
-    const auto* tcp_port =
-        window.findChild<QSpinBox*>(QStringLiteral("wifiTcpPort"));
     const bool success =
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
-        minimum.height() <= kMaximumMainWindowMinimumHeight &&
-        transport_selector != nullptr && transport_selector->count() == 2 &&
-        tcp_host != nullptr && tcp_port != nullptr &&
-        tcp_port->minimum() <= prism::kDefaultWifiTcpPort &&
-        tcp_port->maximum() >= prism::kDefaultWifiTcpPort;
+        minimum.height() <= kMaximumMainWindowMinimumHeight;
     std::cout << "main_window_layout_self_test="
               << (success ? "PASS" : "FAIL")
               << " minimum=" << minimum.width() << "x"
               << minimum.height() << " limit="
               << kMaximumMainWindowMinimumWidth << "x"
-              << kMaximumMainWindowMinimumHeight
-              << " tcp_controls="
-              << (transport_selector != nullptr && tcp_host != nullptr &&
-                          tcp_port != nullptr
-                      ? "PASS"
-                      : "FAIL")
-              << "\n";
+              << kMaximumMainWindowMinimumHeight << "\n";
     return success ? 0 : 12;
   }
   window.show();

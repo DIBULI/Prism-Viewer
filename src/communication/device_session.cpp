@@ -35,26 +35,6 @@ OpenedDevice DeviceSession::open(size_t device_index) {
   }
 }
 
-OpenedDevice DeviceSession::openTcp(const std::string& host, uint16_t port) {
-  client_.openTcpDevice(host, port);
-  try {
-    OpenedDevice opened;
-    opened.hello = client_.hello();
-    opened.versions = client_.deviceVersions();
-    opened.device_info = client_.deviceInfo();
-    opened.configuration = client_.deviceConfiguration();
-    opened.exposure = client_.cameraExposure();
-    opened.network = client_.networkInfo();
-    opened.path = client_.path();
-    opened.serial_number.assign(opened.device_info.product_serial.begin(),
-                                opened.device_info.product_serial.end());
-    return opened;
-  } catch (...) {
-    client_.closeDevice();
-    throw;
-  }
-}
-
 void DeviceSession::close() noexcept {
   try {
     client_.closeDevice();

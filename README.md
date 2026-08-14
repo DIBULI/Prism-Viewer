@@ -16,14 +16,6 @@ LiDAR IMU. Absolute UTC accuracy is not required for stream alignment;
 unsynchronized callbacks remain available for live preview but are never
 written as measurement timestamps.
 
-The header transport selector can open either a directly attached USB device
-or the RK board at `10.42.200.1:56555` through the Prism 5 GHz hotspot using
-TCP. USB and WiFi TCP may stay connected concurrently, while one client owns
-the active capture session. WiFi mode exposes Camera preview plus IMU/LiDAR
-streaming, locks configuration/update/hotspot controls, and caps Camera at
-20 FPS. USB continues to use the device's saved 1--30 FPS value. Switching
-transports does not rewrite that saved value.
-
 The Viewer does not compile or fetch Host SDK sources. The matching binary SDK
 is versioned directly in this repository under
 `vendor/prism-host-sdk/0.11.0`:
