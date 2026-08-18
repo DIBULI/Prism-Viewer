@@ -7,7 +7,7 @@ It provides four-camera MJPEG preview, two onboard IMUs plus optional
 Mid-360/Mid-360S IMU recording, LiDAR point-cloud display with adjustable point
 rendering plus top/reset view presets, switchable live onboard-IMU display
 units, per-camera runtime SC130GS exposure/gain control, device configuration,
-system upgrade, dataset browsing, and ROS1/ROS2
+system upgrade, timestamp-driven dataset playback at 0.25x through 8x, and ROS1/ROS2
 bag export. IMU display units
 are independent from the fixed SI units used by datasets and ROS bags. New v6
 recordings use RK `CLOCK_REALTIME` with a Unix epoch as the
@@ -15,6 +15,14 @@ common device time domain for camera, onboard IMU, LiDAR point batches, and
 LiDAR IMU. Absolute UTC accuracy is not required for stream alignment;
 unsynchronized callbacks remain available for live preview but are never
 written as measurement timestamps.
+
+At startup, the Viewer scans for Prism USB devices. When exactly one device is
+present it opens that device and automatically synchronizes RK
+`CLOCK_REALTIME`, the Ethernet PHC, and the hardware RTC from the host clock
+before capture is enabled. The clock status strip reports progress and the
+final result. With multiple devices, select one and click **Open Device**; the
+same one-time automatic synchronization runs after the first successful open.
+If it fails, capture remains available and **Set Device Time** can retry it.
 
 The Viewer does not compile or fetch Host SDK sources. The matching binary SDK
 is versioned directly in this repository under
@@ -95,5 +103,5 @@ git push origin v0.11.0
 ## Documentation
 
 - [Code structure](ARCHITECTURE.md)
-- [Dataset format](docs/dataset-format.md)
+- [Dataset directory structure and format](docs/dataset-format.md)
 - [ROS1/ROS2 bag export](docs/rosbag-export.md)

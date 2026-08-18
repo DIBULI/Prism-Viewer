@@ -4,7 +4,44 @@ Viewer 顶部的“录制...”菜单提供“完整数据集”和“仅录制 
 `imu0` 和 `imu1` 始终表示 sensor-board 上的两路板载 IMU；选择
 Mid-360/Mid-360S 后，还可以把雷达内置 IMU 单独记录为 `lidar_imu.tum`。
 
-## 当前布局（v6）
+## 结构概览
+
+一个 Prism 数据集是一个必须整体保存和移动的目录，内部文件分为四层：
+
+```text
+dataset.info                         录制清单、格式版本、完成状态和计数
+
+cam0.tum ─┐
+cam1.tum ─┼──> camera-data-0000.bin 相机索引按偏移和长度引用 JPEG 容器
+cam2.tum ─┤        ...
+cam3.tum ─┘
+
+lidar.tum ───> lidar-data-0000.bin   点云索引按偏移和长度引用点数据容器
+
+imu0.tum                            直接保存板载 IMU0 的 SI 数据
+imu1.tum                            直接保存板载 IMU1 的 SI 数据
+lidar_imu.tum                       直接保存可选的雷达内置 IMU SI 数据
+```
+
+| 文件 | 作用 | 是否直接包含传感器数据 |
+|---|---|---|
+| `dataset.info` | 描述版本、录制模式、时间域、存储格式、样本计数和丢弃计数 | 否 |
+| `cam0.tum`…`cam3.tum` | 四路相机索引；每行定位一个 JPEG，并保存实际曝光时间 | 否 |
+| `camera-data-NNNN.bin` | 多个相机 JPEG 顺序拼接而成的二进制容器 | 是 |
+| `imu0.tum`、`imu1.tum` | 两路板载 IMU 的时间戳、加速度和角速度 | 是 |
+| `lidar.tum` | LiDAR 点云批次索引及原始时间来源信息 | 否 |
+| `lidar-data-NNNN.bin` | 多个笛卡尔点云批次顺序拼接而成的二进制容器 | 是 |
+| `lidar_imu.tum` | Mid-360/Mid-360S 内置 IMU 及其时间来源信息 | 是 |
+
+索引中的 `container_path` 是相对于数据集根目录的容器文件名，例如
+`camera-data-0000.bin`。`byte_offset` 从容器文件开头以字节计数，
+`byte_size` 是该记录占用的字节数。因此不能只复制 `.tum` 文件，也不能单独重命名
+容器文件；应始终移动或归档整个数据集目录。以 `#` 开头的 `.tum` 行是注释，
+其余行的第一列都是十进制秒时间戳，精度为 1 微秒。
+
+## 当前完整布局（v6）
+
+下面是“完整数据集”并启用 LiDAR 时可能出现的最大文件集合：
 
 ```text
 dataset/
@@ -22,12 +59,94 @@ dataset/
 └── lidar-data-0000.bin    # 仅完整模式并启用 LiDAR 时包含点数据
 ```
 
+容器接近 8 GiB 后会按编号创建下一个文件，例如
+`camera-data-0001.bin`、`lidar-data-0001.bin`。编号只表示容器分卷顺序，
+不表示相机编号或 LiDAR 设备编号。
+
+四种录制组合的实际目录结构如下：
+
+### 完整数据集，不启用 LiDAR
+
+```text
+dataset/
+├── dataset.info
+├── imu0.tum
+├── imu1.tum
+├── cam0.tum
+├── cam1.tum
+├── cam2.tum
+├── cam3.tum
+└── camera-data-0000.bin
+```
+
+### 完整数据集，启用 LiDAR
+
+```text
+dataset/
+├── dataset.info
+├── imu0.tum
+├── imu1.tum
+├── lidar_imu.tum
+├── cam0.tum
+├── cam1.tum
+├── cam2.tum
+├── cam3.tum
+├── lidar.tum
+├── camera-data-0000.bin
+└── lidar-data-0000.bin
+```
+
+### 仅录制 IMU，不启用 LiDAR
+
+```text
+dataset/
+├── dataset.info
+├── imu0.tum
+└── imu1.tum
+```
+
+### 仅录制 IMU，启用 LiDAR
+
+```text
+dataset/
+├── dataset.info
+├── imu0.tum
+├── imu1.tum
+└── lidar_imu.tum
+```
+
 不同录制选项对应的内容如下：
 
 | 录制模式 | 未选择 LiDAR | 选择 LiDAR |
 |---|---|---|
 | 完整数据集 | 四路相机 + 两路板载 IMU | 四路相机 + 两路板载 IMU + 点云 + 雷达内置 IMU |
 | 仅录制 IMU | 两路板载 IMU | 两路板载 IMU + 雷达内置 IMU；不录制相机和点云 |
+
+## `dataset.info` 清单
+
+`dataset.info` 是逐行 `key=value` 的 UTF-8 文本文件。下面是完整模式并启用
+LiDAR 时的简化示例；实际文件还会包含每路计数和丢弃统计：
+
+```ini
+format=prism-dataset-v6
+complete=1
+recording_mode=full
+image_storage=chunk-v1
+camera_index=chunk-v2-with-actual-exposure
+lidar_storage=cartesian-mm-chunk-v2-with-time-source
+lidar_imu_storage=tum-si-v2-with-time-source
+time_domain=rk-clock-realtime
+timestamp_epoch=unix
+timestamp_resolution_us=1
+camera_timestamp_reference=trig0-rising-edge
+lidar_timestamp_reference=batch-base
+point_deskew=none
+```
+
+录制开始时先原子写入 `complete=0`；只有停止录制、关闭文件并确认必需数据流
+非空后，才会替换为 `complete=1`。因此消费程序应先检查 `format`、
+`recording_mode` 和 `complete`，再依据各个 `*_storage` 字段决定哪些可选文件
+必须存在。不要仅凭目录中是否碰巧残留某个文件来判断数据集类型。
 
 相机 JPEG 不再分别创建小文件，而是按完整四相机帧集顺序追加到不超过
 8 GiB 的容器中。这样可以避免 exFAT 大分配单元导致的空间和写放大，也会显著
@@ -86,7 +205,8 @@ timestamp_s container_path byte_offset byte_size actual_exposure_us
 `byte_offset` 和 `byte_size` 都以字节为单位。索引只会在对应 JPEG 已完整写入
 容器后提交。`actual_exposure_us` 是该相机生成这一帧时真正采用的曝光时间，
 来自同一 `frame_id` 的 `VIDEO_META.exposure_us[camera]`；PL 自动曝光和手动
-曝光模式下都必须为 `200..15000` 微秒，不能写入默认值或 `0`。
+曝光模式下都必须位于当前运行时曝光上下限及帧率允许的曝光上限内，不能写入
+默认值或 `0`。
 
 四路相机使用同一个帧集时间戳，只采用有效视频元数据中的
 `trigger_time_ns / 1000`；该字段是已同步到 RK `CLOCK_REALTIME` epoch 的四路
@@ -151,9 +271,11 @@ little-endian int32，随后是 uint8 reflectivity、uint8 tag 和两个保留�
 
 Viewer 的“数据集”Tab 可以在不打开 USB 设备的情况下选择上述目录。完整
 数据集的时间轴按四路索引中共同存在的完整帧集数量显示；当前帧栏和图像提示
-会显示四路实际曝光时间。点击任意缩略图可在独立窗口中放大并在四路相机之间
-切换。缺少容器偏移、长度或实际曝光字段的数据集会被拒绝。仅 IMU 数据集没有
-相机时间轴，但仍可查看样本统计并导出 ROS Bag。
+会显示四路实际曝光时间。可以逐帧前后移动，也可以按原始相邻帧时间戳以
+0.25x、0.5x、1x、2x、4x 或 8x 速度播放；播放速度只改变浏览节奏，不修改
+文件时间戳或 ROS Bag 导出结果。点击任意缩略图可在独立窗口中放大并在四路
+相机之间切换。缺少容器偏移、长度或实际曝光字段的数据集会被拒绝。仅 IMU
+数据集没有相机时间轴，但仍可查看样本统计并导出 ROS Bag。
 
 “导出 ROS Bag...”可把 v3/v4/v5/v6 数据集转换成标准 ROS1 Bag 或 ROS2
 rosbag2 SQLite3 目录；详细映射见 [`rosbag-export.md`](rosbag-export.md)。

@@ -125,6 +125,7 @@ add_executable(prism-viewer
   src/communication/prism_runtime.cpp
   src/control/operation_controller.cpp
   src/dataset/dataset_browser.cpp
+  src/dataset/dataset_playback_timing.cpp
   src/dataset/rosbag_exporter.cpp
   src/main.cpp
   src/transfer/camera_frame_assembler.cpp
@@ -325,6 +326,21 @@ if(BUILD_TESTING)
       dataset-browser-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME dataset-browser COMMAND dataset-browser-test)
+
+  add_executable(dataset-playback-timing-test
+    src/dataset/dataset_playback_timing.cpp
+    tests/dataset_playback_timing_test.cpp
+  )
+  target_include_directories(dataset-playback-timing-test PRIVATE src)
+  target_compile_features(dataset-playback-timing-test PRIVATE cxx_std_17)
+  if(MSVC)
+    target_compile_options(
+      dataset-playback-timing-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(
+      dataset-playback-timing-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME dataset-playback-timing COMMAND dataset-playback-timing-test)
 
   add_executable(rosbag-exporter-test
     src/dataset/rosbag_exporter.cpp

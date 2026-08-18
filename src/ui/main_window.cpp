@@ -3,6 +3,7 @@
 #include "communication/device_session.hpp"
 #include "control/operation_controller.hpp"
 #include "dataset/dataset_browser.hpp"
+#include "dataset/dataset_playback_timing.hpp"
 #include "dataset/rosbag_exporter.hpp"
 #include "imu_units.hpp"
 #include "imu_timestamp_policy.hpp"
@@ -146,6 +147,8 @@ using prism_viewer::dataset::DatasetTimestampSummary;
 using prism_viewer::dataset::DatasetValidationResult;
 using prism_viewer::dataset::DatasetValidationSeverity;
 using prism_viewer::dataset::RosbagFormat;
+using prism_viewer::dataset::datasetPlaybackDelayMs;
+using prism_viewer::dataset::sanitizeDatasetPlaybackRate;
 using prism_viewer::dataset::validatePrismDataset;
 using prism_viewer::dataset::TumFileSummary;
 using prism_viewer::dataset::inspectDatasetCameraIndexes;
@@ -2175,14 +2178,66 @@ class MainWindow : public QMainWindow {
     dataset_layout->addWidget(dataset_summary_label_);
 
     auto* dataset_navigation = new QHBoxLayout();
+    dataset_previous_frame_button_ = new QPushButton(
+        uiText("Previous", "上一帧"), dataset_page_);
+    dataset_previous_frame_button_->setObjectName(
+        QStringLiteral("datasetPreviousFrameButton"));
+    dataset_previous_frame_button_->setEnabled(false);
+    dataset_playback_button_ = new QPushButton(
+        uiText("Play", "播放"), dataset_page_);
+    dataset_playback_button_->setObjectName(
+        QStringLiteral("datasetPlaybackButton"));
+    dataset_playback_button_->setEnabled(false);
+    dataset_next_frame_button_ = new QPushButton(
+        uiText("Next", "下一帧"), dataset_page_);
+    dataset_next_frame_button_->setObjectName(
+        QStringLiteral("datasetNextFrameButton"));
+    dataset_next_frame_button_->setEnabled(false);
+    auto* dataset_playback_speed_label = new QLabel(
+        uiText("Speed", "速度"), dataset_page_);
+    dataset_playback_speed_selector_ = new QComboBox(dataset_page_);
+    dataset_playback_speed_selector_->setObjectName(
+        QStringLiteral("datasetPlaybackSpeedCombo"));
+    for (const double rate : {0.25, 0.5, 1.0, 2.0, 4.0, 8.0}) {
+      dataset_playback_speed_selector_->addItem(
+          QStringLiteral("%1x").arg(rate, 0, 'g', 3), rate);
+    }
+    dataset_playback_speed_selector_->setEnabled(false);
+    bool stored_playback_rate_ok = false;
+    const double stored_playback_rate =
+        QSettings(QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"))
+            .value(QStringLiteral("dataset/playback_rate"), 1.0)
+            .toDouble(&stored_playback_rate_ok);
+    const double initial_playback_rate = sanitizeDatasetPlaybackRate(
+        stored_playback_rate_ok ? stored_playback_rate : 1.0);
+    int initial_playback_index =
+        dataset_playback_speed_selector_->findData(initial_playback_rate);
+    if (initial_playback_index < 0) {
+      initial_playback_index =
+          dataset_playback_speed_selector_->findData(1.0);
+    }
+    dataset_playback_speed_selector_->setCurrentIndex(
+        initial_playback_index);
+    dataset_playback_rate_ =
+        dataset_playback_speed_selector_->currentData().toDouble();
     dataset_frame_label_ = new QLabel(
         uiText("Frame: -", "帧：-"), dataset_page_);
     dataset_frame_slider_ = new QSlider(Qt::Horizontal, dataset_page_);
     dataset_frame_slider_->setEnabled(false);
     dataset_frame_slider_->setRange(0, 0);
+    dataset_navigation->addWidget(dataset_previous_frame_button_);
+    dataset_navigation->addWidget(dataset_playback_button_);
+    dataset_navigation->addWidget(dataset_next_frame_button_);
+    dataset_navigation->addSpacing(6);
+    dataset_navigation->addWidget(dataset_playback_speed_label);
+    dataset_navigation->addWidget(dataset_playback_speed_selector_);
+    dataset_navigation->addSpacing(8);
     dataset_navigation->addWidget(dataset_frame_label_);
     dataset_navigation->addWidget(dataset_frame_slider_, 1);
     dataset_layout->addLayout(dataset_navigation);
+    dataset_playback_timer_ = new QTimer(this);
+    dataset_playback_timer_->setSingleShot(true);
+    dataset_playback_timer_->setTimerType(Qt::PreciseTimer);
 
     auto* dataset_images_group = new QGroupBox(
         uiText("Recorded camera frame set", "已记录的四路相机帧集"),
@@ -2556,7 +2611,51 @@ class MainWindow : public QMainWindow {
     connect(dataset_validate_button_, &QPushButton::clicked,
             this, [this]() { validateRecordedDataset(); });
     connect(dataset_frame_slider_, &QSlider::valueChanged,
-            this, [this](int frame) { showDatasetFrame(frame); });
+            this, [this](int frame) {
+              showDatasetFrame(frame);
+              updateDatasetPlaybackControls();
+              if (dataset_playback_active_) scheduleDatasetPlaybackStep();
+            });
+    connect(dataset_previous_frame_button_, &QPushButton::clicked, this,
+            [this]() {
+              if (dataset_current_frame_ > 0) {
+                dataset_frame_slider_->setValue(dataset_current_frame_ - 1);
+              }
+            });
+    connect(dataset_playback_button_, &QPushButton::clicked, this,
+            [this]() {
+              setDatasetPlaybackActive(!dataset_playback_active_);
+            });
+    connect(dataset_next_frame_button_, &QPushButton::clicked, this,
+            [this]() {
+              if (static_cast<size_t>(dataset_current_frame_ + 1) <
+                  dataset_frame_count_) {
+                dataset_frame_slider_->setValue(dataset_current_frame_ + 1);
+              }
+            });
+    connect(dataset_playback_speed_selector_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+              if (index < 0) return;
+              dataset_playback_rate_ = sanitizeDatasetPlaybackRate(
+                  dataset_playback_speed_selector_->itemData(index)
+                      .toDouble());
+              QSettings(QStringLiteral("DIBULI"),
+                        QStringLiteral("PrismViewer"))
+                  .setValue(QStringLiteral("dataset/playback_rate"),
+                            dataset_playback_rate_);
+              if (dataset_playback_active_) scheduleDatasetPlaybackStep();
+            });
+    connect(dataset_playback_timer_, &QTimer::timeout, this, [this]() {
+      if (!dataset_playback_active_) return;
+      const size_t next_frame =
+          static_cast<size_t>(dataset_current_frame_) + 1u;
+      if (next_frame >= dataset_frame_count_) {
+        setDatasetPlaybackActive(false);
+        return;
+      }
+      dataset_frame_slider_->setValue(static_cast<int>(next_frame));
+    });
     connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
       QWidget* page = tabs_->widget(index);
       if (!client_.isOpen() &&
@@ -3051,6 +3150,44 @@ class MainWindow : public QMainWindow {
       appendLog(QStringLiteral("Device scan failed: %1").arg(ex.what()));
     }
     refreshControls();
+
+    if (automatic_time_sync_pending_) {
+      if (devices_.empty()) {
+        host_time_sync_label_->setText(
+            uiText("Automatic time sync: waiting for a Prism device",
+                   "自动时间同步：正在等待 Prism 设备"));
+        host_time_sync_label_->setStyleSheet(QStringLiteral(
+            "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+      } else if (devices_.size() == 1u &&
+                 !automatic_device_open_scheduled_) {
+        automatic_device_open_scheduled_ = true;
+        host_time_sync_label_->setText(
+            uiText("Automatic time sync: opening the detected Prism device...",
+                   "自动时间同步：正在打开检测到的 Prism 设备……"));
+        host_time_sync_label_->setStyleSheet(QStringLiteral(
+            "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+        QTimer::singleShot(0, this, [this]() {
+          automatic_device_open_scheduled_ = false;
+          if (!automatic_time_sync_pending_ || client_.isOpen() ||
+              worker_running_ || devices_.size() != 1u) {
+            return;
+          }
+          device_selector_->setCurrentIndex(0);
+          appendLog(QStringLiteral(
+              "Startup automatic time sync selected the only detected device"));
+          openDevice();
+        });
+      } else if (devices_.size() > 1u) {
+        host_time_sync_label_->setText(
+            uiText("Automatic time sync: select and open one device",
+                   "自动时间同步：请选择并打开一个设备"));
+        host_time_sync_label_->setStyleSheet(QStringLiteral(
+            "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+            "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+      }
+    }
   }
 
   void openDevice() {
@@ -3132,7 +3269,12 @@ class MainWindow : public QMainWindow {
     }
     refreshControls();
     if (client_.isOpen()) {
-      startWifiHotspotOperation(std::nullopt);
+      if (automatic_time_sync_pending_) {
+        automatic_time_sync_pending_ = false;
+        startHostTimeSync(true);
+      } else {
+        startWifiHotspotOperation(std::nullopt);
+      }
     }
   }
 
@@ -3283,7 +3425,7 @@ class MainWindow : public QMainWindow {
     operation_controller_.start([this]() { workerMain(); });
   }
 
-  void startHostTimeSync() {
+  void startHostTimeSync(bool automatic = false) {
     if (!client_.isOpen()) {
       showOpenDeviceHint(uiText("Time synchronization", "时间同步"));
       return;
@@ -3302,24 +3444,34 @@ class MainWindow : public QMainWindow {
 
     time_sync_running_ = true;
     host_time_sync_label_->setText(
-        uiText("RK clock: measuring offset before setting system time, PHC and RTC...",
-               "RK 时钟：正在测量偏差，随后设置系统时间、以太网 PHC 和 RTC……"));
+        automatic
+            ? uiText("Automatic time sync: measuring and setting RK system time, PHC and RTC...",
+                     "自动时间同步：正在测量并设置 RK 系统时间、以太网 PHC 和 RTC……")
+            : uiText("RK clock: measuring offset before setting system time, PHC and RTC...",
+                     "RK 时钟：正在测量偏差，随后设置系统时间、以太网 PHC 和 RTC……"));
     host_time_sync_label_->setStyleSheet(QStringLiteral(
         "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
     setStatusAppearance(false);
     status_label_->setText(
-        uiText("Setting RK system time, Ethernet PHC and RTC while streams are idle",
-               "正在空闲状态下设置 RK 系统时间、以太网 PHC 和 RTC"));
-    appendLog(QStringLiteral(
-        "RK system-time + Ethernet-PHC + RTC synchronization started "
-        "(host authoritative, streams idle)"));
+        automatic
+            ? uiText("Automatically synchronizing the device clock before capture",
+                     "正在采集前自动同步设备时钟")
+            : uiText("Setting RK system time, Ethernet PHC and RTC while streams are idle",
+                     "正在空闲状态下设置 RK 系统时间、以太网 PHC 和 RTC"));
+    appendLog(automatic
+                  ? QStringLiteral(
+                        "Startup automatic RK system-time + Ethernet-PHC + "
+                        "RTC synchronization started (host authoritative, streams idle)")
+                  : QStringLiteral(
+                        "RK system-time + Ethernet-PHC + RTC synchronization "
+                        "started (host authoritative, streams idle)"));
     refreshControls();
 
-    operation_controller_.start([this]() {
+    operation_controller_.start([this, automatic]() {
       try {
         const auto result = client_.synchronizeSystemTime(12, 6, 1000);
-        post([this, result]() {
+        post([this, result, automatic]() {
           const QString before_sign = result.before.offset_us >= 0
                                    ? QStringLiteral("+")
                                    : QString();
@@ -3327,10 +3479,16 @@ class MainWindow : public QMainWindow {
                                   ? QStringLiteral("+")
                                   : QString();
           host_time_sync_label_->setText(
-              uiText("RK clock synchronized: before=%1%2 us | residual=%3%4 us "
-                     "| PHC=%5 | RTC=%6 | passes=%7",
-                     "RK 时钟已同步：校准前=%1%2 us | 剩余偏差=%3%4 us "
-                     "| PHC=%5 | RTC=%6 | 校准次数=%7")
+              uiText(automatic
+                         ? "Automatic time sync succeeded: before=%1%2 us | residual=%3%4 us "
+                           "| PHC=%5 | RTC=%6 | passes=%7"
+                         : "RK clock synchronized: before=%1%2 us | residual=%3%4 us "
+                           "| PHC=%5 | RTC=%6 | passes=%7",
+                     automatic
+                         ? "自动时间同步成功：校准前=%1%2 us | 剩余偏差=%3%4 us "
+                           "| PHC=%5 | RTC=%6 | 校准次数=%7"
+                         : "RK 时钟已同步：校准前=%1%2 us | 剩余偏差=%3%4 us "
+                           "| PHC=%5 | RTC=%6 | 校准次数=%7")
                   .arg(before_sign)
                   .arg(result.before.offset_us)
                   .arg(after_sign)
@@ -3351,8 +3509,11 @@ class MainWindow : public QMainWindow {
               "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
           setStatusAppearance(false);
           status_label_->setText(
-              uiText("RK system time, Ethernet PHC and RTC synchronized",
-                     "RK 系统时间、以太网 PHC 和 RTC 已同步"));
+              automatic
+                  ? uiText("Automatic device time synchronization succeeded",
+                           "设备时间自动同步成功")
+                  : uiText("RK system time, Ethernet PHC and RTC synchronized",
+                           "RK 系统时间、以太网 PHC 和 RTC 已同步"));
           appendLogLine(
               QDateTime::currentDateTime().toString(
                   QStringLiteral("HH:mm:ss.zzz ")) +
@@ -3368,26 +3529,39 @@ class MainWindow : public QMainWindow {
                   .arg(result.verified ? 1 : 0));
           time_sync_running_ = false;
           refreshControls();
+          if (automatic && client_.isOpen()) {
+            startWifiHotspotOperation(std::nullopt);
+          }
         });
       } catch (const std::exception& ex) {
         const QString error = toQString(ex.what());
-        post([this, error]() {
+        post([this, error, automatic]() {
           host_time_sync_label_->setText(
-              uiText("Host/device clock: synchronization failed: %1",
-                     "主机/设备时钟：同步失败：%1")
+              uiText(automatic
+                         ? "Automatic time sync failed: %1; use Set Device Time to retry"
+                         : "Host/device clock: synchronization failed: %1",
+                     automatic
+                         ? "自动时间同步失败：%1；可使用“校准设备时间”重试"
+                         : "主机/设备时钟：同步失败：%1")
                   .arg(error));
           host_time_sync_label_->setStyleSheet(QStringLiteral(
               "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
               "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
           setStatusAppearance(true);
           status_label_->setText(
-              uiText("Time synchronization failed", "时间同步失败"));
+              automatic
+                  ? uiText("Automatic time synchronization failed; capture remains available",
+                           "自动时间同步失败；仍可使用采集功能")
+                  : uiText("Time synchronization failed", "时间同步失败"));
           appendLogLine(
               QDateTime::currentDateTime().toString(
                   QStringLiteral("HH:mm:ss.zzz ")) +
               QStringLiteral("RK system/RTC sync failed: %1").arg(error));
           time_sync_running_ = false;
           refreshControls();
+          if (automatic && client_.isOpen()) {
+            startWifiHotspotOperation(std::nullopt);
+          }
         });
       }
     });
@@ -4399,7 +4573,61 @@ class MainWindow : public QMainWindow {
         .arg(timestamp_us % 1000000ULL, 6, 10, QLatin1Char('0'));
   }
 
+  void updateDatasetPlaybackControls() {
+    const bool has_frames = dataset_frame_count_ != 0u;
+    const bool can_play = dataset_frame_count_ > 1u;
+    if (!can_play && dataset_playback_active_) {
+      dataset_playback_active_ = false;
+      dataset_playback_timer_->stop();
+    }
+    dataset_previous_frame_button_->setEnabled(
+        has_frames && dataset_current_frame_ > 0);
+    dataset_next_frame_button_->setEnabled(
+        has_frames &&
+        static_cast<size_t>(dataset_current_frame_ + 1) <
+            dataset_frame_count_);
+    dataset_playback_button_->setEnabled(can_play);
+    dataset_playback_button_->setText(
+        dataset_playback_active_ ? uiText("Pause", "暂停")
+                                 : uiText("Play", "播放"));
+    dataset_playback_speed_selector_->setEnabled(can_play);
+  }
+
+  void scheduleDatasetPlaybackStep() {
+    dataset_playback_timer_->stop();
+    if (!dataset_playback_active_) return;
+    const size_t current_frame =
+        static_cast<size_t>(dataset_current_frame_);
+    const size_t next_frame = current_frame + 1u;
+    if (next_frame >= dataset_frame_count_) {
+      setDatasetPlaybackActive(false);
+      return;
+    }
+    const uint64_t current_timestamp_us =
+        dataset_camera_entries_[0][current_frame].timestamp_us;
+    const uint64_t next_timestamp_us =
+        dataset_camera_entries_[0][next_frame].timestamp_us;
+    dataset_playback_timer_->start(datasetPlaybackDelayMs(
+        current_timestamp_us, next_timestamp_us, dataset_playback_rate_));
+  }
+
+  void setDatasetPlaybackActive(bool active) {
+    dataset_playback_timer_->stop();
+    if (active && dataset_frame_count_ > 1u) {
+      if (static_cast<size_t>(dataset_current_frame_ + 1) >=
+          dataset_frame_count_) {
+        dataset_frame_slider_->setValue(0);
+      }
+      dataset_playback_active_ = true;
+      scheduleDatasetPlaybackStep();
+    } else {
+      dataset_playback_active_ = false;
+    }
+    updateDatasetPlaybackControls();
+  }
+
   void openRecordedDataset() {
+    setDatasetPlaybackActive(false);
     const QString initial =
         loaded_dataset_root_.isEmpty() ? QDir::homePath()
                                        : loaded_dataset_root_;
@@ -4685,6 +4913,7 @@ class MainWindow : public QMainWindow {
   }
 
   void loadRecordedDataset(const QString& directory, bool show_errors) {
+    setDatasetPlaybackActive(false);
     const auto root = toFilesystemPath(directory);
     std::array<std::vector<DatasetImageEntry>, 4> camera_entries;
     const TumFileSummary imu0 = summarizeTumFile(root / "imu0.tum");
@@ -4847,6 +5076,7 @@ class MainWindow : public QMainWindow {
       }
       dataset_camera_zoom_dialog_->hide();
     }
+    updateDatasetPlaybackControls();
     appendLog(QStringLiteral(
                   "Recorded dataset loaded: %1 mode=%2 frame_sets=%3")
                   .arg(directory)
@@ -6144,7 +6374,12 @@ class MainWindow : public QMainWindow {
   QLabel* dataset_path_label_ = nullptr;
   QLabel* dataset_summary_label_ = nullptr;
   QLabel* dataset_frame_label_ = nullptr;
+  QPushButton* dataset_previous_frame_button_ = nullptr;
+  QPushButton* dataset_playback_button_ = nullptr;
+  QPushButton* dataset_next_frame_button_ = nullptr;
+  QComboBox* dataset_playback_speed_selector_ = nullptr;
   QSlider* dataset_frame_slider_ = nullptr;
+  QTimer* dataset_playback_timer_ = nullptr;
   std::array<ImageViewLabel*, 4> dataset_image_labels_{};
   QPlainTextEdit* dataset_details_ = nullptr;
   CameraZoomDialog* dataset_camera_zoom_dialog_ = nullptr;
@@ -6152,6 +6387,8 @@ class MainWindow : public QMainWindow {
   std::array<QImage, 4> dataset_images_{};
   size_t dataset_frame_count_ = 0;
   int dataset_current_frame_ = 0;
+  double dataset_playback_rate_ = 1.0;
+  bool dataset_playback_active_ = false;
   QString loaded_dataset_root_;
   bool rosbag_export_running_ = false;
   QPlainTextEdit* meta_text_ = nullptr;
@@ -6187,6 +6424,8 @@ class MainWindow : public QMainWindow {
   std::atomic<bool> camera_exposure_operation_running_{false};
   std::atomic<bool> camera_encoding_operation_running_{false};
   std::atomic<bool> lidar_network_operation_running_{false};
+  bool automatic_time_sync_pending_ = true;
+  bool automatic_device_open_scheduled_ = false;
   std::atomic<bool> camera_preview_enabled_{false};
   std::atomic<bool> imu_ui_enabled_{false};
   std::atomic<bool> lidar_ui_enabled_{false};
@@ -6720,7 +6959,19 @@ int runViewerApplication(int argc, char** argv) {
     }
     const QSize minimum =
         window.minimumSizeHint().expandedTo(window.minimumSize());
-    const bool success =
+    const auto* dataset_playback_button =
+        window.findChild<QPushButton*>(
+            QStringLiteral("datasetPlaybackButton"));
+    const auto* dataset_playback_speed =
+        window.findChild<QComboBox*>(
+            QStringLiteral("datasetPlaybackSpeedCombo"));
+    const bool playback_controls_ok =
+        dataset_playback_button != nullptr &&
+        dataset_playback_speed != nullptr &&
+        dataset_playback_speed->count() == 6 &&
+        dataset_playback_speed->currentData().toDouble() > 0.0 &&
+        !dataset_playback_button->isEnabled();
+    const bool success = playback_controls_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
         minimum.height() <= kMaximumMainWindowMinimumHeight;
     std::cout << "main_window_layout_self_test="
@@ -6728,7 +6979,9 @@ int runViewerApplication(int argc, char** argv) {
               << " minimum=" << minimum.width() << "x"
               << minimum.height() << " limit="
               << kMaximumMainWindowMinimumWidth << "x"
-              << kMaximumMainWindowMinimumHeight << "\n";
+              << kMaximumMainWindowMinimumHeight
+              << " playback_controls="
+              << (playback_controls_ok ? "PASS" : "FAIL") << "\n";
     return success ? 0 : 12;
   }
   window.show();
