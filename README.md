@@ -24,9 +24,8 @@ final result. With multiple devices, select one and click **Open Device**; the
 same one-time automatic synchronization runs after the first successful open.
 If it fails, capture remains available and **Set Device Time** can retry it.
 
-The Viewer does not compile or fetch Host SDK sources. The matching binary SDK
-is versioned directly in this repository under
-`vendor/prism-host-sdk/0.11.0`:
+The Viewer does not compile Host SDK sources. The matching binary-only SDK is
+pinned as the `third_party/Prism-SDK` Git submodule:
 
 - public headers under `include/prism`;
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
@@ -35,9 +34,19 @@ is versioned directly in this repository under
 - `libprism_usb_sdk.dylib` plus its relocatable `libusb` runtime on Apple
   Silicon macOS, linked from the app's `Contents/Frameworks` directory.
 
-The Viewer and bundled Host SDK versions must match exactly. Windows, Linux,
-and macOS builds therefore need no Prism-agent checkout or separately
-installed SDK.
+The Viewer and SDK submodule versions must match exactly. Windows, Linux, and
+macOS builds therefore need no Prism-agent checkout or separately installed
+SDK. Clone with submodules enabled:
+
+```sh
+git clone --recurse-submodules git@github.com:DIBULI/Prism-Viewer.git
+```
+
+For an existing checkout, initialize the pinned SDK with:
+
+```sh
+git submodule update --init --recursive
+```
 
 ## Build
 
@@ -91,13 +100,14 @@ LGPL-2.1-or-later; its `libusb-COPYING.txt` license is included under the app's
 
 ## Automated builds and releases
 
-Every push and pull request builds and tests Windows x64, Linux x64, and macOS
-arm64. A tag matching `v*` additionally publishes all packaged Viewer archives
-as a GitHub Release. For example:
+Every push and pull request checks out the pinned SDK submodule, then builds
+and tests Windows x64, Linux x64, and macOS arm64. A tag matching `v*`
+additionally publishes all packaged Viewer archives as a GitHub Release. For
+example:
 
 ```sh
-git tag v0.11.0
-git push origin v0.11.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 ## Documentation

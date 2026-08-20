@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 0.11.0 LANGUAGES CXX)
+project(prism_viewer VERSION 1.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -49,8 +49,8 @@ set(CMAKE_AUTORCC OFF)
 set(CMAKE_AUTOUIC OFF)
 
 set(PRISM_USB_SDK_ROOT
-    "${CMAKE_CURRENT_LIST_DIR}/vendor/prism-host-sdk/${PROJECT_VERSION}"
-    CACHE PATH "Bundled Prism Host SDK prefix")
+    "${CMAKE_CURRENT_LIST_DIR}/third_party/Prism-SDK"
+    CACHE PATH "Prism Host SDK Git submodule root")
 set(PRISM_USB_SDK_INCLUDE_DIR "${PRISM_USB_SDK_ROOT}/include")
 if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/runtime_api.hpp")
   message(FATAL_ERROR

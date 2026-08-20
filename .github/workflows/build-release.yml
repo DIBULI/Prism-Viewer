@@ -20,6 +20,9 @@ jobs:
     steps:
       - name: Check out Viewer
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -42,8 +45,8 @@ jobs:
       - name: Verify bundled Windows SDK
         shell: pwsh
         run: |
-          $dll = "vendor/prism-host-sdk/0.11.0/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "e252a51b54fb03c4615ca54d14d7b217c810f99933518e6e83102e82de2df7f6"
+          $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
+          $expected = "abe12bb66b63102237b691466a680aa45ecaa0442e68a55cc65a0057b6e1a87d"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -71,24 +74,27 @@ jobs:
             --release --no-translations --compiler-runtime `
             --dir (Join-Path $stage "bin") $exe
           $package = Join-Path $env:RUNNER_TEMP `
-            "Prism-Viewer-0.11.0-windows-x64"
+            "Prism-Viewer-1.0.0-windows-x64"
           New-Item -ItemType Directory -Path $package | Out-Null
           Copy-Item (Join-Path $stage "bin\*") $package -Recurse
           Compress-Archive -Path $package `
-            -DestinationPath "Prism-Viewer-0.11.0-windows-x64.zip"
+            -DestinationPath "Prism-Viewer-1.0.0-windows-x64.zip"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-0.11.0-windows-x64
+          name: prism-viewer-1.0.0-windows-x64
           if-no-files-found: error
-          path: Prism-Viewer-0.11.0-windows-x64.zip
+          path: Prism-Viewer-1.0.0-windows-x64.zip
 
   linux-x64:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out Viewer
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - name: Install Linux dependencies
         run: |
@@ -103,7 +109,7 @@ jobs:
 
       - name: Verify bundled Linux SDK
         run: |
-          echo "b03d1dc616e5a489f519fd7816805ef985542329019c05b517c01dc0cbdbe9d0  vendor/prism-host-sdk/0.11.0/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
+          echo "d2558c446378268f4a46b43a305ee9128a9cf018c72d1a8f8b4334ec2171fed0  third_party/Prism-SDK/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
 
       - name: Configure and build Viewer
         run: |
@@ -118,7 +124,7 @@ jobs:
       - name: Package Viewer
         run: |
           stage="$RUNNER_TEMP/prism-viewer-stage"
-          package="$RUNNER_TEMP/Prism-Viewer-0.11.0-linux-x64"
+          package="$RUNNER_TEMP/Prism-Viewer-1.0.0-linux-x64"
           cmake --install build-linux-ci --prefix "$stage"
           mkdir -p "$package"
           cp -a "$stage"/. "$package"/
@@ -127,15 +133,15 @@ jobs:
             exit 1
           fi
           tar -C "$RUNNER_TEMP" -czf \
-            "$GITHUB_WORKSPACE/Prism-Viewer-0.11.0-linux-x64.tar.gz" \
-            Prism-Viewer-0.11.0-linux-x64
+            "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-x64.tar.gz" \
+            Prism-Viewer-1.0.0-linux-x64
 
       - name: Upload Linux package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-0.11.0-linux-x64
+          name: prism-viewer-1.0.0-linux-x64
           if-no-files-found: error
-          path: Prism-Viewer-0.11.0-linux-x64.tar.gz
+          path: Prism-Viewer-1.0.0-linux-x64.tar.gz
 
   macos-arm64:
     # GitHub's runner-images catalog maps this fixed label to the standard
@@ -146,6 +152,9 @@ jobs:
     steps:
       - name: Check out Viewer
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -181,10 +190,10 @@ jobs:
 
       - name: Verify bundled macOS SDK
         run: |
-          sdk="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libprism_usb_sdk.dylib"
-          libusb="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libusb-1.0.0.dylib"
-          license="vendor/prism-host-sdk/0.11.0/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="6754ded41584578f8e62719f139c5a3c4115a7bc0a032738763218265e6034c1"
+          sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
+          libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
+          license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
+          sdk_expected="9317a80bf597933039c5fb7030448b65f1085e611cbc1b2482cc05de675c416c"
           libusb_expected="6f65716831f5072bbae4286903c1efce7588ecdbf9d9d4df01122a30cded3b01"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
@@ -285,15 +294,15 @@ jobs:
             "$RUNNER_TEMP/macos-package-smoke"
 
           ditto -c -k --sequesterRsrc --keepParent "$app" \
-            "$GITHUB_WORKSPACE/Prism-Viewer-0.11.0-macos-arm64.zip"
-          unzip -t Prism-Viewer-0.11.0-macos-arm64.zip
+            "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-macos-arm64.zip"
+          unzip -t Prism-Viewer-1.0.0-macos-arm64.zip
 
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-0.11.0-macos-arm64
+          name: prism-viewer-1.0.0-macos-arm64
           if-no-files-found: error
-          path: Prism-Viewer-0.11.0-macos-arm64.zip
+          path: Prism-Viewer-1.0.0-macos-arm64.zip
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -305,7 +314,7 @@ jobs:
       - name: Download release packages
         uses: actions/download-artifact@v8
         with:
-          pattern: prism-viewer-0.11.0-*
+          pattern: prism-viewer-1.0.0-*
           path: release-assets
           merge-multiple: true
 

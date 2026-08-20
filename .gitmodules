@@ -1,0 +1,3 @@
+[submodule "third_party/Prism-SDK"]
+	path = third_party/Prism-SDK
+	url = https://github.com/xiangfuli/Prism-SDK.git
