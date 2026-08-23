@@ -3,6 +3,7 @@
 #include "prism/usb/telemetry.hpp"
 
 #include <QtCore/QPoint>
+#include <QtCore/QPointF>
 #include <QtWidgets/QWidget>
 
 #include <deque>
@@ -16,6 +17,8 @@ class LidarPointCloudWidget : public QWidget {
     double yaw_radians;
     double pitch_radians;
     double pixels_per_meter;
+    double pan_x_pixels;
+    double pan_y_pixels;
   };
 
   static constexpr int kMinimumPointSize = 1;
@@ -54,6 +57,8 @@ class LidarPointCloudWidget : public QWidget {
  private:
   std::deque<prism::LidarPoint> points_;
   QPoint last_mouse_position_;
+  QPointF pan_offset_;
+  bool panning_ = false;
   double yaw_ = kDefaultYawRadians;
   double pitch_ = kDefaultPitchRadians;
   double pixels_per_meter_ = kDefaultPixelsPerMeter;

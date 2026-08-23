@@ -27,8 +27,8 @@ LidarPointCloudWidget::LidarPointCloudWidget(QWidget* parent)
   setMinimumSize(560, 420);
   setMouseTracking(true);
   setCursor(Qt::OpenHandCursor);
-  setToolTip(
-      tr("Drag to rotate the point cloud; use the mouse wheel to zoom"));
+  setToolTip(tr("Left-drag to rotate; right-drag or Shift+left-drag to pan; "
+                "use the mouse wheel to zoom"));
 }
 
 void LidarPointCloudWidget::appendPoints(
@@ -61,7 +61,7 @@ int LidarPointCloudWidget::pointSize() const noexcept {
 
 LidarPointCloudWidget::ViewState LidarPointCloudWidget::viewState()
     const noexcept {
-  return {yaw_, pitch_, pixels_per_meter_};
+  return {yaw_, pitch_, pixels_per_meter_, pan_offset_.x(), pan_offset_.y()};
 }
 
 void LidarPointCloudWidget::setTopView() {
@@ -74,6 +74,7 @@ void LidarPointCloudWidget::resetView() {
   yaw_ = kDefaultYawRadians;
   pitch_ = kDefaultPitchRadians;
   pixels_per_meter_ = kDefaultPixelsPerMeter;
+  pan_offset_ = QPointF();
   update();
 }
 
@@ -82,7 +83,8 @@ void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
   painter.fillRect(rect(), QColor(7, 14, 25));
   painter.setRenderHint(QPainter::Antialiasing, false);
 
-  const QPointF center(width() * 0.5, height() * 0.57);
+  const QPointF center =
+      QPointF(width() * 0.5, height() * 0.57) + pan_offset_;
   const double cosine_yaw = std::cos(yaw_);
   const double sine_yaw = std::sin(yaw_);
   const double cosine_pitch = std::cos(pitch_);
@@ -134,29 +136,45 @@ void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
     painter.drawText(rect(), Qt::AlignCenter,
                      tr("Waiting for LiDAR point cloud"));
   }
+  painter.setPen(QColor(137, 151, 173));
+  painter.drawText(QRect(16, height() - 36, width() - 32, 24),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   tr("Left-drag: rotate  |  Right-drag: pan  |  Wheel: zoom"));
 }
 
 void LidarPointCloudWidget::mousePressEvent(QMouseEvent* event) {
-  if (event->button() == Qt::LeftButton) {
+  if (event->button() == Qt::LeftButton ||
+      event->button() == Qt::RightButton) {
     last_mouse_position_ = event->pos();
+    panning_ = event->button() == Qt::RightButton ||
+               event->modifiers().testFlag(Qt::ShiftModifier);
     setCursor(Qt::ClosedHandCursor);
+    event->accept();
   }
 }
 
 void LidarPointCloudWidget::mouseReleaseEvent(QMouseEvent* event) {
-  if (event->button() == Qt::LeftButton) {
+  if (event->button() == Qt::LeftButton ||
+      event->button() == Qt::RightButton) {
+    panning_ = false;
     setCursor(Qt::OpenHandCursor);
+    event->accept();
   }
 }
 
 void LidarPointCloudWidget::mouseMoveEvent(QMouseEvent* event) {
-  if ((event->buttons() & Qt::LeftButton) == 0) return;
+  if ((event->buttons() & (Qt::LeftButton | Qt::RightButton)) == 0) return;
   const QPoint delta = event->pos() - last_mouse_position_;
   last_mouse_position_ = event->pos();
-  yaw_ += static_cast<double>(delta.x()) * 0.008;
-  pitch_ = std::clamp(pitch_ + static_cast<double>(delta.y()) * 0.006,
-                      kMinimumPitchRadians, kMaximumPitchRadians);
+  if (panning_) {
+    pan_offset_ += QPointF(delta);
+  } else {
+    yaw_ += static_cast<double>(delta.x()) * 0.008;
+    pitch_ = std::clamp(pitch_ + static_cast<double>(delta.y()) * 0.006,
+                        kMinimumPitchRadians, kMaximumPitchRadians);
+  }
   update();
+  event->accept();
 }
 
 void LidarPointCloudWidget::wheelEvent(QWheelEvent* event) {

@@ -35,6 +35,23 @@ void dragVertically(prism_viewer::LidarPointCloudWidget* widget,
   QApplication::sendEvent(widget, &release);
 }
 
+void pan(prism_viewer::LidarPointCloudWidget* widget, int delta_x,
+         int delta_y) {
+  const QPointF start(100.0, 100.0);
+  QMouseEvent press(QEvent::MouseButtonPress, start, start, Qt::RightButton,
+                    Qt::RightButton, Qt::NoModifier);
+  QApplication::sendEvent(widget, &press);
+
+  const QPointF finish(start.x() + delta_x, start.y() + delta_y);
+  QMouseEvent move(QEvent::MouseMove, finish, finish, Qt::NoButton,
+                   Qt::RightButton, Qt::NoModifier);
+  QApplication::sendEvent(widget, &move);
+
+  QMouseEvent release(QEvent::MouseButtonRelease, finish, finish,
+                      Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(widget, &release);
+}
+
 void zoomIn(prism_viewer::LidarPointCloudWidget* widget) {
   QWheelEvent wheel(QPointF(100.0, 100.0), QPointF(100.0, 100.0), QPoint(),
                     QPoint(0, 120), Qt::NoButton, Qt::NoModifier,
@@ -112,6 +129,16 @@ int main(int argc, char** argv) {
               prism_viewer::LidarPointCloudWidget::kMinimumPitchRadians,
           "dragging still respects the lower pitch bound");
 
+  const auto before_pan = widget.viewState();
+  pan(&widget, 80, -45);
+  const auto panned_view = widget.viewState();
+  require(panned_view.pan_x_pixels == before_pan.pan_x_pixels + 80.0 &&
+              panned_view.pan_y_pixels == before_pan.pan_y_pixels - 45.0,
+          "right-drag pans the point-cloud view");
+  require(panned_view.yaw_radians == before_pan.yaw_radians &&
+              panned_view.pitch_radians == before_pan.pitch_radians,
+          "panning does not change point-cloud rotation");
+
   widget.resetView();
   const auto reset_view = widget.viewState();
   require(reset_view.yaw_radians ==
@@ -123,6 +150,9 @@ int main(int argc, char** argv) {
   require(reset_view.pixels_per_meter ==
               prism_viewer::LidarPointCloudWidget::kDefaultPixelsPerMeter,
           "reset restores the default zoom");
+  require(reset_view.pan_x_pixels == 0.0 &&
+              reset_view.pan_y_pixels == 0.0,
+          "reset clears point-cloud panning");
   require(widget.pointCount() == 1u,
           "reset does not discard displayed points");
   require(widget.pointSize() ==

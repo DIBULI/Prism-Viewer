@@ -50,9 +50,11 @@
 #include <QtGui/QColor>
 #include <QtGui/QImage>
 #include <QtGui/QIcon>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
 #include <QtGui/QPixmap>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
@@ -1356,6 +1358,56 @@ class DatasetRecorder {
   std::string write_error_;
 };
 
+class InteractiveImuChartView final : public QChartView {
+ public:
+  InteractiveImuChartView(QChart* chart, QWidget* parent)
+      : QChartView(chart, parent) {}
+
+  std::function<void()> on_zoom_changed;
+  std::function<void()> on_zoom_reset;
+
+ protected:
+  void mousePressEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton) {
+      zoom_start_position_ = event->pos();
+    }
+    QChartView::mousePressEvent(event);
+  }
+
+  void wheelEvent(QWheelEvent* event) override {
+    if (event->angleDelta().y() == 0) {
+      QChartView::wheelEvent(event);
+      return;
+    }
+    chart()->zoom(event->angleDelta().y() > 0 ? 1.2 : 1.0 / 1.2);
+    if (on_zoom_changed) on_zoom_changed();
+    event->accept();
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    const bool zoom_interaction =
+        event->button() == Qt::RightButton ||
+        (event->button() == Qt::LeftButton &&
+         (event->pos() - zoom_start_position_).manhattanLength() >=
+             QApplication::startDragDistance());
+    QChartView::mouseReleaseEvent(event);
+    if (zoom_interaction && on_zoom_changed) on_zoom_changed();
+  }
+
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton) {
+      chart()->zoomReset();
+      if (on_zoom_reset) on_zoom_reset();
+      event->accept();
+      return;
+    }
+    QChartView::mouseDoubleClickEvent(event);
+  }
+
+ private:
+  QPoint zoom_start_position_;
+};
+
 class ImuPlotWidget : public QWidget {
  public:
   explicit ImuPlotWidget(QWidget* parent = nullptr) : QWidget(parent) {
@@ -1379,9 +1431,17 @@ class ImuPlotWidget : public QWidget {
         QStringLiteral("imuAccelerationPlot"));
     gyro_panel_.view->setObjectName(
         QStringLiteral("imuGyroscopePlot"));
+    accel_panel_.title_label->setObjectName(
+        QStringLiteral("imuAccelerationTitle"));
+    gyro_panel_.title_label->setObjectName(
+        QStringLiteral("imuGyroscopeTitle"));
+    accel_panel_.legend_label->setObjectName(
+        QStringLiteral("imuAccelerationLegend"));
+    gyro_panel_.legend_label->setObjectName(
+        QStringLiteral("imuGyroscopeLegend"));
     updateUnitAppearance();
-    splitter->addWidget(accel_panel_.view);
-    splitter->addWidget(gyro_panel_.view);
+    splitter->addWidget(accel_panel_.container);
+    splitter->addWidget(gyro_panel_.container);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({1, 1});
@@ -1413,6 +1473,8 @@ class ImuPlotWidget : public QWidget {
     acceleration_unit_ = acceleration_unit;
     angular_velocity_unit_ = angular_velocity_unit;
     updateUnitAppearance();
+    resetPanelView(&accel_panel_, true);
+    resetPanelView(&gyro_panel_, false);
     dirty_ = true;
     if (active_) refreshCharts();
   }
@@ -1462,6 +1524,9 @@ class ImuPlotWidget : public QWidget {
   };
 
   struct ChartPanel {
+    QWidget* container = nullptr;
+    QLabel* title_label = nullptr;
+    QLabel* legend_label = nullptr;
     QChartView* view = nullptr;
     QChart* chart = nullptr;
     QValueAxis* x_axis = nullptr;
@@ -1470,13 +1535,43 @@ class ImuPlotWidget : public QWidget {
     QLineSeries* zero_line = nullptr;
     double initial_scale = 1.0;
     double minimum_span = 0.01;
+    bool manual_view = false;
   };
 
   void createPanel(ChartPanel* panel, const QString& title,
                    const QString& y_title, double initial_scale) {
+    panel->container = new QWidget(this);
+    panel->container->setSizePolicy(
+        QSizePolicy::Ignored, QSizePolicy::Expanding);
+    auto* panel_layout = new QVBoxLayout(panel->container);
+    panel_layout->setContentsMargins(0, 0, 0, 0);
+    panel_layout->setSpacing(0);
+    auto* header = new QWidget(panel->container);
+    auto* header_layout = new QHBoxLayout(header);
+    header_layout->setContentsMargins(12, 3, 12, 1);
+    header_layout->setSpacing(8);
+    auto* title_balance = new QWidget(header);
+    title_balance->setFixedWidth(108);
+    panel->title_label = new QLabel(title, header);
+    panel->title_label->setAlignment(Qt::AlignCenter);
+    panel->title_label->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    panel->legend_label = new QLabel(
+        QStringLiteral(
+            "<span style='color:#d92d20'>■</span> X&nbsp;&nbsp;"
+            "<span style='color:#12b76a'>■</span> Y&nbsp;&nbsp;"
+            "<span style='color:#1570ef'>■</span> Z"),
+        header);
+    panel->legend_label->setTextFormat(Qt::RichText);
+    panel->legend_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    panel->legend_label->setFixedWidth(108);
+    header_layout->addWidget(title_balance);
+    header_layout->addWidget(panel->title_label, 1);
+    header_layout->addWidget(panel->legend_label);
+    panel_layout->addWidget(header);
+
     panel->chart = new QChart();
     panel->initial_scale = initial_scale;
-    panel->chart->setTitle(title);
     panel->chart->setAnimationOptions(QChart::NoAnimation);
     panel->chart->setDropShadowEnabled(false);
     panel->chart->setBackgroundRoundness(6.0);
@@ -1524,19 +1619,41 @@ class ImuPlotWidget : public QWidget {
     panel->zero_line->attachAxis(panel->x_axis);
     panel->zero_line->attachAxis(panel->y_axis);
     panel->chart->legend()->markers(panel->zero_line).front()->setVisible(false);
-    panel->chart->legend()->setAlignment(Qt::AlignTop);
+    panel->chart->legend()->setVisible(false);
 
-    panel->view = new QChartView(panel->chart, this);
+    auto* interactive_view =
+        new InteractiveImuChartView(panel->chart, panel->container);
+    panel->view = interactive_view;
+    interactive_view->setRubberBand(QChartView::RectangleRubberBand);
+    interactive_view->setToolTip(uiText(
+        "Drag a rectangle or use the mouse wheel to zoom; double-click to "
+        "reset.",
+        "拖动框选或使用鼠标滚轮缩放；双击恢复。"));
+    interactive_view->on_zoom_changed = [panel]() {
+      panel->manual_view = true;
+    };
+    interactive_view->on_zoom_reset = [this, panel]() {
+      resetPanelView(panel, panel == &accel_panel_);
+      dirty_ = true;
+    };
     // Dynamic QtCharts antialiasing is expensive and provides little benefit
     // for one-pixel live traces. Static labels and axes remain unchanged.
     panel->view->setRenderHint(QPainter::Antialiasing, false);
     panel->view->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-    panel->view->setMinimumSize(0, 220);
+    panel->view->setMinimumSize(0, 196);
+    panel_layout->addWidget(panel->view, 1);
+  }
+
+  void resetPanelView(ChartPanel* panel, bool acceleration) {
+    panel->chart->zoomReset();
+    panel->manual_view = false;
+    panel->x_axis->setRange(-10.0, 0.0);
+    refreshPanel(panel, acceleration);
   }
 
   void updateUnitAppearance() {
     const QString acceleration_unit = accelerationUnitText(acceleration_unit_);
-    accel_panel_.chart->setTitle(
+    accel_panel_.title_label->setText(
         uiText("Acceleration XYZ (%1)", "加速度 XYZ (%1)")
             .arg(acceleration_unit));
     accel_panel_.y_axis->setTitleText(
@@ -1560,7 +1677,7 @@ class ImuPlotWidget : public QWidget {
 
     const QString angular_velocity_unit =
         angularVelocityUnitText(angular_velocity_unit_);
-    gyro_panel_.chart->setTitle(
+    gyro_panel_.title_label->setText(
         uiText("Gyroscope XYZ (%1)", "角速度 XYZ (%1)")
             .arg(angular_velocity_unit));
     gyro_panel_.y_axis->setTitleText(
@@ -1616,6 +1733,7 @@ class ImuPlotWidget : public QWidget {
       }
       panel->series[axis]->replace(points);
     }
+    if (panel->manual_view) return;
     if (!have_visible_value) {
       panel->y_axis->setRange(-panel->initial_scale, panel->initial_scale);
       return;
@@ -7668,6 +7786,18 @@ int runViewerApplication(int argc, char** argv) {
         window.findChild<QWidget*>(QStringLiteral("lidarPage"));
     auto* imu_splitter =
         window.findChild<QSplitter*>(QStringLiteral("imuPlotSplitter"));
+    auto* imu_acceleration_plot =
+        window.findChild<QChartView*>(QStringLiteral("imuAccelerationPlot"));
+    auto* imu_gyroscope_plot =
+        window.findChild<QChartView*>(QStringLiteral("imuGyroscopePlot"));
+    auto* imu_acceleration_title =
+        window.findChild<QLabel*>(QStringLiteral("imuAccelerationTitle"));
+    auto* imu_acceleration_legend =
+        window.findChild<QLabel*>(QStringLiteral("imuAccelerationLegend"));
+    auto* imu_gyroscope_title =
+        window.findChild<QLabel*>(QStringLiteral("imuGyroscopeTitle"));
+    auto* imu_gyroscope_legend =
+        window.findChild<QLabel*>(QStringLiteral("imuGyroscopeLegend"));
     auto* lidar_splitter =
         window.findChild<QSplitter*>(QStringLiteral("lidarMainSplitter"));
     auto* lidar_sidebar =
@@ -7686,14 +7816,64 @@ int runViewerApplication(int argc, char** argv) {
         main_tabs != nullptr && imu_page != nullptr &&
         imu_splitter != nullptr &&
         imu_splitter->orientation() == Qt::Horizontal &&
-        imu_splitter->count() == 2;
+        imu_splitter->count() == 2 &&
+        imu_acceleration_plot != nullptr &&
+        imu_gyroscope_plot != nullptr &&
+        imu_acceleration_title != nullptr &&
+        imu_acceleration_legend != nullptr &&
+        imu_gyroscope_title != nullptr &&
+        imu_gyroscope_legend != nullptr &&
+        imu_acceleration_plot->rubberBand() ==
+            QChartView::RectangleRubberBand &&
+        imu_gyroscope_plot->rubberBand() ==
+            QChartView::RectangleRubberBand &&
+        !imu_acceleration_plot->chart()->legend()->isVisible() &&
+        !imu_gyroscope_plot->chart()->legend()->isVisible();
+    bool imu_zoom_ok = false;
     if (imu_layout_ok) {
+      imu_page->setEnabled(true);
       main_tabs->setCurrentWidget(imu_page);
       app.processEvents();
       const QList<int> imu_sizes = imu_splitter->sizes();
+      const bool acceleration_header_inline =
+          std::abs(imu_acceleration_title->geometry().center().y() -
+                   imu_acceleration_legend->geometry().center().y()) <= 2;
+      const bool gyroscope_header_inline =
+          std::abs(imu_gyroscope_title->geometry().center().y() -
+                   imu_gyroscope_legend->geometry().center().y()) <= 2;
       imu_layout_ok = imu_sizes.size() == 2 && imu_sizes[0] > 0 &&
                       imu_sizes[1] > 0 &&
-                      std::abs(imu_sizes[0] - imu_sizes[1]) <= 24;
+                      std::abs(imu_sizes[0] - imu_sizes[1]) <= 24 &&
+                      acceleration_header_inline &&
+                      gyroscope_header_inline;
+      const auto horizontal_axes =
+          imu_acceleration_plot->chart()->axes(Qt::Horizontal);
+      auto* x_axis = horizontal_axes.isEmpty()
+          ? nullptr
+          : qobject_cast<QValueAxis*>(horizontal_axes.front());
+      if (x_axis != nullptr) {
+        const double initial_span = x_axis->max() - x_axis->min();
+        const QPointF local_position(
+            imu_acceleration_plot->width() * 0.5,
+            imu_acceleration_plot->height() * 0.5);
+        const QPointF global_position =
+            imu_acceleration_plot->mapToGlobal(local_position.toPoint());
+        QWheelEvent zoom_event(
+            local_position, global_position, QPoint(), QPoint(0, 120),
+            Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(imu_acceleration_plot->viewport(),
+                                &zoom_event);
+        const double zoomed_span = x_axis->max() - x_axis->min();
+        QMouseEvent reset_event(
+            QEvent::MouseButtonDblClick, local_position, global_position,
+            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(imu_acceleration_plot->viewport(),
+                                &reset_event);
+        const double reset_span = x_axis->max() - x_axis->min();
+        imu_zoom_ok = zoomed_span < initial_span &&
+                      std::abs(reset_span - initial_span) < 0.001;
+        imu_layout_ok = imu_layout_ok && imu_zoom_ok;
+      }
     }
     bool lidar_layout_ok =
         main_tabs != nullptr && lidar_page != nullptr &&
@@ -7727,6 +7907,8 @@ int runViewerApplication(int argc, char** argv) {
               << (playback_controls_ok ? "PASS" : "FAIL")
               << " imu_horizontal="
               << (imu_layout_ok ? "PASS" : "FAIL")
+              << " imu_zoom="
+              << (imu_zoom_ok ? "PASS" : "FAIL")
               << " lidar_horizontal="
               << (lidar_layout_ok ? "PASS" : "FAIL") << "\n";
     window.close();
