@@ -145,6 +145,8 @@ objects are embedded in the AppImage and resolved from private runtime paths.
 
 ## Documentation
 
+- [Prism Viewer 1.0.0 中文用户操作手册](docs/Prism-Viewer-1.0.0-用户操作手册.pdf)
+- [操作手册生成与截图打码脚本](docs/manual/README.md)
 - [Code structure](ARCHITECTURE.md)
 - [Dataset directory structure and format](docs/dataset-format.md)
 - [ROS1/ROS2 bag export](docs/rosbag-export.md)
