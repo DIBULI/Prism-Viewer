@@ -279,8 +279,14 @@ if(PRISM_DEPLOY_RUNTIME_DEPENDENCIES)
     OUTPUT_SCRIPT prism_viewer_deploy_script
     NO_TRANSLATIONS
     POST_EXCLUDE_REGEXES
-      ".*/ld-linux[^/]*\\.so(\\..*)?$"
-      ".*/lib(c|dl|m|pthread|rt|resolv|util)\\.so(\\..*)?$"
+      ".*/ld-linux.*"
+      ".*/libc[.]so.*"
+      ".*/libdl[.]so.*"
+      ".*/libm[.]so.*"
+      ".*/libpthread[.]so.*"
+      ".*/librt[.]so.*"
+      ".*/libresolv[.]so.*"
+      ".*/libutil[.]so.*"
   )
   install(SCRIPT "${prism_viewer_deploy_script}")
 endif()
