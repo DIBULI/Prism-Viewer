@@ -664,6 +664,9 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Exclude AppImage from GitHub Release
+        run: find release-assets -maxdepth 1 -type f -name '*.AppImage' -delete
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
