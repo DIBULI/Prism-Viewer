@@ -167,6 +167,14 @@ target_link_libraries(prism-viewer PRIVATE
   ${QT_PACKAGE}::Sql
 )
 
+if(PRISM_DEPLOY_RUNTIME_DEPENDENCIES)
+  qt_import_plugins(prism-viewer
+    INCLUDE_BY_TYPE platforms Qt6::QXcbIntegrationPlugin
+    INCLUDE_BY_TYPE imageformats Qt6::QJpegPlugin
+    INCLUDE_BY_TYPE sqldrivers Qt6::QSQLiteDriverPlugin
+  )
+endif()
+
 # Keep the bundled SDK runtime in the platform's loader-visible application
 # directory. On Windows no import library is searched or linked. Prism-Viewer
 # never compiles SDK sources.
