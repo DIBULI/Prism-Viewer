@@ -55,6 +55,12 @@ int main(int argc, char** argv) {
           "automatic exposure limit controls are discoverable");
   require(message->sizePolicy().verticalPolicy() == QSizePolicy::Maximum,
           "exposure status remains content-height instead of stretching");
+  if (min_exposure->minimum() != 50) {
+    std::cerr << "minimum exposure control floor: expected 50 us, got "
+              << min_exposure->minimum() << " us\n";
+    require(false,
+            "minimum exposure control accepts the 50 us hardware floor");
+  }
   require(!gain0->isEnabled(), "gain is disabled before opening a device");
   require(near(gain0->minimum(), 1.0) && near(gain0->maximum(), 124.0) &&
               near(gain0->singleStep(), 0.03125),
