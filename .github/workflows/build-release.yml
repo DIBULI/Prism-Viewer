@@ -263,7 +263,7 @@ jobs:
           stage="$RUNNER_TEMP/prism-viewer-stage"
           package="$RUNNER_TEMP/Prism-Viewer-1.0.0-linux-$LINUX_PACKAGE_ARCH"
           cmake --install build-linux-ci --prefix "$stage"
-          mkdir -p "$package"
+          mkdir -p "$package/lib"
           cp -a "$stage"/. "$package"/
           install -m 0644 packaging/qt.conf "$package/bin/qt.conf"
 
