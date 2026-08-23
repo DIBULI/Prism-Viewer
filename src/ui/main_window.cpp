@@ -74,6 +74,7 @@
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QProgressDialog>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollArea>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
@@ -1363,7 +1364,10 @@ class ImuPlotWidget : public QWidget {
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
+    auto* splitter = new QSplitter(Qt::Horizontal, this);
+    splitter->setObjectName(QStringLiteral("imuPlotSplitter"));
+    splitter->setChildrenCollapsible(false);
+    splitter->setHandleWidth(8);
     createPanel(&accel_panel_, uiText("Acceleration XYZ (g)", "加速度 XYZ (g)"),
                 uiText("Acceleration (g)", "加速度 (g)"), 1.2);
     createPanel(&gyro_panel_, uiText("Gyroscope XYZ (", "角速度 XYZ (") +
@@ -1371,9 +1375,17 @@ class ImuPlotWidget : public QWidget {
                 uiText("Angular rate (", "角速度 (") + QChar(0x00b0) +
                     QStringLiteral("/s)"),
                 10.0);
+    accel_panel_.view->setObjectName(
+        QStringLiteral("imuAccelerationPlot"));
+    gyro_panel_.view->setObjectName(
+        QStringLiteral("imuGyroscopePlot"));
     updateUnitAppearance();
-    layout->addWidget(accel_panel_.view, 1);
-    layout->addWidget(gyro_panel_.view, 1);
+    splitter->addWidget(accel_panel_.view);
+    splitter->addWidget(gyro_panel_.view);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({1, 1});
+    layout->addWidget(splitter, 1);
 
     refresh_timer_ = new QTimer(this);
     refresh_timer_->setInterval(
@@ -1518,8 +1530,8 @@ class ImuPlotWidget : public QWidget {
     // Dynamic QtCharts antialiasing is expensive and provides little benefit
     // for one-pixel live traces. Static labels and axes remain unchanged.
     panel->view->setRenderHint(QPainter::Antialiasing, false);
-    panel->view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    panel->view->setMinimumHeight(132);
+    panel->view->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    panel->view->setMinimumSize(0, 220);
   }
 
   void updateUnitAppearance() {
@@ -1872,6 +1884,7 @@ class MainWindow : public QMainWindow {
     root->addLayout(status_strip);
 
     tabs_ = new QTabWidget(central);
+    tabs_->setObjectName(QStringLiteral("mainTabs"));
     // QTabWidget normally contributes the maximum minimum-size hint of every
     // page to its parent. The LiDAR controls and point-cloud canvas can then
     // make the main window taller than the Linux desktop work area even while
@@ -1896,20 +1909,39 @@ class MainWindow : public QMainWindow {
     camera_layout->addWidget(camera_splitter, 1);
 
     imu_page_ = new QWidget(tabs_);
+    imu_page_->setObjectName(QStringLiteral("imuPage"));
     auto* imu_page_layout = new QVBoxLayout(imu_page_);
     imu_page_layout->setContentsMargins(8, 8, 8, 8);
     imu_page_layout->setSpacing(10);
     tabs_->addTab(imu_page_, QStringLiteral("IMU"));
 
     lidar_page_ = new QWidget(tabs_);
+    lidar_page_->setObjectName(QStringLiteral("lidarPage"));
     auto* lidar_layout = new QVBoxLayout(lidar_page_);
     lidar_layout->setContentsMargins(8, 8, 8, 8);
-    lidar_layout->setSpacing(10);
+    lidar_layout->setSpacing(0);
     tabs_->addTab(lidar_page_, QStringLiteral("LiDAR"));
 
+    auto* lidar_splitter = new QSplitter(Qt::Horizontal, lidar_page_);
+    lidar_splitter->setObjectName(QStringLiteral("lidarMainSplitter"));
+    lidar_splitter->setChildrenCollapsible(false);
+    lidar_splitter->setHandleWidth(8);
+    lidar_layout->addWidget(lidar_splitter, 1);
+
+    auto* lidar_sidebar = new QWidget(lidar_splitter);
+    lidar_sidebar->setObjectName(QStringLiteral("lidarControlSidebar"));
+    lidar_sidebar->setMinimumWidth(300);
+    lidar_sidebar->setMaximumWidth(440);
+    lidar_sidebar->setSizePolicy(
+        QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto* lidar_sidebar_layout = new QVBoxLayout(lidar_sidebar);
+    lidar_sidebar_layout->setContentsMargins(0, 0, 0, 0);
+    lidar_sidebar_layout->setSpacing(10);
+
     auto* lidar_controls = new QGroupBox(
-        uiText("Livox point cloud", "Livox 点云"), lidar_page_);
-    auto* lidar_controls_layout = new QHBoxLayout(lidar_controls);
+        uiText("Livox point cloud", "Livox 点云"), lidar_sidebar);
+    auto* lidar_controls_layout = new QVBoxLayout(lidar_controls);
+    lidar_controls_layout->setSpacing(8);
     lidar_enabled_checkbox_ = new QCheckBox(
         uiText("Include LiDAR in capture", "采集时启用雷达"),
         lidar_controls);
@@ -1925,7 +1957,8 @@ class MainWindow : public QMainWindow {
         static_cast<int>(prism::LidarModel::Mid360S));
     lidar_model_selector_->setCurrentIndex(0);
     lidar_model_selector_->setEnabled(false);
-    lidar_model_selector_->setMinimumWidth(180);
+    lidar_model_selector_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
     lidar_model_selector_->setToolTip(uiText(
         "Model selection is mandatory; the Agent does not auto-detect it",
         "必须明确选择型号，Agent 不会自动猜测"));
@@ -1977,28 +2010,37 @@ class MainWindow : public QMainWindow {
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
     lidar_status_label_->setWordWrap(true);
     lidar_controls_layout->addWidget(lidar_enabled_checkbox_);
-    lidar_controls_layout->addWidget(lidar_model_selector_);
-    lidar_controls_layout->addWidget(lidar_point_size_label);
-    lidar_controls_layout->addWidget(lidar_point_size_spin_);
-    lidar_controls_layout->addWidget(lidar_top_view_button);
-    lidar_controls_layout->addWidget(lidar_reset_view_button);
-    lidar_controls_layout->addWidget(lidar_status_label_, 1);
-    lidar_layout->addWidget(lidar_controls);
+    auto* lidar_options = new QFormLayout();
+    lidar_options->setFieldGrowthPolicy(
+        QFormLayout::AllNonFixedFieldsGrow);
+    lidar_options->addRow(uiText("Model", "型号"),
+                          lidar_model_selector_);
+    lidar_options->addRow(lidar_point_size_label,
+                          lidar_point_size_spin_);
+    lidar_controls_layout->addLayout(lidar_options);
+    auto* lidar_view_actions = new QHBoxLayout();
+    lidar_view_actions->setSpacing(8);
+    lidar_view_actions->addWidget(lidar_top_view_button, 1);
+    lidar_view_actions->addWidget(lidar_reset_view_button, 1);
+    lidar_controls_layout->addLayout(lidar_view_actions);
+    lidar_controls_layout->addWidget(lidar_status_label_);
+    lidar_sidebar_layout->addWidget(lidar_controls);
 
     lidar_imu_playback_label_ = new QLabel(
         uiText("Dataset LiDAR IMU: no playback sample",
                "数据集雷达 IMU：尚无回放样本"),
-        lidar_page_);
+        lidar_sidebar);
     lidar_imu_playback_label_->setObjectName(
         QStringLiteral("lidarImuPlaybackLabel"));
     lidar_imu_playback_label_->setWordWrap(true);
     lidar_imu_playback_label_->setStyleSheet(QStringLiteral(
         "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
         "border-radius: 6px; padding: 7px 10px;"));
-    lidar_layout->addWidget(lidar_imu_playback_label_);
+    lidar_sidebar_layout->addWidget(lidar_imu_playback_label_);
 
     auto* lidar_network_group = new QGroupBox(
-        uiText("end0 / Mid360 network", "end0 / Mid360 网络"), lidar_page_);
+        uiText("end0 / Mid360 network", "end0 / Mid360 网络"),
+        lidar_sidebar);
     auto* lidar_network_root = new QVBoxLayout(lidar_network_group);
     auto* lidar_network_form = new QFormLayout();
     lidar_network_enabled_checkbox_ = new QCheckBox(
@@ -2009,9 +2051,12 @@ class MainWindow : public QMainWindow {
         QStringLiteral("255.255.255.0"), lidar_network_group);
     lidar_network_target_ip_ = new QLineEdit(
         QStringLiteral("192.168.1.3"), lidar_network_group);
-    lidar_network_host_ip_->setMaximumWidth(180);
-    lidar_network_netmask_->setMaximumWidth(180);
-    lidar_network_target_ip_->setMaximumWidth(180);
+    lidar_network_host_ip_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    lidar_network_netmask_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    lidar_network_target_ip_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
     lidar_network_form->addRow(QString(), lidar_network_enabled_checkbox_);
     lidar_network_form->addRow(
         uiText("RK end0 IPv4", "RK end0 IPv4"), lidar_network_host_ip_);
@@ -2020,17 +2065,25 @@ class MainWindow : public QMainWindow {
     lidar_network_form->addRow(
         uiText("Mid360 IPv4", "Mid360 IPv4"), lidar_network_target_ip_);
     lidar_network_root->addLayout(lidar_network_form);
-    auto* lidar_network_actions = new QHBoxLayout();
+    auto* lidar_network_actions = new QGridLayout();
+    lidar_network_actions->setHorizontalSpacing(8);
+    lidar_network_actions->setVerticalSpacing(8);
     lidar_network_refresh_button_ = new QPushButton(
         uiText("Refresh", "刷新"), lidar_network_group);
     lidar_network_apply_button_ = new QPushButton(
         uiText("Save and apply", "保存并应用"), lidar_network_group);
     lidar_network_probe_button_ = new QPushButton(
         uiText("Test connection", "测试连接"), lidar_network_group);
-    lidar_network_actions->addWidget(lidar_network_refresh_button_);
-    lidar_network_actions->addWidget(lidar_network_apply_button_);
-    lidar_network_actions->addWidget(lidar_network_probe_button_);
-    lidar_network_actions->addStretch(1);
+    lidar_network_refresh_button_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    lidar_network_apply_button_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    lidar_network_probe_button_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    lidar_network_actions->addWidget(lidar_network_refresh_button_, 0, 0);
+    lidar_network_actions->addWidget(lidar_network_apply_button_, 0, 1);
+    lidar_network_actions->addWidget(
+        lidar_network_probe_button_, 1, 0, 1, 2);
     lidar_network_root->addLayout(lidar_network_actions);
     lidar_network_status_label_ = new QLabel(
         uiText("Open a device to read end0 settings",
@@ -2041,9 +2094,12 @@ class MainWindow : public QMainWindow {
         "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
     lidar_network_root->addWidget(lidar_network_status_label_);
-    lidar_layout->addWidget(lidar_network_group);
+    lidar_sidebar_layout->addWidget(lidar_network_group);
+    lidar_sidebar_layout->addStretch(1);
     lidar_point_cloud_widget_ =
-        new prism_viewer::LidarPointCloudWidget(lidar_page_);
+        new prism_viewer::LidarPointCloudWidget(lidar_splitter);
+    lidar_point_cloud_widget_->setObjectName(
+        QStringLiteral("lidarPointCloudWidget"));
     lidar_point_cloud_widget_->setPointSize(
         lidar_point_size_spin_->value());
     connect(lidar_top_view_button, &QPushButton::clicked,
@@ -2052,7 +2108,11 @@ class MainWindow : public QMainWindow {
     connect(lidar_reset_view_button, &QPushButton::clicked,
             lidar_point_cloud_widget_,
             &prism_viewer::LidarPointCloudWidget::resetView);
-    lidar_layout->addWidget(lidar_point_cloud_widget_, 1);
+    lidar_splitter->addWidget(lidar_sidebar);
+    lidar_splitter->addWidget(lidar_point_cloud_widget_);
+    lidar_splitter->setStretchFactor(0, 0);
+    lidar_splitter->setStretchFactor(1, 1);
+    lidar_splitter->setSizes({360, 1100});
 
     wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);
     tabs_->addTab(wifi_hotspot_panel_, uiText("Network", "网络"));
@@ -2127,9 +2187,16 @@ class MainWindow : public QMainWindow {
     camera_encoding_panel_ = new CameraEncodingPanel(camera_tools);
     camera_tools->addTab(
         camera_encoding_panel_, uiText("Stream", "相机流"));
-    camera_exposure_panel_ = new CameraExposurePanel(camera_tools);
+    auto* exposure_scroll = new QScrollArea(camera_tools);
+    exposure_scroll->setObjectName(
+        QStringLiteral("cameraExposureScrollArea"));
+    exposure_scroll->setFrameShape(QFrame::NoFrame);
+    exposure_scroll->setWidgetResizable(true);
+    exposure_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    camera_exposure_panel_ = new CameraExposurePanel(exposure_scroll);
+    exposure_scroll->setWidget(camera_exposure_panel_);
     camera_tools->addTab(
-        camera_exposure_panel_, uiText("Exposure", "曝光"));
+        exposure_scroll, uiText("Exposure", "曝光"));
 
     auto* metadata_page = new QWidget(camera_tools);
     auto* metadata_layout = new QVBoxLayout(metadata_page);
@@ -7572,6 +7639,9 @@ int runViewerApplication(int argc, char** argv) {
     return success ? 0 : 14;
   }
   if (command_line.contains(QStringLiteral("--window-layout-self-test"))) {
+    window.resize(1480, 940);
+    window.show();
+    app.processEvents();
     window.ensurePolished();
     if (window.centralWidget() != nullptr &&
         window.centralWidget()->layout() != nullptr) {
@@ -7590,6 +7660,20 @@ int runViewerApplication(int argc, char** argv) {
             QStringLiteral("datasetPlaybackPositionLabel"));
     const auto* lidar_imu_playback =
         window.findChild<QLabel*>(QStringLiteral("lidarImuPlaybackLabel"));
+    auto* main_tabs =
+        window.findChild<QTabWidget*>(QStringLiteral("mainTabs"));
+    auto* imu_page =
+        window.findChild<QWidget*>(QStringLiteral("imuPage"));
+    auto* lidar_page =
+        window.findChild<QWidget*>(QStringLiteral("lidarPage"));
+    auto* imu_splitter =
+        window.findChild<QSplitter*>(QStringLiteral("imuPlotSplitter"));
+    auto* lidar_splitter =
+        window.findChild<QSplitter*>(QStringLiteral("lidarMainSplitter"));
+    auto* lidar_sidebar =
+        window.findChild<QWidget*>(QStringLiteral("lidarControlSidebar"));
+    auto* lidar_cloud =
+        window.findChild<QWidget*>(QStringLiteral("lidarPointCloudWidget"));
     const bool playback_controls_ok =
         dataset_playback_button != nullptr &&
         dataset_playback_speed != nullptr &&
@@ -7598,7 +7682,39 @@ int runViewerApplication(int argc, char** argv) {
         dataset_playback_speed->count() == 6 &&
         dataset_playback_speed->currentData().toDouble() > 0.0 &&
         !dataset_playback_button->isEnabled();
-    const bool success = playback_controls_ok &&
+    bool imu_layout_ok =
+        main_tabs != nullptr && imu_page != nullptr &&
+        imu_splitter != nullptr &&
+        imu_splitter->orientation() == Qt::Horizontal &&
+        imu_splitter->count() == 2;
+    if (imu_layout_ok) {
+      main_tabs->setCurrentWidget(imu_page);
+      app.processEvents();
+      const QList<int> imu_sizes = imu_splitter->sizes();
+      imu_layout_ok = imu_sizes.size() == 2 && imu_sizes[0] > 0 &&
+                      imu_sizes[1] > 0 &&
+                      std::abs(imu_sizes[0] - imu_sizes[1]) <= 24;
+    }
+    bool lidar_layout_ok =
+        main_tabs != nullptr && lidar_page != nullptr &&
+        lidar_splitter != nullptr && lidar_sidebar != nullptr &&
+        lidar_cloud != nullptr &&
+        lidar_splitter->orientation() == Qt::Horizontal &&
+        lidar_splitter->count() == 2 &&
+        lidar_splitter->indexOf(lidar_sidebar) == 0 &&
+        lidar_splitter->indexOf(lidar_cloud) == 1;
+    if (lidar_layout_ok) {
+      main_tabs->setCurrentWidget(lidar_page);
+      app.processEvents();
+      const QList<int> lidar_sizes = lidar_splitter->sizes();
+      lidar_layout_ok = lidar_sizes.size() == 2 &&
+                        lidar_sizes[0] >= 300 &&
+                        lidar_sizes[0] <= 440 &&
+                        lidar_sizes[1] > lidar_sizes[0] &&
+                        lidar_cloud->height() >= lidar_sidebar->height() - 2;
+    }
+    const bool success = playback_controls_ok && imu_layout_ok &&
+        lidar_layout_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
         minimum.height() <= kMaximumMainWindowMinimumHeight;
     std::cout << "main_window_layout_self_test="
@@ -7608,7 +7724,13 @@ int runViewerApplication(int argc, char** argv) {
               << kMaximumMainWindowMinimumWidth << "x"
               << kMaximumMainWindowMinimumHeight
               << " playback_controls="
-              << (playback_controls_ok ? "PASS" : "FAIL") << "\n";
+              << (playback_controls_ok ? "PASS" : "FAIL")
+              << " imu_horizontal="
+              << (imu_layout_ok ? "PASS" : "FAIL")
+              << " lidar_horizontal="
+              << (lidar_layout_ok ? "PASS" : "FAIL") << "\n";
+    window.close();
+    app.processEvents();
     return success ? 0 : 12;
   }
   window.show();

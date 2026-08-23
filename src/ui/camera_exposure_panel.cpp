@@ -5,6 +5,7 @@
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
@@ -51,11 +52,20 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
   group_layout->addWidget(message_label_);
 
   auto* automatic_limits = new QGridLayout();
-  automatic_limits->setHorizontalSpacing(8);
-  automatic_limits->setVerticalSpacing(7);
+  automatic_limits->setHorizontalSpacing(10);
+  automatic_limits->setVerticalSpacing(4);
 
   auto* target_label = new QLabel(
-      uiText("Shared target brightness", "统一目标亮度"), group);
+      uiText("Target brightness", "目标亮度"), group);
+  target_label->setObjectName(
+      QStringLiteral("cameraTargetBrightnessLabel"));
+  target_label->setWordWrap(true);
+  target_label->setSizePolicy(
+      QSizePolicy::Preferred, QSizePolicy::Maximum);
+  target_label->setToolTip(
+      uiText("Shared target brightness for all cameras using PL automatic "
+             "exposure.",
+             "所有使用 PL 自动曝光的相机共用此目标亮度。"));
   target_brightness_ = new QSpinBox(group);
   target_brightness_->setObjectName(
       QStringLiteral("cameraTargetBrightnessSpin"));
@@ -64,6 +74,8 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       prism::kAutoExposureMaxTargetBrightness);
   target_brightness_->setValue(
       prism::kAutoExposureDefaultTargetBrightness);
+  target_brightness_->setSizePolicy(
+      QSizePolicy::Expanding, QSizePolicy::Fixed);
   target_brightness_->setToolTip(
       uiText("PL uses the observed RAW image brightness for automatic "
              "control. It raises exposure first and only raises gain after "
@@ -77,14 +89,18 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       QStringLiteral("cameraMinExposureSpin"));
   min_exposure_us_->setSuffix(uiText(" us", " 微秒"));
   min_exposure_us_->setSingleStep(10);
-  min_exposure_us_->setMinimumWidth(110);
+  min_exposure_us_->setMinimumWidth(105);
+  min_exposure_us_->setSizePolicy(
+      QSizePolicy::Expanding, QSizePolicy::Fixed);
 
   max_exposure_us_ = new QSpinBox(group);
   max_exposure_us_->setObjectName(
       QStringLiteral("cameraMaxExposureSpin"));
   max_exposure_us_->setSuffix(uiText(" us", " 微秒"));
   max_exposure_us_->setSingleStep(10);
-  max_exposure_us_->setMinimumWidth(110);
+  max_exposure_us_->setMinimumWidth(105);
+  max_exposure_us_->setSizePolicy(
+      QSizePolicy::Expanding, QSizePolicy::Fixed);
 
   min_gain_ = new QDoubleSpinBox(group);
   min_gain_->setObjectName(QStringLiteral("cameraMinGainSpin"));
@@ -96,6 +112,7 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       static_cast<double>(prism::kCameraGainStepX1024) / 1024.0);
   min_gain_->setSuffix(QStringLiteral("×"));
   min_gain_->setMinimumWidth(105);
+  min_gain_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   min_gain_->setToolTip(
       uiText("Lower gain limit for automatic control and manual camera "
              "settings.",
@@ -111,6 +128,7 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       static_cast<double>(prism::kCameraGainStepX1024) / 1024.0);
   max_gain_->setSuffix(QStringLiteral("×"));
   max_gain_->setMinimumWidth(105);
+  max_gain_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   max_gain_->setToolTip(
       uiText("Upper gain limit for automatic control and manual camera "
              "settings.",
@@ -119,56 +137,109 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
   effective_max_exposure_label_ = new QLabel(group);
   effective_max_exposure_label_->setObjectName(
       QStringLiteral("cameraEffectiveMaxExposureLabel"));
+  effective_max_exposure_label_->setWordWrap(true);
+  effective_max_exposure_label_->setAlignment(
+      Qt::AlignLeft | Qt::AlignVCenter);
+  effective_max_exposure_label_->setSizePolicy(
+      QSizePolicy::Preferred, QSizePolicy::Maximum);
+  effective_max_exposure_label_->setToolTip(
+      uiText("The effective maximum is limited to the frame period minus "
+             "5 ms.",
+             "实际最高曝光时间受限于帧周期减 5 毫秒。"));
 
-  automatic_limits->addWidget(target_label, 0, 0);
-  automatic_limits->addWidget(target_brightness_, 0, 1);
+  auto make_field_label = [group](const QString& text,
+                                  const QString& object_name) {
+    auto* label = new QLabel(text, group);
+    label->setObjectName(object_name);
+    label->setWordWrap(true);
+    label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    return label;
+  };
+  auto* min_exposure_label = make_field_label(
+      uiText("Minimum exposure", "最低曝光时间"),
+      QStringLiteral("cameraMinExposureLabel"));
+  auto* max_exposure_label = make_field_label(
+      uiText("Maximum exposure", "最高曝光时间"),
+      QStringLiteral("cameraMaxExposureLabel"));
+  auto* min_gain_label = make_field_label(
+      uiText("Minimum gain", "最低增益"),
+      QStringLiteral("cameraMinGainLabel"));
+  auto* max_gain_label = make_field_label(
+      uiText("Maximum gain", "最高增益"),
+      QStringLiteral("cameraMaxGainLabel"));
+
+  automatic_limits->addWidget(target_label, 0, 0, Qt::AlignBottom);
   automatic_limits->addWidget(
-      new QLabel(uiText("Minimum exposure", "最低曝光时间"), group), 0, 2);
-  automatic_limits->addWidget(min_exposure_us_, 0, 3);
+      min_exposure_label, 0, 1, Qt::AlignBottom);
+  automatic_limits->addWidget(target_brightness_, 1, 0);
+  automatic_limits->addWidget(min_exposure_us_, 1, 1);
   automatic_limits->addWidget(
-      new QLabel(uiText("Maximum exposure", "最高曝光时间"), group), 1, 0);
-  automatic_limits->addWidget(max_exposure_us_, 1, 1);
+      max_exposure_label, 2, 0, Qt::AlignBottom);
+  automatic_limits->addWidget(min_gain_label, 2, 1, Qt::AlignBottom);
+  automatic_limits->addWidget(max_exposure_us_, 3, 0);
+  automatic_limits->addWidget(min_gain_, 3, 1);
+  automatic_limits->addWidget(max_gain_label, 4, 0, Qt::AlignBottom);
+  automatic_limits->addWidget(max_gain_, 5, 0);
   automatic_limits->addWidget(
-      new QLabel(uiText("Minimum gain", "最低增益"), group),
-      1, 2);
-  automatic_limits->addWidget(min_gain_, 1, 3);
-  automatic_limits->addWidget(
-      new QLabel(uiText("Maximum gain", "最高增益"), group), 2, 0);
-  automatic_limits->addWidget(max_gain_, 2, 1);
-  automatic_limits->addWidget(effective_max_exposure_label_, 2, 2, 1, 2);
+      effective_max_exposure_label_, 4, 1, 2, 1);
   automatic_limits->setColumnStretch(0, 1);
-  automatic_limits->setColumnStretch(2, 1);
+  automatic_limits->setColumnStretch(1, 1);
   group_layout->addLayout(automatic_limits);
 
-  auto* settings = new QGridLayout();
-  settings->setHorizontalSpacing(8);
-  settings->setVerticalSpacing(7);
-  settings->addWidget(
-      new QLabel(uiText("Camera", "相机"), group), 0, 0);
-  settings->addWidget(
-      new QLabel(uiText("Exposure mode", "曝光模式"), group), 0, 1);
-  settings->addWidget(
-      new QLabel(uiText("Manual exposure", "手动曝光时间"), group), 0, 2);
-  settings->addWidget(
-      new QLabel(uiText("SC130GS gain", "SC130GS 增益"), group), 0, 3);
+  auto* camera_settings_label = new QLabel(
+      uiText("Per-camera settings", "各相机设置"), group);
+  camera_settings_label->setObjectName(
+      QStringLiteral("cameraExposureSectionTitle"));
+  camera_settings_label->setStyleSheet(
+      QStringLiteral("font-weight: 600; color: #344054;"));
+  group_layout->addWidget(camera_settings_label);
 
   for (int camera = 0; camera < 4; ++camera) {
-    settings->addWidget(
-        new QLabel(uiText("Camera %1", "相机 %1").arg(camera), group),
-        camera + 1, 0);
+    auto* camera_card = new QFrame(group);
+    camera_card->setObjectName(
+        QStringLiteral("camera%1ExposureCard").arg(camera));
+    camera_card->setFrameShape(QFrame::StyledPanel);
+    auto* camera_layout = new QGridLayout(camera_card);
+    camera_layout->setContentsMargins(8, 7, 8, 8);
+    camera_layout->setHorizontalSpacing(8);
+    camera_layout->setVerticalSpacing(4);
 
-    camera_mode_[camera] = new QComboBox(group);
+    auto* camera_label = new QLabel(
+        uiText("Camera %1", "相机 %1").arg(camera), camera_card);
+    camera_label->setObjectName(
+        QStringLiteral("camera%1ExposureLabel").arg(camera));
+    camera_label->setStyleSheet(QStringLiteral("font-weight: 600;"));
+    camera_layout->addWidget(camera_label, 0, 0);
+
+    camera_mode_[camera] = new QComboBox(camera_card);
     camera_mode_[camera]->setObjectName(
         QStringLiteral("camera%1ExposureModeCombo").arg(camera));
     camera_mode_[camera]->addItem(
-        uiText("PL automatic exposure", "PL 自动曝光"),
+        uiText("PL automatic", "PL 自动"),
         kAutomaticModeValue);
     camera_mode_[camera]->addItem(
         uiText("Manual", "手动"), kManualModeValue);
-    camera_mode_[camera]->setMinimumWidth(150);
-    settings->addWidget(camera_mode_[camera], camera + 1, 1);
+    camera_mode_[camera]->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    camera_mode_[camera]->setToolTip(
+        uiText("Exposure mode for this camera.", "此相机的曝光模式。"));
+    camera_layout->addWidget(camera_mode_[camera], 0, 1);
 
-    manual_exposure_us_[camera] = new QSpinBox(group);
+    auto* manual_exposure_label = new QLabel(
+        uiText("Manual exposure", "手动曝光时间"), camera_card);
+    manual_exposure_label->setObjectName(
+        QStringLiteral("camera%1ManualExposureLabel").arg(camera));
+    manual_exposure_label->setWordWrap(true);
+    auto* sensor_gain_label = new QLabel(
+        uiText("SC130GS gain", "SC130GS 增益"), camera_card);
+    sensor_gain_label->setObjectName(
+        QStringLiteral("camera%1GainLabel").arg(camera));
+    sensor_gain_label->setWordWrap(true);
+    camera_layout->addWidget(
+        manual_exposure_label, 1, 0, Qt::AlignBottom);
+    camera_layout->addWidget(sensor_gain_label, 1, 1, Qt::AlignBottom);
+
+    manual_exposure_us_[camera] = new QSpinBox(camera_card);
     manual_exposure_us_[camera]->setObjectName(
         QStringLiteral("camera%1ExposureSpin").arg(camera));
     manual_exposure_us_[camera]->setRange(
@@ -179,10 +250,12 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
     manual_exposure_us_[camera]->setSuffix(
         uiText(" us", " 微秒"));
     manual_exposure_us_[camera]->setSingleStep(10);
-    manual_exposure_us_[camera]->setMinimumWidth(110);
-    settings->addWidget(manual_exposure_us_[camera], camera + 1, 2);
+    manual_exposure_us_[camera]->setMinimumWidth(105);
+    manual_exposure_us_[camera]->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    camera_layout->addWidget(manual_exposure_us_[camera], 2, 0);
 
-    sensor_gain_[camera] = new QDoubleSpinBox(group);
+    sensor_gain_[camera] = new QDoubleSpinBox(camera_card);
     sensor_gain_[camera]->setObjectName(
         QStringLiteral("camera%1GainSpin").arg(camera));
     sensor_gain_[camera]->setRange(
@@ -195,33 +268,42 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
         static_cast<double>(prism::kCameraDefaultGainX1024) / 1024.0);
     sensor_gain_[camera]->setSuffix(QStringLiteral("×"));
     sensor_gain_[camera]->setMinimumWidth(105);
+    sensor_gain_[camera]->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
     sensor_gain_[camera]->setToolTip(
         uiText("SC130GS analog sensor gain; valid steps are 1/32×. Higher "
                "gain brightens the image but also increases noise.",
                "SC130GS 传感器模拟增益，步进为 1/32×。提高增益会提亮画面，"
                "也会增加噪声。"));
-    settings->addWidget(sensor_gain_[camera], camera + 1, 3);
+    camera_layout->addWidget(sensor_gain_[camera], 2, 1);
+    camera_layout->setColumnStretch(0, 1);
+    camera_layout->setColumnStretch(1, 1);
+    group_layout->addWidget(camera_card);
   }
-  settings->setColumnStretch(1, 1);
-  settings->setColumnStretch(2, 1);
-  settings->setColumnStretch(3, 1);
-  group_layout->addLayout(settings);
 
   auto* actions = new QHBoxLayout();
   refresh_button_ = new QPushButton(
-      uiText("Refresh Exposure", "刷新曝光设置"), group);
+      uiText("Refresh", "刷新"), group);
   apply_button_ = new QPushButton(
-      uiText("Apply Runtime Settings", "应用运行时设置"), group);
+      uiText("Apply Settings", "应用设置"), group);
   refresh_button_->setObjectName(QStringLiteral("cameraExposureRefreshButton"));
   apply_button_->setObjectName(QStringLiteral("cameraExposureApplyButton"));
-  refresh_button_->setMinimumWidth(120);
-  apply_button_->setMinimumWidth(150);
+  refresh_button_->setMinimumWidth(100);
+  apply_button_->setMinimumWidth(100);
+  refresh_button_->setSizePolicy(
+      QSizePolicy::Expanding, QSizePolicy::Fixed);
+  apply_button_->setSizePolicy(
+      QSizePolicy::Expanding, QSizePolicy::Fixed);
+  refresh_button_->setToolTip(
+      uiText("Reload runtime exposure settings from the device.",
+             "从设备重新读取运行时曝光设置。"));
   apply_button_->setToolTip(
       uiText("Runtime-only: settings return to defaults after restart.",
              "仅在本次运行中生效，设备重启后恢复默认值。"));
-  actions->addWidget(refresh_button_);
-  actions->addWidget(apply_button_);
-  actions->addStretch(1);
+  actions->setSpacing(8);
+  actions->addWidget(refresh_button_, 1);
+  actions->addWidget(apply_button_, 1);
+  group_layout->addStretch(1);
   group_layout->addLayout(actions);
 
   root->addWidget(group);
@@ -474,8 +556,8 @@ void CameraExposurePanel::updateLimitRanges() {
             .arg(max_exposure_us_->value()));
   }
   effective_max_exposure_label_->setText(
-      uiText("Effective maximum at %1 FPS: %2 us (frame period minus 5 ms)",
-             "%1 FPS 下实际最高曝光时间：%2 微秒（帧周期减 5 毫秒）")
+      uiText("Effective max at %1 FPS: %2 us",
+             "%1 FPS 实际上限：%2 微秒")
           .arg(camera_fps_)
           .arg(effective_max));
 }

@@ -3,6 +3,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QFrame>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSizePolicy>
@@ -47,14 +48,41 @@ int main(int argc, char** argv) {
       QStringLiteral("cameraMaxGainSpin"));
   auto* message = panel.findChild<QLabel*>(
       QStringLiteral("cameraExposureMessage"));
+  auto* target_label = panel.findChild<QLabel*>(
+      QStringLiteral("cameraTargetBrightnessLabel"));
+  auto* effective_max_label = panel.findChild<QLabel*>(
+      QStringLiteral("cameraEffectiveMaxExposureLabel"));
+  auto* camera0_card = panel.findChild<QFrame*>(
+      QStringLiteral("camera0ExposureCard"));
+  auto* camera1_card = panel.findChild<QFrame*>(
+      QStringLiteral("camera1ExposureCard"));
   require(gain0 != nullptr && exposure0 != nullptr,
           "camera 0 exposure and gain controls are discoverable");
   require(mode0 != nullptr && min_exposure != nullptr &&
               max_exposure != nullptr && min_gain != nullptr &&
               max_gain != nullptr && message != nullptr,
           "automatic exposure limit controls are discoverable");
+  require(target_label != nullptr && effective_max_label != nullptr &&
+              camera0_card != nullptr && camera1_card != nullptr,
+          "compact exposure layout elements are discoverable");
   require(message->sizePolicy().verticalPolicy() == QSizePolicy::Maximum,
           "exposure status remains content-height instead of stretching");
+  panel.resize(360, 900);
+  panel.show();
+  QApplication::processEvents();
+  require(panel.minimumSizeHint().width() <= 360,
+          "exposure panel fits the narrow camera tools sidebar");
+  require(target_label->wordWrap() && effective_max_label->wordWrap(),
+          "long automatic-limit text wraps instead of clipping");
+  require(exposure0->width() >= 105 && gain0->width() >= 105 &&
+              exposure0->geometry().right() < gain0->geometry().left(),
+          "per-camera numeric controls remain readable and non-overlapping");
+  require(mode0->width() >= 105 &&
+              mode0->currentText() == QStringLiteral("PL automatic"),
+          "camera mode is concise and readable in the narrow sidebar");
+  require(camera1_card->geometry().top() -
+              camera0_card->geometry().bottom() <= 12,
+          "camera cards stay compact instead of absorbing vertical space");
   if (min_exposure->minimum() != 50) {
     std::cerr << "minimum exposure control floor: expected 50 us, got "
               << min_exposure->minimum() << " us\n";
