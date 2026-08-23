@@ -342,18 +342,27 @@ jobs:
                 fi
               done < /opt/prism-viewer/ELF_FILES.txt
 
-              app="$(ldd /opt/prism-viewer/bin/prism-viewer)"
-              sdk="$(ldd /opt/prism-viewer/lib/libprism_usb_sdk.so)"
-              ssl="$(ldd /opt/prism-viewer/lib/libssl.so.3)"
-              grep -Fq \
-                "libprism_usb_sdk.so => /opt/prism-viewer/lib/libprism_usb_sdk.so" \
-                <<<"$app"
-              grep -Fq \
-                "libcrypto.so.3 => /opt/prism-viewer/lib/libcrypto.so.3" \
-                <<<"$sdk"
-              grep -Fq \
-                "libcrypto.so.3 => /opt/prism-viewer/lib/libcrypto.so.3" \
-                <<<"$ssl"
+              resolve_dependency() {
+                while read -r name marker path remainder; do
+                  if [ "$name" = "$2" ] && [ "$marker" = "=>" ]; then
+                    printf "%s\n" "$path"
+                    return 0
+                  fi
+                done < <(ldd "$1")
+                return 1
+              }
+              app_sdk="$(resolve_dependency \
+                /opt/prism-viewer/bin/prism-viewer libprism_usb_sdk.so)"
+              sdk_crypto="$(resolve_dependency \
+                /opt/prism-viewer/lib/libprism_usb_sdk.so libcrypto.so.3)"
+              ssl_crypto="$(resolve_dependency \
+                /opt/prism-viewer/lib/libssl.so.3 libcrypto.so.3)"
+              test "$(readlink -f "$app_sdk")" = \
+                /opt/prism-viewer/lib/libprism_usb_sdk.so
+              test "$(readlink -f "$sdk_crypto")" = \
+                /opt/prism-viewer/lib/libcrypto.so.3
+              test "$(readlink -f "$ssl_crypto")" = \
+                /opt/prism-viewer/lib/libcrypto.so.3
             '
 
           checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
