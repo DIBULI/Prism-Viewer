@@ -261,6 +261,7 @@ jobs:
           cmake --install build-linux-ci --prefix "$stage"
           mkdir -p "$package"
           cp -a "$stage"/. "$package"/
+          install -m 0644 packaging/qt.conf "$package/bin/qt.conf"
 
           qt_plugins=(
             "platforms/libqxcb.so"
@@ -357,6 +358,7 @@ jobs:
 
           required_patterns=(
             "bin/prism-viewer"
+            "bin/qt.conf"
             "lib/libprism_usb_sdk.so"
             "lib/libQt6Core.so.6"
             "lib/libQt6Gui.so.6"
