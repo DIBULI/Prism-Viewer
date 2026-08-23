@@ -3,6 +3,7 @@
 #include "communication/device_session.hpp"
 #include "control/operation_controller.hpp"
 #include "dataset/dataset_browser.hpp"
+#include "dataset/dataset_playback.hpp"
 #include "dataset/dataset_playback_timing.hpp"
 #include "dataset/rosbag_exporter.hpp"
 #include "imu_units.hpp"
@@ -143,15 +144,23 @@ using prism_viewer::common::toQString;
 using prism_viewer::common::uiText;
 using prism_viewer::common::wideToQString;
 using prism_viewer::dataset::DatasetImageEntry;
+using prism_viewer::dataset::DatasetPlaybackData;
+using prism_viewer::dataset::DatasetPlaybackEvent;
+using prism_viewer::dataset::DatasetPlaybackEventType;
+using prism_viewer::dataset::DatasetPlaybackImuSample;
+using prism_viewer::dataset::DatasetPlaybackLidarBatch;
+using prism_viewer::dataset::DatasetPlaybackLidarImuSample;
 using prism_viewer::dataset::DatasetTimestampSummary;
 using prism_viewer::dataset::DatasetValidationResult;
 using prism_viewer::dataset::DatasetValidationSeverity;
 using prism_viewer::dataset::RosbagFormat;
-using prism_viewer::dataset::datasetPlaybackDelayMs;
 using prism_viewer::dataset::sanitizeDatasetPlaybackRate;
 using prism_viewer::dataset::validatePrismDataset;
 using prism_viewer::dataset::TumFileSummary;
 using prism_viewer::dataset::inspectDatasetCameraIndexes;
+using prism_viewer::dataset::firstDatasetPlaybackEventAfter;
+using prism_viewer::dataset::loadDatasetLidarPoints;
+using prism_viewer::dataset::loadDatasetPlaybackData;
 using prism_viewer::dataset::loadDatasetImage;
 using prism_viewer::dataset::loadDatasetImageIndex;
 using prism_viewer::dataset::summarizeTumFile;
@@ -236,6 +245,13 @@ int angularVelocityDisplayPrecision(AngularVelocityUnit unit) {
 
 int temperatureDisplayPrecision(TemperatureUnit unit) {
   return unit == TemperatureUnit::MilliCelsius ? 0 : 2;
+}
+
+int32_t roundedInt32(double value) {
+  const double bounded = std::clamp(
+      value, static_cast<double>(std::numeric_limits<int32_t>::min()),
+      static_cast<double>(std::numeric_limits<int32_t>::max()));
+  return static_cast<int32_t>(std::llround(bounded));
 }
 
 struct CameraPreviewJob {
@@ -1969,6 +1985,18 @@ class MainWindow : public QMainWindow {
     lidar_controls_layout->addWidget(lidar_status_label_, 1);
     lidar_layout->addWidget(lidar_controls);
 
+    lidar_imu_playback_label_ = new QLabel(
+        uiText("Dataset LiDAR IMU: no playback sample",
+               "数据集雷达 IMU：尚无回放样本"),
+        lidar_page_);
+    lidar_imu_playback_label_->setObjectName(
+        QStringLiteral("lidarImuPlaybackLabel"));
+    lidar_imu_playback_label_->setWordWrap(true);
+    lidar_imu_playback_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 6px; padding: 7px 10px;"));
+    lidar_layout->addWidget(lidar_imu_playback_label_);
+
     auto* lidar_network_group = new QGroupBox(
         uiText("end0 / Mid360 network", "end0 / Mid360 网络"), lidar_page_);
     auto* lidar_network_root = new QVBoxLayout(lidar_network_group);
@@ -2220,6 +2248,10 @@ class MainWindow : public QMainWindow {
         initial_playback_index);
     dataset_playback_rate_ =
         dataset_playback_speed_selector_->currentData().toDouble();
+    dataset_playback_position_label_ = new QLabel(
+        uiText("Timeline: -", "时间线：-"), dataset_page_);
+    dataset_playback_position_label_->setObjectName(
+        QStringLiteral("datasetPlaybackPositionLabel"));
     dataset_frame_label_ = new QLabel(
         uiText("Frame: -", "帧：-"), dataset_page_);
     dataset_frame_slider_ = new QSlider(Qt::Horizontal, dataset_page_);
@@ -2231,6 +2263,8 @@ class MainWindow : public QMainWindow {
     dataset_navigation->addSpacing(6);
     dataset_navigation->addWidget(dataset_playback_speed_label);
     dataset_navigation->addWidget(dataset_playback_speed_selector_);
+    dataset_navigation->addSpacing(8);
+    dataset_navigation->addWidget(dataset_playback_position_label_);
     dataset_navigation->addSpacing(8);
     dataset_navigation->addWidget(dataset_frame_label_);
     dataset_navigation->addWidget(dataset_frame_slider_, 1);
@@ -2616,8 +2650,13 @@ class MainWindow : public QMainWindow {
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) {
               showDatasetFrame(frame);
+              if (frame >= 0 &&
+                  static_cast<size_t>(frame) < dataset_frame_count_) {
+                seekDatasetPlaybackToTimestamp(
+                    dataset_camera_entries_[0][frame].timestamp_us);
+              }
               updateDatasetPlaybackControls();
-              if (dataset_playback_active_) scheduleDatasetPlaybackStep();
+              if (dataset_playback_active_) restartDatasetPlaybackClock();
             });
     connect(dataset_previous_frame_button_, &QPushButton::clicked, this,
             [this]() {
@@ -2647,21 +2686,18 @@ class MainWindow : public QMainWindow {
                         QStringLiteral("PrismViewer"))
                   .setValue(QStringLiteral("dataset/playback_rate"),
                             dataset_playback_rate_);
-              if (dataset_playback_active_) scheduleDatasetPlaybackStep();
+              if (dataset_playback_active_) restartDatasetPlaybackClock();
             });
     connect(dataset_playback_timer_, &QTimer::timeout, this, [this]() {
-      if (!dataset_playback_active_) return;
-      const size_t next_frame =
-          static_cast<size_t>(dataset_current_frame_) + 1u;
-      if (next_frame >= dataset_frame_count_) {
-        setDatasetPlaybackActive(false);
-        return;
-      }
-      dataset_frame_slider_->setValue(static_cast<int>(next_frame));
+      processDatasetPlaybackEvents();
     });
     connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
       QWidget* page = tabs_->widget(index);
-      if (!client_.isOpen() &&
+      const bool dataset_imu_page =
+          page == imu_page_ && hasDatasetImuPlayback();
+      const bool dataset_lidar_page =
+          page == lidar_page_ && hasDatasetLidarPlayback();
+      if (!client_.isOpen() && !dataset_imu_page && !dataset_lidar_page &&
           (page == camera_page_ || page == imu_page_ || page == lidar_page_ ||
            page == wifi_hotspot_panel_)) {
         const QString section =
@@ -2702,6 +2738,67 @@ class MainWindow : public QMainWindow {
     stopCameraPreviewWorker();
     dataset_recorder_.stop();
     client_.closeDevice();
+  }
+
+  bool runDatasetPlaybackSelfTest(const QString& directory,
+                                  QString* report) {
+    loadRecordedDataset(directory, false);
+    const bool streams_loaded =
+        dataset_frame_count_ == 1u &&
+        dataset_playback_data_.onboard_imus[0].size() == 1u &&
+        dataset_playback_data_.onboard_imus[1].size() == 1u &&
+        dataset_playback_data_.lidar_batches.size() == 1u &&
+        dataset_playback_data_.lidar_imu_samples.size() == 1u &&
+        dataset_playback_data_.timeline.size() == 5u;
+
+    bool events_dispatched = streams_loaded;
+    if (events_dispatched) {
+      resetDatasetPlaybackVisualization();
+      dataset_playback_cursor_ = 0u;
+      for (const auto& event : dataset_playback_data_.timeline) {
+        events_dispatched = dispatchDatasetPlaybackEvent(event) &&
+                            events_dispatched;
+      }
+      dataset_playback_cursor_ = dataset_playback_data_.timeline.size();
+      updateDatasetPlaybackPositionLabel();
+    }
+
+    const bool imu_rendered =
+        events_dispatched && dataset_playback_imu_counts_[0] == 1u &&
+        dataset_playback_imu_counts_[1] == 1u &&
+        imu_table_->item(0, 1)->text() == QStringLiteral("1") &&
+        imu_table_->item(1, 1)->text() == QStringLiteral("1") &&
+        imu_table_->item(0, 4)->text() != QStringLiteral("-") &&
+        imu_table_->item(1, 7)->text() != QStringLiteral("-");
+    const bool lidar_rendered =
+        events_dispatched && dataset_playback_lidar_points_ == 2u &&
+        lidar_point_cloud_widget_->pointCount() == 2u &&
+        dataset_playback_lidar_imu_count_ == 1u &&
+        lidar_imu_playback_label_->text().contains(QStringLiteral("1/1"));
+    const bool pages_available =
+        imu_page_->isEnabled() && lidar_page_->isEnabled() &&
+        imu0_selector_->isEnabled() && imu1_selector_->isEnabled() &&
+        dataset_playback_button_->isEnabled();
+    const bool success = streams_loaded && events_dispatched && imu_rendered &&
+                         lidar_rendered && pages_available;
+    if (report != nullptr) {
+      *report = QStringLiteral(
+                    "streams=%1 dispatch=%2 imu=%3 lidar=%4 pages=%5 "
+                    "events=%6 points=%7")
+                    .arg(streams_loaded ? QStringLiteral("PASS")
+                                        : QStringLiteral("FAIL"))
+                    .arg(events_dispatched ? QStringLiteral("PASS")
+                                           : QStringLiteral("FAIL"))
+                    .arg(imu_rendered ? QStringLiteral("PASS")
+                                      : QStringLiteral("FAIL"))
+                    .arg(lidar_rendered ? QStringLiteral("PASS")
+                                        : QStringLiteral("FAIL"))
+                    .arg(pages_available ? QStringLiteral("PASS")
+                                         : QStringLiteral("FAIL"))
+                    .arg(dataset_playback_data_.timeline.size())
+                    .arg(dataset_playback_lidar_points_);
+    }
+    return success;
   }
 
  protected:
@@ -4085,8 +4182,12 @@ class MainWindow : public QMainWindow {
     language_selector_->setEnabled(!busy && !device_open);
     refresh_devices_button_->setEnabled(!busy && !device_open);
     if (camera_page_ != nullptr) camera_page_->setEnabled(device_open);
-    if (imu_page_ != nullptr) imu_page_->setEnabled(device_open);
-    if (lidar_page_ != nullptr) lidar_page_->setEnabled(device_open);
+    if (imu_page_ != nullptr) {
+      imu_page_->setEnabled(device_open || hasDatasetImuPlayback());
+    }
+    if (lidar_page_ != nullptr) {
+      lidar_page_->setEnabled(device_open || hasDatasetLidarPlayback());
+    }
     if (lidar_enabled_checkbox_ != nullptr) {
       lidar_enabled_checkbox_->setEnabled(device_open && !busy && !upgrading);
     }
@@ -4139,8 +4240,9 @@ class MainWindow : public QMainWindow {
       camera_encoding_panel_->setControlsLocked(
           time_syncing || wifi_busy || exposure_busy || upgrading);
     }
-    if (imu0_selector_ != nullptr) imu0_selector_->setEnabled(device_open);
-    if (imu1_selector_ != nullptr) imu1_selector_->setEnabled(device_open);
+    const bool imu_available = device_open || hasDatasetImuPlayback();
+    if (imu0_selector_ != nullptr) imu0_selector_->setEnabled(imu_available);
+    if (imu1_selector_ != nullptr) imu1_selector_->setEnabled(imu_available);
     open_device_button_->setEnabled(!busy && !device_open && selection_valid);
     close_device_button_->setEnabled(
         device_open && !upgrading && !time_syncing && !wifi_busy &&
@@ -4166,6 +4268,9 @@ class MainWindow : public QMainWindow {
       dataset_validate_button_->setEnabled(
           !dataset_recorder_.isActive() && !worker_running_ &&
           !rosbag_export_running_);
+    }
+    if (dataset_playback_button_ != nullptr) {
+      updateDatasetPlaybackControls();
     }
   }
 
@@ -4602,9 +4707,20 @@ class MainWindow : public QMainWindow {
         .arg(timestamp_us % 1000000ULL, 6, 10, QLatin1Char('0'));
   }
 
+  bool hasDatasetImuPlayback() const {
+    return !dataset_playback_data_.onboard_imus[0].empty() ||
+           !dataset_playback_data_.onboard_imus[1].empty();
+  }
+
+  bool hasDatasetLidarPlayback() const {
+    return !dataset_playback_data_.lidar_batches.empty() ||
+           !dataset_playback_data_.lidar_imu_samples.empty();
+  }
+
   void updateDatasetPlaybackControls() {
     const bool has_frames = dataset_frame_count_ != 0u;
-    const bool can_play = dataset_frame_count_ > 1u;
+    const bool can_play = !dataset_playback_data_.timeline.empty() &&
+                          !worker_running_ && !rosbag_export_running_;
     if (!can_play && dataset_playback_active_) {
       dataset_playback_active_ = false;
       dataset_playback_timer_->stop();
@@ -4622,33 +4738,428 @@ class MainWindow : public QMainWindow {
     dataset_playback_speed_selector_->setEnabled(can_play);
   }
 
+  void updateDatasetPlaybackPositionLabel() {
+    if (dataset_playback_position_label_ == nullptr) return;
+    const size_t event_count = dataset_playback_data_.timeline.size();
+    if (event_count == 0u) {
+      dataset_playback_position_label_->setText(
+          uiText("Timeline: -", "时间线：-"));
+      return;
+    }
+    if (dataset_playback_cursor_ == 0u) {
+      dataset_playback_position_label_->setText(
+          uiText("Timeline 0/%1 | ready", "时间线 0/%1 | 就绪")
+              .arg(event_count));
+      return;
+    }
+    const size_t displayed = std::min(dataset_playback_cursor_, event_count);
+    const uint64_t timestamp_us =
+        dataset_playback_data_.timeline[displayed - 1u].timestamp_us;
+    dataset_playback_position_label_->setText(
+        uiText("Timeline %1/%2 | %3", "时间线 %1/%2 | %3")
+            .arg(displayed)
+            .arg(event_count)
+            .arg(describeDatasetTimestamp(timestamp_us)));
+  }
+
+  void resetDatasetPlaybackVisualization() {
+    dataset_playback_imu_counts_.fill(0u);
+    dataset_playback_lidar_points_ = 0u;
+    dataset_playback_lidar_imu_count_ = 0u;
+    if (imu_plot_ != nullptr) imu_plot_->clear();
+    if (imu_table_ != nullptr) {
+      imu_table_->setUpdatesEnabled(false);
+      for (int sensor = 0; sensor < imu_table_->rowCount(); ++sensor) {
+        for (int column = 1; column < imu_table_->columnCount(); ++column) {
+          imu_table_->item(sensor, column)->setText(QStringLiteral("-"));
+        }
+      }
+      imu_table_->setUpdatesEnabled(true);
+      imu_table_->viewport()->update();
+    }
+    {
+      std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+      pending_imu_ui_ = {};
+      pending_imu_ui_dirty_.fill(false);
+      for (auto& samples : pending_imu_plot_samples_) samples.clear();
+    }
+    if (lidar_point_cloud_widget_ != nullptr) {
+      lidar_point_cloud_widget_->clearPoints();
+    }
+    if (!dataset_playback_data_.lidar_batches.empty()) {
+      lidar_status_label_->setText(
+          uiText("Dataset LiDAR ready | %1 batches",
+                 "数据集雷达已就绪 | %1 批")
+              .arg(dataset_playback_data_.lidar_batches.size()));
+      lidar_status_label_->setStyleSheet(QStringLiteral(
+          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    } else {
+      lidar_status_label_->setText(
+          uiText("No LiDAR point data in the loaded dataset",
+                 "已加载的数据集中没有雷达点云数据"));
+      lidar_status_label_->setStyleSheet(QStringLiteral(
+          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    }
+    if (lidar_imu_playback_label_ != nullptr) {
+      lidar_imu_playback_label_->setText(
+          dataset_playback_data_.lidar_imu_samples.empty()
+              ? uiText("No LiDAR IMU data in the loaded dataset",
+                       "已加载的数据集中没有雷达 IMU 数据")
+              : uiText("Dataset LiDAR IMU: no playback sample",
+                       "数据集雷达 IMU：尚无回放样本"));
+      lidar_imu_playback_label_->setStyleSheet(QStringLiteral(
+          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+          "border-radius: 6px; padding: 7px 10px;"));
+    }
+  }
+
+  prism::ImuSample makeDatasetImuSample(
+      const DatasetPlaybackImuSample& recorded, size_t stream_index) const {
+    constexpr double kStandardGravity = 9.80665;
+    constexpr double kRadiansPerDegree =
+        3.14159265358979323846 / 180.0;
+    prism::ImuSample sample;
+    sample.sensor_id = recorded.sensor_id;
+    sample.sample_id = static_cast<uint32_t>(std::min<size_t>(
+        stream_index, std::numeric_limits<uint32_t>::max()));
+    sample.timestamp_us = recorded.timestamp_us;
+    sample.timestamp_synced = true;
+    for (size_t axis = 0; axis < 3u; ++axis) {
+      sample.accel_mg[axis] = roundedInt32(
+          recorded.acceleration_m_s2[axis] * 1000.0 / kStandardGravity);
+      sample.gyro_mdps[axis] = roundedInt32(
+          recorded.angular_velocity_rad_s[axis] * 1000.0 /
+          kRadiansPerDegree);
+    }
+    return sample;
+  }
+
+  void applyDatasetImuSample(size_t sensor, size_t stream_index) {
+    if (sensor >= dataset_playback_data_.onboard_imus.size() ||
+        stream_index >= dataset_playback_data_.onboard_imus[sensor].size()) {
+      return;
+    }
+    const auto& recorded =
+        dataset_playback_data_.onboard_imus[sensor][stream_index];
+    const prism::ImuSample sample =
+        makeDatasetImuSample(recorded, stream_index);
+    double sample_rate_hz = 0.0;
+    if (stream_index != 0u) {
+      const uint64_t previous = dataset_playback_data_.onboard_imus[sensor]
+                                    [stream_index - 1u]
+                                        .timestamp_us;
+      if (recorded.timestamp_us > previous) {
+        sample_rate_hz = 1000000.0 /
+                         static_cast<double>(recorded.timestamp_us - previous);
+      }
+    }
+    ImuUiSnapshot snapshot;
+    snapshot.sample = sample;
+    snapshot.received_count = stream_index + 1u;
+    snapshot.sample_rate_hz = sample_rate_hz;
+    dataset_playback_imu_counts_[sensor] = snapshot.received_count;
+    {
+      std::lock_guard<std::mutex> lock(imu_ui_mutex_);
+      pending_imu_ui_[sensor] = snapshot;
+    }
+    applyImuUiSnapshot(snapshot);
+    imu_table_->item(static_cast<int>(sensor), 10)->setText(
+        uiText("not recorded", "未录制"));
+    imu_table_->item(static_cast<int>(sensor), 11)->setText(
+        uiText("dataset", "数据集"));
+    imu_table_->item(static_cast<int>(sensor), 12)->setText(
+        uiText("dataset", "数据集"));
+    const auto recorded_time = std::chrono::steady_clock::time_point(
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::microseconds(recorded.timestamp_us)));
+    imu_plot_->appendSample(sample, recorded_time);
+  }
+
+  bool applyDatasetLidarBatch(size_t stream_index) {
+    if (stream_index >= dataset_playback_data_.lidar_batches.size()) {
+      return false;
+    }
+    const DatasetPlaybackLidarBatch& batch =
+        dataset_playback_data_.lidar_batches[stream_index];
+    std::vector<prism_viewer::dataset::DatasetPlaybackLidarPoint>
+        stored_points;
+    std::string error;
+    if (!loadDatasetLidarPoints(batch, &stored_points, &error)) {
+      const QString detail = toQString(error);
+      lidar_status_label_->setText(
+          uiText("Dataset LiDAR playback failed: %1",
+                 "数据集雷达回放失败：%1")
+              .arg(detail));
+      lidar_status_label_->setStyleSheet(QStringLiteral(
+          "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+      appendLog(QStringLiteral("Dataset LiDAR playback failed: %1")
+                    .arg(detail));
+      return false;
+    }
+    std::vector<prism::LidarPoint> points;
+    points.reserve(stored_points.size());
+    for (const auto& stored : stored_points) {
+      points.push_back({stored.x_mm, stored.y_mm, stored.z_mm,
+                        stored.reflectivity, stored.tag});
+    }
+    lidar_point_cloud_widget_->appendPoints(points);
+    dataset_playback_lidar_points_ += points.size();
+    const QString model =
+        batch.model == static_cast<uint8_t>(prism::LidarModel::Mid360)
+            ? QStringLiteral("Mid-360")
+            : QStringLiteral("Mid-360S");
+    lidar_status_label_->setText(
+        uiText("Dataset %1 point cloud | batch %2/%3 (id %4) | "
+               "played %5 points | displayed %6 | %7",
+               "数据集 %1 点云 | 批次 %2/%3（id %4）| "
+               "已回放 %5 点 | 显示 %6 | %7")
+            .arg(model)
+            .arg(stream_index + 1u)
+            .arg(dataset_playback_data_.lidar_batches.size())
+            .arg(batch.batch_id)
+            .arg(dataset_playback_lidar_points_)
+            .arg(lidar_point_cloud_widget_->pointCount())
+            .arg(describeDatasetTimestamp(batch.timestamp_us)));
+    lidar_status_label_->setStyleSheet(QStringLiteral(
+        "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+        "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    return true;
+  }
+
+  void applyDatasetLidarImuSample(size_t stream_index) {
+    if (stream_index >= dataset_playback_data_.lidar_imu_samples.size()) {
+      return;
+    }
+    const DatasetPlaybackLidarImuSample& sample =
+        dataset_playback_data_.lidar_imu_samples[stream_index];
+    dataset_playback_lidar_imu_count_ = stream_index + 1u;
+    const QString model =
+        sample.model == static_cast<uint8_t>(prism::LidarModel::Mid360)
+            ? QStringLiteral("Mid-360")
+            : (sample.model ==
+                       static_cast<uint8_t>(prism::LidarModel::Mid360S)
+                   ? QStringLiteral("Mid-360S")
+                   : uiText("legacy", "旧格式"));
+    lidar_imu_playback_label_->setText(
+        uiText("Dataset LiDAR IMU %1/%2 | %3 | %4 | "
+               "accel [%5, %6, %7] m/s² | gyro [%8, %9, %10] rad/s",
+               "数据集雷达 IMU %1/%2 | %3 | %4 | "
+               "加速度 [%5, %6, %7] m/s² | 角速度 [%8, %9, %10] rad/s")
+            .arg(stream_index + 1u)
+            .arg(dataset_playback_data_.lidar_imu_samples.size())
+            .arg(model)
+            .arg(describeDatasetTimestamp(sample.timestamp_us))
+            .arg(sample.acceleration_m_s2[0], 0, 'f', 4)
+            .arg(sample.acceleration_m_s2[1], 0, 'f', 4)
+            .arg(sample.acceleration_m_s2[2], 0, 'f', 4)
+            .arg(sample.angular_velocity_rad_s[0], 0, 'f', 5)
+            .arg(sample.angular_velocity_rad_s[1], 0, 'f', 5)
+            .arg(sample.angular_velocity_rad_s[2], 0, 'f', 5));
+    lidar_imu_playback_label_->setStyleSheet(QStringLiteral(
+        "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+        "border-radius: 6px; padding: 7px 10px;"));
+  }
+
+  bool dispatchDatasetPlaybackEvent(const DatasetPlaybackEvent& event) {
+    switch (event.type) {
+      case DatasetPlaybackEventType::CameraFrame: {
+        if (event.stream_index >= dataset_frame_count_ ||
+            event.stream_index >
+                static_cast<size_t>(std::numeric_limits<int>::max())) {
+          return false;
+        }
+        const int frame = static_cast<int>(event.stream_index);
+        const QSignalBlocker blocker(dataset_frame_slider_);
+        dataset_frame_slider_->setValue(frame);
+        showDatasetFrame(frame);
+        return true;
+      }
+      case DatasetPlaybackEventType::OnboardImu0:
+        applyDatasetImuSample(0u, event.stream_index);
+        return true;
+      case DatasetPlaybackEventType::OnboardImu1:
+        applyDatasetImuSample(1u, event.stream_index);
+        return true;
+      case DatasetPlaybackEventType::LidarPoints:
+        return applyDatasetLidarBatch(event.stream_index);
+      case DatasetPlaybackEventType::LidarImu:
+        applyDatasetLidarImuSample(event.stream_index);
+        return true;
+    }
+    return false;
+  }
+
+  void seekDatasetPlaybackToTimestamp(uint64_t timestamp_us) {
+    dataset_playback_cursor_ =
+        firstDatasetPlaybackEventAfter(dataset_playback_data_, timestamp_us);
+    if (worker_running_) {
+      updateDatasetPlaybackPositionLabel();
+      return;
+    }
+    resetDatasetPlaybackVisualization();
+    for (size_t sensor = 0; sensor < dataset_playback_data_.onboard_imus.size();
+         ++sensor) {
+      const auto& samples = dataset_playback_data_.onboard_imus[sensor];
+      const auto found = std::upper_bound(
+          samples.begin(), samples.end(), timestamp_us,
+          [](uint64_t timestamp, const DatasetPlaybackImuSample& sample) {
+            return timestamp < sample.timestamp_us;
+          });
+      if (found != samples.begin()) {
+        applyDatasetImuSample(
+            sensor, static_cast<size_t>((found - samples.begin()) - 1));
+      }
+    }
+    const auto lidar = std::upper_bound(
+        dataset_playback_data_.lidar_batches.begin(),
+        dataset_playback_data_.lidar_batches.end(), timestamp_us,
+        [](uint64_t timestamp, const DatasetPlaybackLidarBatch& batch) {
+          return timestamp < batch.timestamp_us;
+        });
+    if (lidar != dataset_playback_data_.lidar_batches.begin()) {
+      (void)applyDatasetLidarBatch(static_cast<size_t>(
+          (lidar - dataset_playback_data_.lidar_batches.begin()) - 1));
+    }
+    const auto lidar_imu = std::upper_bound(
+        dataset_playback_data_.lidar_imu_samples.begin(),
+        dataset_playback_data_.lidar_imu_samples.end(), timestamp_us,
+        [](uint64_t timestamp,
+           const DatasetPlaybackLidarImuSample& sample) {
+          return timestamp < sample.timestamp_us;
+        });
+    if (lidar_imu != dataset_playback_data_.lidar_imu_samples.begin()) {
+      applyDatasetLidarImuSample(static_cast<size_t>(
+          (lidar_imu - dataset_playback_data_.lidar_imu_samples.begin()) -
+          1));
+    }
+    updateDatasetPlaybackPositionLabel();
+  }
+
+  void resetDatasetPlaybackPosition() {
+    dataset_playback_timer_->stop();
+    if (dataset_frame_count_ != 0u) {
+      const QSignalBlocker blocker(dataset_frame_slider_);
+      dataset_frame_slider_->setValue(0);
+      showDatasetFrame(0);
+      seekDatasetPlaybackToTimestamp(
+          dataset_camera_entries_[0][0].timestamp_us);
+    } else {
+      if (!worker_running_) resetDatasetPlaybackVisualization();
+      dataset_playback_cursor_ = 0u;
+      updateDatasetPlaybackPositionLabel();
+    }
+  }
+
   void scheduleDatasetPlaybackStep() {
     dataset_playback_timer_->stop();
+    if (!dataset_playback_active_ ||
+        dataset_playback_cursor_ >= dataset_playback_data_.timeline.size()) {
+      return;
+    }
+    const uint64_t next_timestamp_us =
+        dataset_playback_data_.timeline[dataset_playback_cursor_].timestamp_us;
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t elapsed_us = static_cast<uint64_t>(
+        std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(
+                                 now - dataset_playback_anchor_wall_time_)
+                                 .count()));
+    const uint64_t dataset_delta_us =
+        next_timestamp_us > dataset_playback_anchor_timestamp_us_
+            ? next_timestamp_us - dataset_playback_anchor_timestamp_us_
+            : 0u;
+    const long double target_wall_us =
+        static_cast<long double>(dataset_delta_us) /
+        sanitizeDatasetPlaybackRate(dataset_playback_rate_);
+    const long double remaining_us =
+        target_wall_us - static_cast<long double>(elapsed_us);
+    if (remaining_us <= 0.0L) {
+      dataset_playback_timer_->start(0);
+      return;
+    }
+    const long double rounded_ms = std::ceil(remaining_us / 1000.0L);
+    const int delay_ms = static_cast<int>(std::clamp<long double>(
+        rounded_ms, 1.0L,
+        prism_viewer::dataset::kDatasetPlaybackMaximumDelayMs));
+    dataset_playback_timer_->start(delay_ms);
+  }
+
+  void restartDatasetPlaybackClock() {
+    if (!dataset_playback_active_ ||
+        dataset_playback_cursor_ >= dataset_playback_data_.timeline.size()) {
+      return;
+    }
+    dataset_playback_anchor_wall_time_ = std::chrono::steady_clock::now();
+    dataset_playback_anchor_timestamp_us_ =
+        dataset_playback_cursor_ == 0u
+            ? dataset_playback_data_.timeline[0].timestamp_us
+            : dataset_playback_data_
+                  .timeline[dataset_playback_cursor_ - 1u]
+                  .timestamp_us;
+    scheduleDatasetPlaybackStep();
+  }
+
+  void processDatasetPlaybackEvents() {
     if (!dataset_playback_active_) return;
-    const size_t current_frame =
-        static_cast<size_t>(dataset_current_frame_);
-    const size_t next_frame = current_frame + 1u;
-    if (next_frame >= dataset_frame_count_) {
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t elapsed_us = static_cast<uint64_t>(
+        std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(
+                                 now - dataset_playback_anchor_wall_time_)
+                                 .count()));
+    const long double scaled_elapsed =
+        static_cast<long double>(elapsed_us) *
+        sanitizeDatasetPlaybackRate(dataset_playback_rate_);
+    const uint64_t remaining_timestamp_range =
+        std::numeric_limits<uint64_t>::max() -
+        dataset_playback_anchor_timestamp_us_;
+    const uint64_t scaled_us =
+        scaled_elapsed >= static_cast<long double>(remaining_timestamp_range)
+            ? remaining_timestamp_range
+            : static_cast<uint64_t>(scaled_elapsed);
+    const uint64_t due_timestamp_us =
+        dataset_playback_anchor_timestamp_us_ + scaled_us;
+
+    constexpr size_t kMaximumEventsPerUiTurn = 4096u;
+    size_t processed = 0u;
+    while (dataset_playback_cursor_ <
+               dataset_playback_data_.timeline.size() &&
+           dataset_playback_data_.timeline[dataset_playback_cursor_]
+                   .timestamp_us <= due_timestamp_us &&
+           processed < kMaximumEventsPerUiTurn) {
+      if (!dispatchDatasetPlaybackEvent(
+              dataset_playback_data_.timeline[dataset_playback_cursor_])) {
+        setDatasetPlaybackActive(false);
+        return;
+      }
+      ++dataset_playback_cursor_;
+      ++processed;
+    }
+    updateDatasetPlaybackPositionLabel();
+    if (dataset_playback_cursor_ >= dataset_playback_data_.timeline.size()) {
       setDatasetPlaybackActive(false);
       return;
     }
-    const uint64_t current_timestamp_us =
-        dataset_camera_entries_[0][current_frame].timestamp_us;
-    const uint64_t next_timestamp_us =
-        dataset_camera_entries_[0][next_frame].timestamp_us;
-    dataset_playback_timer_->start(datasetPlaybackDelayMs(
-        current_timestamp_us, next_timestamp_us, dataset_playback_rate_));
+    if (processed == kMaximumEventsPerUiTurn &&
+        dataset_playback_data_.timeline[dataset_playback_cursor_]
+                .timestamp_us <= due_timestamp_us) {
+      dataset_playback_timer_->start(0);
+      return;
+    }
+    scheduleDatasetPlaybackStep();
   }
 
   void setDatasetPlaybackActive(bool active) {
     dataset_playback_timer_->stop();
-    if (active && dataset_frame_count_ > 1u) {
-      if (static_cast<size_t>(dataset_current_frame_ + 1) >=
-          dataset_frame_count_) {
-        dataset_frame_slider_->setValue(0);
+    if (active && !dataset_playback_data_.timeline.empty() &&
+        !worker_running_ && !rosbag_export_running_) {
+      if (dataset_playback_cursor_ >=
+          dataset_playback_data_.timeline.size()) {
+        resetDatasetPlaybackPosition();
       }
       dataset_playback_active_ = true;
-      scheduleDatasetPlaybackStep();
+      restartDatasetPlaybackClock();
     } else {
       dataset_playback_active_ = false;
     }
@@ -5012,8 +5523,28 @@ class MainWindow : public QMainWindow {
       return;
     }
 
+    std::vector<uint64_t> camera_timestamps;
+    camera_timestamps.reserve(complete_frames);
+    for (size_t frame = 0; frame < complete_frames; ++frame) {
+      camera_timestamps.push_back(camera_entries[0][frame].timestamp_us);
+    }
+    DatasetPlaybackData playback_data;
+    if (!loadDatasetPlaybackData(root, camera_timestamps, &playback_data,
+                                 &error)) {
+      if (show_errors) {
+        QMessageBox::critical(
+            this, uiText("Unable to open dataset", "无法打开数据集"),
+            uiText("Cannot prepare the sensor playback timeline in:\n%1\n\n%2",
+                   "无法准备以下数据集的传感器回放时间线：\n%1\n\n%2")
+                .arg(directory, toQString(error)));
+      }
+      return;
+    }
+
     dataset_camera_entries_ = std::move(camera_entries);
+    dataset_playback_data_ = std::move(playback_data);
     dataset_frame_count_ = complete_frames;
+    dataset_playback_cursor_ = 0u;
     loaded_dataset_root_ = directory;
     dataset_path_label_->setText(directory);
     dataset_path_label_->setToolTip(directory);
@@ -5077,6 +5608,8 @@ class MainWindow : public QMainWindow {
                    .arg(lidar_imu.rows)
                    .arg(lidar_imu.first_timestamp_us)
                    .arg(lidar_imu.last_timestamp_us);
+    details += QStringLiteral("\nplayback timeline: events=%1")
+                   .arg(dataset_playback_data_.timeline.size());
     dataset_details_->setPlainText(details);
 
     if (has_cameras && dataset_frame_count_ != 0) {
@@ -5088,6 +5621,8 @@ class MainWindow : public QMainWindow {
       dataset_frame_slider_->setValue(0);
       dataset_frame_slider_->setEnabled(true);
       showDatasetFrame(0);
+      seekDatasetPlaybackToTimestamp(
+          dataset_camera_entries_[0][0].timestamp_us);
     } else {
       const QSignalBlocker blocker(dataset_frame_slider_);
       dataset_frame_slider_->setRange(0, 0);
@@ -5104,6 +5639,9 @@ class MainWindow : public QMainWindow {
         image_label->setToolTip(QString());
       }
       dataset_camera_zoom_dialog_->hide();
+      resetDatasetPlaybackVisualization();
+      dataset_playback_cursor_ = 0u;
+      updateDatasetPlaybackPositionLabel();
     }
     updateDatasetPlaybackControls();
     appendLog(QStringLiteral(
@@ -6381,6 +6919,7 @@ class MainWindow : public QMainWindow {
   QComboBox* lidar_model_selector_ = nullptr;
   QSpinBox* lidar_point_size_spin_ = nullptr;
   QLabel* lidar_status_label_ = nullptr;
+  QLabel* lidar_imu_playback_label_ = nullptr;
   QCheckBox* lidar_network_enabled_checkbox_ = nullptr;
   QLineEdit* lidar_network_host_ip_ = nullptr;
   QLineEdit* lidar_network_netmask_ = nullptr;
@@ -6407,6 +6946,7 @@ class MainWindow : public QMainWindow {
   QPushButton* dataset_playback_button_ = nullptr;
   QPushButton* dataset_next_frame_button_ = nullptr;
   QComboBox* dataset_playback_speed_selector_ = nullptr;
+  QLabel* dataset_playback_position_label_ = nullptr;
   QSlider* dataset_frame_slider_ = nullptr;
   QTimer* dataset_playback_timer_ = nullptr;
   std::array<ImageViewLabel*, 4> dataset_image_labels_{};
@@ -6414,8 +6954,15 @@ class MainWindow : public QMainWindow {
   CameraZoomDialog* dataset_camera_zoom_dialog_ = nullptr;
   std::array<std::vector<DatasetImageEntry>, 4> dataset_camera_entries_{};
   std::array<QImage, 4> dataset_images_{};
+  DatasetPlaybackData dataset_playback_data_;
   size_t dataset_frame_count_ = 0;
+  size_t dataset_playback_cursor_ = 0;
   int dataset_current_frame_ = 0;
+  std::array<uint64_t, 2> dataset_playback_imu_counts_{};
+  uint64_t dataset_playback_lidar_points_ = 0;
+  uint64_t dataset_playback_lidar_imu_count_ = 0;
+  uint64_t dataset_playback_anchor_timestamp_us_ = 0;
+  std::chrono::steady_clock::time_point dataset_playback_anchor_wall_time_{};
   double dataset_playback_rate_ = 1.0;
   bool dataset_playback_active_ = false;
   QString loaded_dataset_root_;
@@ -6980,6 +7527,18 @@ int runViewerApplication(int argc, char** argv) {
         language.startsWith(QStringLiteral("zh"), Qt::CaseInsensitive));
   }
   MainWindow window;
+  const int playback_self_test = command_line.indexOf(
+      QStringLiteral("--dataset-playback-self-test"));
+  if (playback_self_test >= 0 &&
+      playback_self_test + 1 < command_line.size()) {
+    QString report;
+    const bool success = window.runDatasetPlaybackSelfTest(
+        command_line[playback_self_test + 1], &report);
+    std::cout << "dataset_playback_ui_self_test="
+              << (success ? "PASS" : "FAIL") << " "
+              << report.toStdString() << "\n";
+    return success ? 0 : 13;
+  }
   if (command_line.contains(QStringLiteral("--window-layout-self-test"))) {
     window.ensurePolished();
     if (window.centralWidget() != nullptr &&
@@ -6994,9 +7553,16 @@ int runViewerApplication(int argc, char** argv) {
     const auto* dataset_playback_speed =
         window.findChild<QComboBox*>(
             QStringLiteral("datasetPlaybackSpeedCombo"));
+    const auto* dataset_playback_position =
+        window.findChild<QLabel*>(
+            QStringLiteral("datasetPlaybackPositionLabel"));
+    const auto* lidar_imu_playback =
+        window.findChild<QLabel*>(QStringLiteral("lidarImuPlaybackLabel"));
     const bool playback_controls_ok =
         dataset_playback_button != nullptr &&
         dataset_playback_speed != nullptr &&
+        dataset_playback_position != nullptr &&
+        lidar_imu_playback != nullptr &&
         dataset_playback_speed->count() == 6 &&
         dataset_playback_speed->currentData().toDouble() > 0.0 &&
         !dataset_playback_button->isEnabled();

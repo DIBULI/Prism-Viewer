@@ -138,6 +138,7 @@ add_executable(prism-viewer
   src/communication/prism_runtime.cpp
   src/control/operation_controller.cpp
   src/dataset/dataset_browser.cpp
+  src/dataset/dataset_playback.cpp
   src/dataset/dataset_playback_timing.cpp
   src/dataset/rosbag_exporter.cpp
   src/main.cpp
@@ -378,6 +379,21 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME dataset-playback-timing COMMAND dataset-playback-timing-test)
 
+  add_executable(dataset-playback-test
+    src/dataset/dataset_playback.cpp
+    tests/dataset_playback_test.cpp
+  )
+  target_include_directories(dataset-playback-test PRIVATE src)
+  target_compile_features(dataset-playback-test PRIVATE cxx_std_17)
+  if(MSVC)
+    target_compile_options(
+      dataset-playback-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(
+      dataset-playback-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME dataset-playback COMMAND dataset-playback-test)
+
   add_executable(rosbag-exporter-test
     src/dataset/rosbag_exporter.cpp
     tests/rosbag_exporter_test.cpp
@@ -405,16 +421,25 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_BINARY_DIR}/test-output/dataset-recorder-imu-only"
   )
   add_test(
+    NAME dataset-playback-ui
+    COMMAND prism-viewer --dataset-playback-self-test
+            "${CMAKE_CURRENT_BINARY_DIR}/test-output/dataset-recorder-full"
+  )
+  add_test(
     NAME main-window-layout
     COMMAND prism-viewer --window-layout-self-test
   )
   set_tests_properties(
-    dataset-recorder-full dataset-recorder-imu-only
+    dataset-recorder-full dataset-recorder-imu-only dataset-playback-ui
     PROPERTIES RUN_SERIAL TRUE
+  )
+  set_tests_properties(dataset-playback-ui PROPERTIES
+    DEPENDS dataset-recorder-full
   )
   if(UNIX)
     set_tests_properties(
-      dataset-recorder-full dataset-recorder-imu-only main-window-layout
+      dataset-recorder-full dataset-recorder-imu-only dataset-playback-ui
+      main-window-layout
       PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
   endif()

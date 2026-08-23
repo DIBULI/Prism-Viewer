@@ -7,8 +7,8 @@ It provides four-camera MJPEG preview, two onboard IMUs plus optional
 Mid-360/Mid-360S IMU recording, LiDAR point-cloud display with adjustable point
 rendering plus top/reset view presets, switchable live onboard-IMU display
 units, per-camera runtime SC130GS exposure/gain control, device configuration,
-system upgrade, timestamp-driven dataset playback at 0.25x through 8x, and ROS1/ROS2
-bag export. IMU display units
+system upgrade, synchronized camera/onboard-IMU/LiDAR/LiDAR-IMU dataset playback
+at 0.25x through 8x, and ROS1/ROS2 bag export. IMU display units
 are independent from the fixed SI units used by datasets and ROS bags. New v6
 recordings use RK `CLOCK_REALTIME` with a Unix epoch as the
 common device time domain for camera, onboard IMU, LiDAR point batches, and
