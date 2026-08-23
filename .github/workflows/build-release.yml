@@ -418,6 +418,14 @@ jobs:
                 done < <(ldd "$1")
                 return 1
               }
+              assert_packaged_dependency() {
+                resolved="$(readlink -f "$1")"
+                case "$resolved" in
+                  /opt/prism-viewer/lib/*) return 0 ;;
+                esac
+                echo "Dependency resolved outside package: $1 -> $resolved" >&2
+                return 1
+              }
               if ldd /opt/prism-viewer/bin/prism-viewer \
                   | grep -q libprism_usb_sdk; then
                 echo "Viewer still depends on the shared Prism SDK" >&2
@@ -429,12 +437,9 @@ jobs:
                 /opt/prism-viewer/bin/prism-viewer libusb-1.0.so.0)"
               ssl_crypto="$(resolve_dependency \
                 /opt/prism-viewer/lib/libssl.so.3 libcrypto.so.3)"
-              test "$(readlink -f "$app_crypto")" = \
-                /opt/prism-viewer/lib/libcrypto.so.3
-              test "$(readlink -f "$app_libusb")" = \
-                /opt/prism-viewer/lib/libusb-1.0.so.0
-              test "$(readlink -f "$ssl_crypto")" = \
-                /opt/prism-viewer/lib/libcrypto.so.3
+              assert_packaged_dependency "$app_crypto"
+              assert_packaged_dependency "$app_libusb"
+              assert_packaged_dependency "$ssl_crypto"
               /opt/prism-viewer/bin/prism-viewer \
                 --startup-self-test
             '
