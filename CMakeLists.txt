@@ -112,9 +112,9 @@ if(PRISM_DEPLOY_RUNTIME_DEPENDENCIES)
     message(FATAL_ERROR
       "Automatic runtime dependency deployment is enabled only for Linux")
   endif()
-  if(NOT QT_PACKAGE STREQUAL "Qt6" OR Qt6_VERSION VERSION_LESS "6.3")
+  if(NOT QT_PACKAGE STREQUAL "Qt6" OR Qt6_VERSION VERSION_LESS "6.5")
     message(FATAL_ERROR
-      "Runtime dependency deployment requires Qt 6.3 or newer")
+      "Runtime dependency deployment requires Qt 6.5 or newer")
   endif()
 endif()
 
