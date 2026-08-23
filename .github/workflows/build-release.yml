@@ -163,9 +163,6 @@ jobs:
             binutils \
             ninja-build \
             patchelf \
-            qt6-base-dev \
-            qt6-charts-dev \
-            libqt6sql6-sqlite \
             libxcb-cursor0 \
             libusb-1.0-0 \
             libssl3
