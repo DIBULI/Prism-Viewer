@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${APPDIR:-}" ]; then
+  app_root="$APPDIR"
+else
+  app_root="$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
+fi
+
+export LD_LIBRARY_PATH="$app_root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QT_PLUGIN_PATH="$app_root/usr/plugins"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$app_root/usr/plugins/platforms"
+export XDG_DATA_DIRS="$app_root/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+
+exec "$app_root/usr/bin/prism-viewer" "$@"

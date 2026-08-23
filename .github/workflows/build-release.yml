@@ -140,7 +140,10 @@ jobs:
           path: Prism-Viewer-1.0.0-windows-x64.zip
 
   linux-x64:
-    runs-on: ubuntu-24.04
+    # The binary-only Prism SDK requires GLIBC_2.34. Build on the oldest
+    # compatible Ubuntu LTS so the tar archive and AppImage also run on newer
+    # distributions instead of inheriting Ubuntu 24.04's newer glibc ABI.
+    runs-on: ubuntu-22.04
     steps:
       - name: Check out Viewer
         uses: actions/checkout@v7
@@ -203,6 +206,7 @@ jobs:
 
           qt_plugins=(
             "platforms/libqxcb.so"
+            "platforms/libqoffscreen.so"
             "imageformats/libqjpeg.so"
             "sqldrivers/libqsqlite.so"
           )
@@ -305,6 +309,7 @@ jobs:
             "lib/libssl.so.3"
             "lib/libusb-1.0.so.0"
             "*/platforms/libqxcb.so"
+            "*/platforms/libqoffscreen.so"
             "*/imageformats/libqjpeg.so"
             "*/sqldrivers/libqsqlite.so"
           )
@@ -331,9 +336,11 @@ jobs:
             exit 1
           fi
 
-          docker run --rm \
-            -v "$package:/opt/prism-viewer:ro" \
-            ubuntu:24.04 /bin/bash -euc '
+          for image in ubuntu:22.04 ubuntu:24.04; do
+            docker run --rm \
+              -e QT_QPA_PLATFORM=offscreen \
+              -v "$package:/opt/prism-viewer:ro" \
+              "$image" /bin/bash -euc '
               while IFS= read -r relative; do
                 output="$(ldd "/opt/prism-viewer/$relative" 2>&1)"
                 printf "\n[%s]\n%s\n" "$relative" "$output"
@@ -363,7 +370,10 @@ jobs:
                 /opt/prism-viewer/lib/libcrypto.so.3
               test "$(readlink -f "$ssl_crypto")" = \
                 /opt/prism-viewer/lib/libcrypto.so.3
+              /opt/prism-viewer/bin/prism-viewer \
+                --window-layout-self-test
             '
+          done
 
           checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
           (
@@ -377,12 +387,36 @@ jobs:
             "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-x64.tar.gz" \
             Prism-Viewer-1.0.0-linux-x64
 
+          appimagetool="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          curl --fail --location --retry 3 \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            --output "$appimagetool"
+          echo "a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0  $appimagetool" \
+            | sha256sum --check
+          chmod 0755 "$appimagetool"
+          appimage="$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-x86_64.AppImage"
+          scripts/build_linux_appimage.sh \
+            "$package" "$appimage" "$appimagetool"
+
+          QT_QPA_PLATFORM=offscreen \
+            "$appimage" --appimage-extract-and-run \
+            --window-layout-self-test
+          for image in ubuntu:22.04 ubuntu:24.04; do
+            docker run --rm \
+              -e QT_QPA_PLATFORM=offscreen \
+              -v "$appimage:/opt/Prism-Viewer.AppImage:ro" \
+              "$image" /opt/Prism-Viewer.AppImage \
+              --appimage-extract-and-run --window-layout-self-test
+          done
+
       - name: Upload Linux package
         uses: actions/upload-artifact@v7
         with:
           name: prism-viewer-1.0.0-linux-x64
           if-no-files-found: error
-          path: Prism-Viewer-1.0.0-linux-x64.tar.gz
+          path: |
+            Prism-Viewer-1.0.0-linux-x64.tar.gz
+            Prism-Viewer-1.0.0-linux-x86_64.AppImage
 
   macos-arm64:
     # GitHub's runner-images catalog maps this fixed label to the standard

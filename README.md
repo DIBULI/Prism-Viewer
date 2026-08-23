@@ -120,6 +120,22 @@ reduce compatibility rather than improve it. Windows and Linux archives
 contain a SHA-256 file manifest, and CI checks every packaged Linux binary in
 a minimal Ubuntu image before publishing a release.
 
+Linux releases also provide
+`Prism-Viewer-1.0.0-linux-x86_64.AppImage` as a single executable file. It is
+built on Ubuntu 22.04 and supports x86-64 distributions with glibc 2.34 or
+newer (Ubuntu 22.04 or an equivalent baseline):
+
+```sh
+chmod +x Prism-Viewer-1.0.0-linux-x86_64.AppImage
+./Prism-Viewer-1.0.0-linux-x86_64.AppImage
+```
+
+If FUSE is unavailable, run it with `--appimage-extract-and-run`. The AppImage
+is a single-file container rather than a fully static ELF: the binary-only
+Prism SDK is distributed only as `libprism_usb_sdk.so`, and Qt loads platform,
+image, and SQL plugins dynamically. Those shared objects, OpenSSL, and libusb
+are embedded in the AppImage and resolved from its private runtime paths.
+
 ## Documentation
 
 - [Code structure](ARCHITECTURE.md)
