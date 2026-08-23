@@ -139,11 +139,39 @@ jobs:
           if-no-files-found: error
           path: Prism-Viewer-1.0.0-windows-x64.zip
 
-  linux-x64:
+  linux:
+    name: linux-${{ matrix.package_arch }}
     # The binary-only Prism SDK requires GLIBC_2.34. Build on the oldest
     # compatible Ubuntu LTS so the tar archive and AppImage also run on newer
     # distributions instead of inheriting Ubuntu 24.04's newer glibc ABI.
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_arch: x64
+            runner: ubuntu-22.04
+            sdk_arch: linux-x64
+            sdk_sha256: 73c8278aca4a50057d2fc0f897ac465a402bcbae2426a8f4c5b9eaa0ee5b2516
+            qt_source: aqt
+            deploy_runtime: "ON"
+            appimage_arch: x86_64
+            appimagetool_sha256: a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0
+          - package_arch: arm64
+            runner: ubuntu-22.04-arm
+            sdk_arch: linux-arm64
+            sdk_sha256: 0c76621dcaa0a049b16db2c6790be8d766b312911fc8797cf300d441c60287e9
+            qt_source: distro
+            deploy_runtime: "OFF"
+            appimage_arch: aarch64
+            appimagetool_sha256: 1b00524ba8c6b678dc15ef88a5c25ec24def36cdfc7e3abb32ddcd068e8007fe
+    runs-on: ${{ matrix.runner }}
+    env:
+      LINUX_PACKAGE_ARCH: ${{ matrix.package_arch }}
+      LINUX_SDK_ARCH: ${{ matrix.sdk_arch }}
+      LINUX_SDK_SHA256: ${{ matrix.sdk_sha256 }}
+      LINUX_DEPLOY_RUNTIME: ${{ matrix.deploy_runtime }}
+      LINUX_APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
+      APPIMAGETOOL_SHA256: ${{ matrix.appimagetool_sha256 }}
     steps:
       - name: Check out Viewer
         uses: actions/checkout@v7
@@ -152,6 +180,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
+        if: matrix.qt_source == 'aqt'
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -159,21 +188,32 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            binutils \
-            libgl1-mesa-dev \
-            ninja-build \
-            patchelf \
-            libxcb-cursor0 \
-            libxcb-icccm4 \
-            libxcb-keysyms1 \
-            libxcb-shape0 \
-            libxcb-xkb1 \
-            libxkbcommon-x11-0 \
-            libusb-1.0-0 \
+          packages=(
+            binutils
+            libgl1-mesa-dev
+            ninja-build
+            patchelf
+            libxcb-cursor0
+            libxcb-icccm4
+            libxcb-keysyms1
+            libxcb-shape0
+            libxcb-xkb1
+            libxkbcommon-x11-0
+            libusb-1.0-0
             libssl3
+          )
+          if [ "$LINUX_PACKAGE_ARCH" = arm64 ]; then
+            packages+=(
+              libqt6charts6-dev
+              libqt6sql6-sqlite
+              qt6-base-dev
+              qt6-image-formats-plugins
+            )
+          fi
+          sudo apt-get install -y "${packages[@]}"
 
       - name: Install Qt 6.8.3
+        if: matrix.qt_source == 'aqt'
         run: |
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0
           qt_root="$RUNNER_TEMP/Qt"
@@ -181,19 +221,34 @@ jobs:
             -O "$qt_root" -m qtcharts
           qt_prefix="$qt_root/6.8.3/gcc_64"
           echo "QT_PREFIX=$qt_prefix" >> "$GITHUB_ENV"
+          echo "QT_PLUGIN_DIR=$qt_prefix/plugins" >> "$GITHUB_ENV"
           echo "$qt_prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Locate distro Qt
+        if: matrix.qt_source == 'distro'
+        run: |
+          qt_plugin_dir="$(qmake6 -query QT_INSTALL_PLUGINS)"
+          test -d "$qt_plugin_dir"
+          echo "QT_PLUGIN_DIR=$qt_plugin_dir" >> "$GITHUB_ENV"
 
       - name: Verify bundled Linux SDK
         run: |
-          echo "73c8278aca4a50057d2fc0f897ac465a402bcbae2426a8f4c5b9eaa0ee5b2516  third_party/Prism-SDK/runtime/linux-x64/libprism_usb_sdk.so" | sha256sum --check
+          sdk="third_party/Prism-SDK/runtime/$LINUX_SDK_ARCH/libprism_usb_sdk.so"
+          echo "$LINUX_SDK_SHA256  $sdk" | sha256sum --check
+          file "$sdk" | tee /dev/stderr | grep -q \
+            "$([ "$LINUX_PACKAGE_ARCH" = arm64 ] && echo 'ARM aarch64' || echo 'x86-64')"
 
       - name: Configure and build Viewer
         run: |
-          cmake -S . -B build-linux-ci -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
-            -DPRISM_DEPLOY_RUNTIME_DEPENDENCIES=ON \
+          cmake_args=(
+            -DCMAKE_BUILD_TYPE=Release
             -DBUILD_TESTING=ON
+            -DPRISM_DEPLOY_RUNTIME_DEPENDENCIES="$LINUX_DEPLOY_RUNTIME"
+          )
+          if [ -n "${QT_PREFIX:-}" ]; then
+            cmake_args+=("-DCMAKE_PREFIX_PATH=$QT_PREFIX")
+          fi
+          cmake -S . -B build-linux-ci -G Ninja "${cmake_args[@]}"
           cmake --build build-linux-ci --parallel
 
       - name: Test Viewer
@@ -202,7 +257,7 @@ jobs:
       - name: Package Viewer
         run: |
           stage="$RUNNER_TEMP/prism-viewer-stage"
-          package="$RUNNER_TEMP/Prism-Viewer-1.0.0-linux-x64"
+          package="$RUNNER_TEMP/Prism-Viewer-1.0.0-linux-$LINUX_PACKAGE_ARCH"
           cmake --install build-linux-ci --prefix "$stage"
           mkdir -p "$package"
           cp -a "$stage"/. "$package"/
@@ -214,7 +269,7 @@ jobs:
             "sqldrivers/libqsqlite.so"
           )
           for relative in "${qt_plugins[@]}"; do
-            qt_plugin_source="$QT_PREFIX/plugins/$relative"
+            qt_plugin_source="$QT_PLUGIN_DIR/$relative"
             if [ ! -f "$qt_plugin_source" ]; then
               echo "Required Qt plugin is missing: $qt_plugin_source" >&2
               exit 1
@@ -246,7 +301,7 @@ jobs:
             : > "$dependency_list"
             while IFS= read -r -d '' binary; do
               if readelf -h "$binary" >/dev/null 2>&1; then
-                LD_LIBRARY_PATH="$package/lib:$QT_PREFIX/lib" \
+                LD_LIBRARY_PATH="$package/lib${QT_PREFIX:+:$QT_PREFIX/lib}" \
                   ldd "$binary" 2>/dev/null \
                   | awk '
                       $2 == "=>" && $3 ~ /^\// { print $3 }
@@ -387,19 +442,20 @@ jobs:
           ) > "$checksum_manifest"
           mv "$checksum_manifest" "$package/SHA256SUMS.txt"
           tar -C "$RUNNER_TEMP" -czf \
-            "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-x64.tar.gz" \
-            Prism-Viewer-1.0.0-linux-x64
+            "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-$LINUX_PACKAGE_ARCH.tar.gz" \
+            "$(basename "$package")"
 
-          appimagetool="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          appimagetool="$RUNNER_TEMP/appimagetool-$LINUX_APPIMAGE_ARCH.AppImage"
           curl --fail --location --retry 3 \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$LINUX_APPIMAGE_ARCH.AppImage" \
             --output "$appimagetool"
-          echo "a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0  $appimagetool" \
+          echo "$APPIMAGETOOL_SHA256  $appimagetool" \
             | sha256sum --check
           chmod 0755 "$appimagetool"
-          appimage="$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-x86_64.AppImage"
+          appimage="$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-$LINUX_APPIMAGE_ARCH.AppImage"
           scripts/build_linux_appimage.sh \
-            "$package" "$appimage" "$appimagetool"
+            "$package" "$appimage" "$appimagetool" \
+            "$LINUX_APPIMAGE_ARCH"
 
           QT_QPA_PLATFORM=offscreen \
             "$appimage" --appimage-extract-and-run \
@@ -415,11 +471,11 @@ jobs:
       - name: Upload Linux package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-1.0.0-linux-x64
+          name: prism-viewer-1.0.0-linux-${{ matrix.package_arch }}
           if-no-files-found: error
           path: |
-            Prism-Viewer-1.0.0-linux-x64.tar.gz
-            Prism-Viewer-1.0.0-linux-x86_64.AppImage
+            Prism-Viewer-1.0.0-linux-${{ matrix.package_arch }}.tar.gz
+            Prism-Viewer-1.0.0-linux-${{ matrix.appimage_arch }}.AppImage
 
   macos-arm64:
     # GitHub's runner-images catalog maps this fixed label to the standard
@@ -584,7 +640,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows-x64, linux-x64, macos-arm64]
+    needs: [windows-x64, linux, macos-arm64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

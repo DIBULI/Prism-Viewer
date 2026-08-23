@@ -30,7 +30,8 @@ pinned as the `third_party/Prism-SDK` Git submodule:
 - public headers under `include/prism`;
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
   `GetProcAddress` (the import `.lib` is deliberately not used);
-- `libprism_usb_sdk.so` on Linux, linked as a bundled shared library.
+- architecture-matched `libprism_usb_sdk.so` on Linux x86-64 and arm64,
+  linked as a bundled shared library.
 - `libprism_usb_sdk.dylib` plus its relocatable `libusb` runtime on Apple
   Silicon macOS, linked from the app's `Contents/Frameworks` directory.
 
@@ -101,7 +102,7 @@ LGPL-2.1-or-later; its `libusb-COPYING.txt` license is included under the app's
 ## Automated builds and releases
 
 Every push and pull request checks out the pinned SDK submodule, then builds
-and tests Windows x64, Linux x64, and macOS arm64. A tag matching `v*`
+and tests Windows x64, Linux x64/arm64, and macOS arm64. A tag matching `v*`
 additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
@@ -120,14 +121,19 @@ reduce compatibility rather than improve it. Windows and Linux archives
 contain a SHA-256 file manifest, and CI checks every packaged Linux binary in
 a minimal Ubuntu image before publishing a release.
 
-Linux releases also provide
-`Prism-Viewer-1.0.0-linux-x86_64.AppImage` as a single executable file. It is
-built on Ubuntu 22.04 and supports x86-64 distributions with glibc 2.34 or
-newer (Ubuntu 22.04 or an equivalent baseline):
+Linux releases also provide single-file AppImages for x86-64 and arm64:
+`Prism-Viewer-1.0.0-linux-x86_64.AppImage` and
+`Prism-Viewer-1.0.0-linux-aarch64.AppImage`. Both are built natively on Ubuntu
+22.04 and support matching-architecture distributions with glibc 2.34 or newer
+(Ubuntu 22.04 or an equivalent baseline):
 
 ```sh
 chmod +x Prism-Viewer-1.0.0-linux-x86_64.AppImage
 ./Prism-Viewer-1.0.0-linux-x86_64.AppImage
+
+# On an arm64 host:
+chmod +x Prism-Viewer-1.0.0-linux-aarch64.AppImage
+./Prism-Viewer-1.0.0-linux-aarch64.AppImage
 ```
 
 If FUSE is unavailable, run it with `--appimage-extract-and-run`. The AppImage
