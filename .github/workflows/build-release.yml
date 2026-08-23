@@ -77,6 +77,38 @@ jobs:
             "Prism-Viewer-1.0.0-windows-x64"
           New-Item -ItemType Directory -Path $package | Out-Null
           Copy-Item (Join-Path $stage "bin\*") $package -Recurse
+
+          $required = @(
+            "prism-viewer.exe",
+            "prism_usb_sdk.dll",
+            "Qt6Core.dll",
+            "Qt6Gui.dll",
+            "Qt6Widgets.dll",
+            "Qt6Charts.dll",
+            "Qt6Sql.dll",
+            "platforms\qwindows.dll",
+            "imageformats\qjpeg.dll",
+            "sqldrivers\qsqlite.dll",
+            "msvcp140.dll",
+            "vcruntime140.dll",
+            "vcruntime140_1.dll"
+          )
+          foreach ($relative in $required) {
+            if (-not (Test-Path (Join-Path $package $relative))) {
+              throw "Missing packaged runtime dependency: $relative"
+            }
+          }
+
+          Push-Location $package
+          Get-ChildItem -Recurse -File |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = [IO.Path]::GetRelativePath($package, $_.FullName)
+              $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+              "$hash  $relative"
+            } | Set-Content -Encoding utf8 "SHA256SUMS.txt"
+          Pop-Location
+
           Compress-Archive -Path $package `
             -DestinationPath "Prism-Viewer-1.0.0-windows-x64.zip"
 
@@ -100,6 +132,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            binutils \
             ninja-build \
             qt6-base-dev \
             qt6-charts-dev \
@@ -115,6 +148,7 @@ jobs:
         run: |
           cmake -S . -B build-linux-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DPRISM_DEPLOY_RUNTIME_DEPENDENCIES=ON \
             -DBUILD_TESTING=ON
           cmake --build build-linux-ci --parallel
 
@@ -128,10 +162,66 @@ jobs:
           cmake --install build-linux-ci --prefix "$stage"
           mkdir -p "$package"
           cp -a "$stage"/. "$package"/
-          ldd "$package/bin/prism-viewer" | tee linux-runtime-dependencies.txt
-          if grep -q "not found" linux-runtime-dependencies.txt; then
+
+          required_patterns=(
+            "bin/prism-viewer"
+            "lib/libprism_usb_sdk.so"
+            "lib/libQt6Core.so.6"
+            "lib/libQt6Gui.so.6"
+            "lib/libQt6Widgets.so.6"
+            "lib/libQt6Charts.so.6"
+            "lib/libQt6Sql.so.6"
+            "lib/libcrypto.so.3"
+            "lib/libusb-1.0.so.0"
+            "*/platforms/libqxcb.so"
+            "*/imageformats/libqjpeg.so"
+            "*/sqldrivers/libqsqlite.so"
+          )
+          for pattern in "${required_patterns[@]}"; do
+            if ! compgen -G "$package/$pattern" >/dev/null; then
+              echo "Missing packaged runtime dependency: $pattern" >&2
+              exit 1
+            fi
+          done
+
+          : > "$package/RUNTIME_DEPENDENCIES.txt"
+          : > "$package/ELF_FILES.txt"
+          while IFS= read -r -d '' binary; do
+            if readelf -h "$binary" >/dev/null 2>&1; then
+              relative="${binary#"$package"/}"
+              printf '%s\n' "$relative" >> "$package/ELF_FILES.txt"
+              printf '\n[%s]\n' "$relative" \
+                >> "$package/RUNTIME_DEPENDENCIES.txt"
+              LD_LIBRARY_PATH="$package/lib" ldd "$binary" \
+                >> "$package/RUNTIME_DEPENDENCIES.txt"
+            fi
+          done < <(find "$package" -type f -print0)
+          if grep -q "not found" "$package/RUNTIME_DEPENDENCIES.txt"; then
+            cat "$package/RUNTIME_DEPENDENCIES.txt"
             exit 1
           fi
+
+          docker run --rm \
+            -v "$package:/opt/prism-viewer:ro" \
+            ubuntu:24.04 /bin/bash -euc '
+              while IFS= read -r relative; do
+                output="$(LD_LIBRARY_PATH=/opt/prism-viewer/lib \
+                  ldd "/opt/prism-viewer/$relative" 2>&1)"
+                printf "\n[%s]\n%s\n" "$relative" "$output"
+                if grep -q "not found" <<<"$output"; then
+                  exit 1
+                fi
+              done < /opt/prism-viewer/ELF_FILES.txt
+            '
+
+          checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
+          (
+            cd "$package"
+            find . -type f -print0 \
+              | sort -z \
+              | xargs -0 sha256sum
+          ) > "$checksum_manifest"
+          mv "$checksum_manifest" "$package/SHA256SUMS.txt"
           tar -C "$RUNNER_TEMP" -czf \
             "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-x64.tar.gz" \
             Prism-Viewer-1.0.0-linux-x64

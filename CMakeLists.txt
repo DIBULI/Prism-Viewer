@@ -105,6 +105,19 @@ else()
   set(QT_PACKAGE Qt5)
 endif()
 
+option(PRISM_DEPLOY_RUNTIME_DEPENDENCIES
+  "Install redistributable runtime dependencies for a release package" OFF)
+if(PRISM_DEPLOY_RUNTIME_DEPENDENCIES)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR
+      "Automatic runtime dependency deployment is enabled only for Linux")
+  endif()
+  if(NOT QT_PACKAGE STREQUAL "Qt6" OR Qt6_VERSION VERSION_LESS "6.3")
+    message(FATAL_ERROR
+      "Runtime dependency deployment requires Qt 6.3 or newer")
+  endif()
+endif()
+
 add_library(prism-viewer-app-theme STATIC
   src/ui/app_theme.cpp
 )
@@ -253,6 +266,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
     RENAME prism-viewer.svg
   )
+endif()
+
+# Qt's deployment API collects the linked Qt modules, the required Qt plugins,
+# and recursively linked non-Qt libraries at install time. The Linux release
+# intentionally keeps only the kernel/glibc ABI as a host requirement; all
+# other resolved user-space libraries (including the SDK's OpenSSL and libusb
+# dependencies) are copied into the package.
+if(PRISM_DEPLOY_RUNTIME_DEPENDENCIES)
+  qt_generate_deploy_app_script(
+    TARGET prism-viewer
+    OUTPUT_SCRIPT prism_viewer_deploy_script
+    NO_TRANSLATIONS
+    POST_EXCLUDE_REGEXES
+      ".*/ld-linux[^/]*\\.so(\\..*)?$"
+      ".*/lib(c|dl|m|pthread|rt|resolv|util)\\.so(\\..*)?$"
+  )
+  install(SCRIPT "${prism_viewer_deploy_script}")
 endif()
 
 include(CTest)

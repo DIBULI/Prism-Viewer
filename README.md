@@ -110,6 +110,16 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
+All release archives include the Viewer, the matching Prism Host SDK runtime,
+Qt libraries and plugins, compiler runtime libraries, and recursively linked
+third-party libraries. In particular, the Linux archive carries OpenSSL,
+libusb, and the Qt XCB, JPEG, and SQLite plugins, so users do not need to
+install those packages separately. Linux still relies on the target system's
+kernel, glibc, and hardware/display drivers; bundling those components would
+reduce compatibility rather than improve it. Windows and Linux archives
+contain a SHA-256 file manifest, and CI checks every packaged Linux binary in
+a minimal Ubuntu image before publishing a release.
+
 ## Documentation
 
 - [Code structure](ARCHITECTURE.md)
