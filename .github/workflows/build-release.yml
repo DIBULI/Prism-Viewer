@@ -159,6 +159,7 @@ jobs:
           sudo apt-get install -y \
             binutils \
             ninja-build \
+            patchelf \
             qt6-base-dev \
             qt6-charts-dev \
             libqt6sql6-sqlite \
@@ -215,6 +216,21 @@ jobs:
             cp -L "$qt_plugin_source" "$package/plugins/$relative"
           done
 
+          # The SDK links libcrypto directly today, while libssl can also be
+          # loaded by OpenSSL-backed features without appearing in the main
+          # executable's dependency graph. Keep the OpenSSL 3 runtime pair
+          # together so the extracted package never depends on a host OpenSSL
+          # installation.
+          for name in libcrypto.so.3 libssl.so.3; do
+            source="$(ldconfig -p \
+              | awk -v library="$name" '$1 == library { print $NF; exit }')"
+            if [ -z "$source" ] || [ ! -f "$source" ]; then
+              echo "Required OpenSSL runtime is missing: $name" >&2
+              exit 1
+            fi
+            cp -L "$source" "$package/lib/$name"
+          done
+
           # Plugins are loaded with dlopen(), so they are not visible from the
           # main executable's link graph. Resolve their dependencies and any
           # further transitive dependencies until the package is closed.
@@ -260,6 +276,23 @@ jobs:
             fi
           done
 
+          # DT_RUNPATH is not transitive. The executable's $ORIGIN/../lib
+          # entry can locate libprism_usb_sdk.so, but it cannot locate the
+          # SDK's own libcrypto dependency unless the SDK and every other ELF
+          # object carry a path back to the packaged lib directory. Patch a
+          # location-independent RUNPATH into every real ELF file.
+          while IFS= read -r -d '' binary; do
+            if readelf -h "$binary" >/dev/null 2>&1; then
+              relative_lib="$(realpath --relative-to="$(dirname "$binary")" \
+                "$package/lib")"
+              runtime_path="\$ORIGIN"
+              if [ "$relative_lib" != "." ]; then
+                runtime_path="$runtime_path/$relative_lib"
+              fi
+              patchelf --set-rpath "$runtime_path" "$binary"
+            fi
+          done < <(find "$package" -type f -print0)
+
           required_patterns=(
             "bin/prism-viewer"
             "lib/libprism_usb_sdk.so"
@@ -269,6 +302,7 @@ jobs:
             "lib/libQt6Charts.so.6"
             "lib/libQt6Sql.so.6"
             "lib/libcrypto.so.3"
+            "lib/libssl.so.3"
             "lib/libusb-1.0.so.0"
             "*/platforms/libqxcb.so"
             "*/imageformats/libqjpeg.so"
@@ -289,8 +323,7 @@ jobs:
               printf '%s\n' "$relative" >> "$package/ELF_FILES.txt"
               printf '\n[%s]\n' "$relative" \
                 >> "$package/RUNTIME_DEPENDENCIES.txt"
-              LD_LIBRARY_PATH="$package/lib" ldd "$binary" \
-                >> "$package/RUNTIME_DEPENDENCIES.txt"
+              ldd "$binary" >> "$package/RUNTIME_DEPENDENCIES.txt"
             fi
           done < <(find "$package" -type f -print0)
           if grep -q "not found" "$package/RUNTIME_DEPENDENCIES.txt"; then
@@ -302,13 +335,25 @@ jobs:
             -v "$package:/opt/prism-viewer:ro" \
             ubuntu:24.04 /bin/bash -euc '
               while IFS= read -r relative; do
-                output="$(LD_LIBRARY_PATH=/opt/prism-viewer/lib \
-                  ldd "/opt/prism-viewer/$relative" 2>&1)"
+                output="$(ldd "/opt/prism-viewer/$relative" 2>&1)"
                 printf "\n[%s]\n%s\n" "$relative" "$output"
                 if grep -q "not found" <<<"$output"; then
                   exit 1
                 fi
               done < /opt/prism-viewer/ELF_FILES.txt
+
+              app="$(ldd /opt/prism-viewer/bin/prism-viewer)"
+              sdk="$(ldd /opt/prism-viewer/lib/libprism_usb_sdk.so)"
+              ssl="$(ldd /opt/prism-viewer/lib/libssl.so.3)"
+              grep -Fq \
+                "libprism_usb_sdk.so => /opt/prism-viewer/lib/libprism_usb_sdk.so" \
+                <<<"$app"
+              grep -Fq \
+                "libcrypto.so.3 => /opt/prism-viewer/lib/libcrypto.so.3" \
+                <<<"$sdk"
+              grep -Fq \
+                "libcrypto.so.3 => /opt/prism-viewer/lib/libcrypto.so.3" \
+                <<<"$ssl"
             '
 
           checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
