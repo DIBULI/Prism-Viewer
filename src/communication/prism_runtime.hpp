@@ -71,6 +71,10 @@ class Client {
   prism::ExposureConfiguration setExposureConfiguration(
       const prism::ExposureConfiguration& configuration,
       uint32_t field_mask = prism::kExposureFieldAll);
+  prism::ExposureLimits cameraExposureLimits();
+  prism::ExposureLimits setCameraExposureLimits(
+      const prism::ExposureLimits& limits,
+      uint32_t field_mask = prism::kExposureLimitsFieldAll);
   prism::VideoStatus startVideo1280x1024(uint32_t fps = 0);
   void stopVideo();
   void sendVideoAck(uint32_t last_frame_id);

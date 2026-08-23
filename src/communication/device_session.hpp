@@ -13,6 +13,7 @@ struct OpenedDevice {
   prism::DeviceInfo device_info;
   prism::DeviceConfiguration configuration;
   prism::ExposureConfiguration exposure;
+  prism::ExposureLimits exposure_limits;
   prism::NetworkInfo network;
   std::wstring serial_number;
   std::wstring path;

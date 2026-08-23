@@ -10,6 +10,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QVBoxLayout>
 
@@ -42,28 +43,102 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
       uiText("Open a device to read runtime exposure settings",
              "请先打开设备以读取运行时曝光设置"),
       group);
+  message_label_->setObjectName(QStringLiteral("cameraExposureMessage"));
   message_label_->setWordWrap(true);
+  message_label_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  message_label_->setSizePolicy(
+      QSizePolicy::Preferred, QSizePolicy::Maximum);
   group_layout->addWidget(message_label_);
 
-  auto* target_row = new QHBoxLayout();
+  auto* automatic_limits = new QGridLayout();
+  automatic_limits->setHorizontalSpacing(8);
+  automatic_limits->setVerticalSpacing(7);
+
   auto* target_label = new QLabel(
       uiText("Shared target brightness", "统一目标亮度"), group);
   target_brightness_ = new QSpinBox(group);
+  target_brightness_->setObjectName(
+      QStringLiteral("cameraTargetBrightnessSpin"));
   target_brightness_->setRange(
       prism::kAutoExposureMinTargetBrightness,
       prism::kAutoExposureMaxTargetBrightness);
   target_brightness_->setValue(
       prism::kAutoExposureDefaultTargetBrightness);
   target_brightness_->setToolTip(
-      uiText("PL uses RAW8 mean brightness to adjust each automatic camera's "
-             "exposure time. All cameras share this target; sensor gain is "
-             "configured independently below.",
-             "PL 根据 RAW8 平均亮度闭环调整各路自动曝光时间；所有相机共用此"
-             "目标；传感器增益在下方分别设置。"));
-  target_row->addWidget(target_label);
-  target_row->addStretch(1);
-  target_row->addWidget(target_brightness_);
-  group_layout->addLayout(target_row);
+      uiText("PL uses the observed RAW image brightness for automatic "
+             "control. It raises exposure first and only raises gain after "
+             "the exposure limit is reached; when reducing brightness it "
+             "reduces gain first.",
+             "PL 根据实际 RAW 画面亮度进行自动控制：增亮时优先增加曝光时间，"
+             "达到曝光上限后才提高增益；降低亮度时优先降低增益。"));
+
+  min_exposure_us_ = new QSpinBox(group);
+  min_exposure_us_->setObjectName(
+      QStringLiteral("cameraMinExposureSpin"));
+  min_exposure_us_->setSuffix(uiText(" us", " 微秒"));
+  min_exposure_us_->setSingleStep(10);
+  min_exposure_us_->setMinimumWidth(110);
+
+  max_exposure_us_ = new QSpinBox(group);
+  max_exposure_us_->setObjectName(
+      QStringLiteral("cameraMaxExposureSpin"));
+  max_exposure_us_->setSuffix(uiText(" us", " 微秒"));
+  max_exposure_us_->setSingleStep(10);
+  max_exposure_us_->setMinimumWidth(110);
+
+  min_gain_ = new QDoubleSpinBox(group);
+  min_gain_->setObjectName(QStringLiteral("cameraMinGainSpin"));
+  min_gain_->setRange(
+      static_cast<double>(prism::kCameraMinGainX1024) / 1024.0,
+      static_cast<double>(prism::kCameraMaxGainX1024) / 1024.0);
+  min_gain_->setDecimals(5);
+  min_gain_->setSingleStep(
+      static_cast<double>(prism::kCameraGainStepX1024) / 1024.0);
+  min_gain_->setSuffix(QStringLiteral("×"));
+  min_gain_->setMinimumWidth(105);
+  min_gain_->setToolTip(
+      uiText("Lower gain limit for automatic control and manual camera "
+             "settings.",
+             "自动控制和各路手动设置共用的增益下限。"));
+
+  max_gain_ = new QDoubleSpinBox(group);
+  max_gain_->setObjectName(QStringLiteral("cameraMaxGainSpin"));
+  max_gain_->setRange(
+      static_cast<double>(prism::kCameraMinGainX1024) / 1024.0,
+      static_cast<double>(prism::kCameraMaxGainX1024) / 1024.0);
+  max_gain_->setDecimals(5);
+  max_gain_->setSingleStep(
+      static_cast<double>(prism::kCameraGainStepX1024) / 1024.0);
+  max_gain_->setSuffix(QStringLiteral("×"));
+  max_gain_->setMinimumWidth(105);
+  max_gain_->setToolTip(
+      uiText("Upper gain limit for automatic control and manual camera "
+             "settings.",
+             "自动控制和各路手动设置共用的增益上限。"));
+
+  effective_max_exposure_label_ = new QLabel(group);
+  effective_max_exposure_label_->setObjectName(
+      QStringLiteral("cameraEffectiveMaxExposureLabel"));
+
+  automatic_limits->addWidget(target_label, 0, 0);
+  automatic_limits->addWidget(target_brightness_, 0, 1);
+  automatic_limits->addWidget(
+      new QLabel(uiText("Minimum exposure", "最低曝光时间"), group), 0, 2);
+  automatic_limits->addWidget(min_exposure_us_, 0, 3);
+  automatic_limits->addWidget(
+      new QLabel(uiText("Maximum exposure", "最高曝光时间"), group), 1, 0);
+  automatic_limits->addWidget(max_exposure_us_, 1, 1);
+  automatic_limits->addWidget(
+      new QLabel(uiText("Minimum gain", "最低增益"), group),
+      1, 2);
+  automatic_limits->addWidget(min_gain_, 1, 3);
+  automatic_limits->addWidget(
+      new QLabel(uiText("Maximum gain", "最高增益"), group), 2, 0);
+  automatic_limits->addWidget(max_gain_, 2, 1);
+  automatic_limits->addWidget(effective_max_exposure_label_, 2, 2, 1, 2);
+  automatic_limits->setColumnStretch(0, 1);
+  automatic_limits->setColumnStretch(2, 1);
+  group_layout->addLayout(automatic_limits);
 
   auto* settings = new QGridLayout();
   settings->setHorizontalSpacing(8);
@@ -83,6 +158,8 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
         camera + 1, 0);
 
     camera_mode_[camera] = new QComboBox(group);
+    camera_mode_[camera]->setObjectName(
+        QStringLiteral("camera%1ExposureModeCombo").arg(camera));
     camera_mode_[camera]->addItem(
         uiText("PL automatic exposure", "PL 自动曝光"),
         kAutomaticModeValue);
@@ -153,11 +230,31 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
     if (on_refresh) on_refresh();
   });
   connect(apply_button_, &QPushButton::clicked, this, [this]() {
-    if (on_apply) on_apply(editedConfiguration());
+    if (on_apply) on_apply(editedConfiguration(), editedLimits());
   });
   connect(target_brightness_,
           QOverload<int>::of(&QSpinBox::valueChanged),
           this, [this](int) { refreshView(); });
+  connect(min_exposure_us_, QOverload<int>::of(&QSpinBox::valueChanged),
+          this, [this](int) {
+            updateLimitRanges();
+            refreshView();
+          });
+  connect(max_exposure_us_, QOverload<int>::of(&QSpinBox::valueChanged),
+          this, [this](int) {
+            updateLimitRanges();
+            refreshView();
+          });
+  connect(min_gain_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+          this, [this](double) {
+            updateLimitRanges();
+            refreshView();
+          });
+  connect(max_gain_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+          this, [this](double) {
+            updateLimitRanges();
+            refreshView();
+          });
   for (int camera = 0; camera < 4; ++camera) {
     connect(camera_mode_[camera],
             QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -175,6 +272,27 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
 
 void CameraExposurePanel::clear() {
   configuration_ = {};
+  limits_ = {};
+  {
+    const QSignalBlocker min_blocker(min_exposure_us_);
+    const QSignalBlocker max_blocker(max_exposure_us_);
+    const QSignalBlocker min_gain_blocker(min_gain_);
+    const QSignalBlocker gain_blocker(max_gain_);
+    min_exposure_us_->setRange(
+        static_cast<int>(prism::kCameraMinExposureUs),
+        static_cast<int>(prism::kCameraMaxExposureUs));
+    max_exposure_us_->setRange(
+        static_cast<int>(prism::kCameraMinExposureUs),
+        static_cast<int>(prism::kCameraMaxExposureUs));
+    min_exposure_us_->setValue(
+        static_cast<int>(limits_.min_exposure_time_us));
+    max_exposure_us_->setValue(
+        static_cast<int>(limits_.max_exposure_time_us));
+    min_gain_->setValue(
+        static_cast<double>(limits_.min_gain_x1024) / 1024.0);
+    max_gain_->setValue(
+        static_cast<double>(limits_.max_gain_x1024) / 1024.0);
+  }
   has_configuration_ = false;
   controls_locked_ = false;
   capture_active_ = false;
@@ -205,23 +323,7 @@ void CameraExposurePanel::setCameraFps(uint32_t camera_fps) {
   const uint32_t maximum_us = prism::cameraMaxExposureUs(camera_fps);
   if (maximum_us == 0u) return;
   camera_fps_ = camera_fps;
-  for (size_t camera = 0; camera < manual_exposure_us_.size(); ++camera) {
-    const QSignalBlocker blocker(manual_exposure_us_[camera]);
-    manual_exposure_us_[camera]->setMaximum(static_cast<int>(maximum_us));
-    if (has_configuration_ &&
-        configuration_.manual_exposure_time_us[camera] > maximum_us) {
-      configuration_.manual_exposure_time_us[camera] = maximum_us;
-    }
-    if (has_configuration_) {
-      manual_exposure_us_[camera]->setValue(static_cast<int>(
-          configuration_.manual_exposure_time_us[camera]));
-    }
-    manual_exposure_us_[camera]->setToolTip(
-        uiText("Maximum at %1 FPS: %2 us (frame period minus 5 ms)",
-               "%1 FPS 下最大值：%2 微秒（帧周期减 5 毫秒）")
-            .arg(camera_fps_)
-            .arg(maximum_us));
-  }
+  updateLimitRanges();
   refreshView();
 }
 
@@ -233,13 +335,36 @@ void CameraExposurePanel::setBusy(bool busy, const QString& message) {
 }
 
 void CameraExposurePanel::setConfiguration(
-    const prism::ExposureConfiguration& configuration) {
+    const prism::ExposureConfiguration& configuration,
+    const prism::ExposureLimits& limits) {
   configuration_ = configuration;
+  limits_ = limits;
   has_configuration_ = true;
   operation_error_.clear();
 
   const QSignalBlocker target_blocker(target_brightness_);
+  const QSignalBlocker min_blocker(min_exposure_us_);
+  const QSignalBlocker max_blocker(max_exposure_us_);
+  const QSignalBlocker min_gain_blocker(min_gain_);
+  const QSignalBlocker max_gain_blocker(max_gain_);
   target_brightness_->setValue(configuration.target_brightness);
+  max_exposure_us_->setRange(
+      static_cast<int>(prism::kCameraMinExposureUs),
+      static_cast<int>(prism::kCameraMaxExposureUs));
+  max_exposure_us_->setValue(
+      static_cast<int>(limits.max_exposure_time_us));
+  min_exposure_us_->setRange(
+      static_cast<int>(prism::kCameraMinExposureUs),
+      static_cast<int>(std::min(
+          limits.max_exposure_time_us,
+          prism::cameraMaxExposureUs(camera_fps_))));
+  min_exposure_us_->setValue(
+      static_cast<int>(limits.min_exposure_time_us));
+  min_gain_->setValue(
+      static_cast<double>(limits.min_gain_x1024) / 1024.0);
+  max_gain_->setValue(
+      static_cast<double>(limits.max_gain_x1024) / 1024.0);
+  updateLimitRanges();
   for (int camera = 0; camera < 4; ++camera) {
     const QSignalBlocker mode_blocker(camera_mode_[camera]);
     const QSignalBlocker exposure_blocker(manual_exposure_us_[camera]);
@@ -285,10 +410,85 @@ CameraExposurePanel::editedConfiguration() const {
   return edited;
 }
 
+prism::ExposureLimits CameraExposurePanel::editedLimits() const {
+  prism::ExposureLimits edited = limits_;
+  edited.min_exposure_time_us =
+      static_cast<uint32_t>(min_exposure_us_->value());
+  edited.max_exposure_time_us =
+      static_cast<uint32_t>(max_exposure_us_->value());
+  edited.effective_max_exposure_time_us = std::min(
+      edited.max_exposure_time_us, prism::cameraMaxExposureUs(camera_fps_));
+  edited.min_gain_x1024 = static_cast<uint32_t>(
+      std::llround(min_gain_->value() * 1024.0));
+  edited.max_gain_x1024 = static_cast<uint32_t>(
+      std::llround(max_gain_->value() * 1024.0));
+  return edited;
+}
+
+void CameraExposurePanel::updateLimitRanges() {
+  const uint32_t fps_max = prism::cameraMaxExposureUs(camera_fps_);
+  const int hard_min = static_cast<int>(prism::kCameraMinExposureUs);
+  const int selected_max = std::max(
+      hard_min, max_exposure_us_->value());
+  const int effective_max = static_cast<int>(
+      std::min<uint32_t>(static_cast<uint32_t>(selected_max), fps_max));
+
+  {
+    const QSignalBlocker blocker(min_exposure_us_);
+    min_exposure_us_->setRange(hard_min, effective_max);
+  }
+  {
+    const QSignalBlocker blocker(max_exposure_us_);
+    max_exposure_us_->setRange(
+        min_exposure_us_->value(),
+        static_cast<int>(prism::kCameraMaxExposureUs));
+  }
+
+  {
+    const QSignalBlocker blocker(min_gain_);
+    min_gain_->setMaximum(max_gain_->value());
+  }
+  {
+    const QSignalBlocker blocker(max_gain_);
+    max_gain_->setMinimum(min_gain_->value());
+  }
+  const uint32_t min_gain_x1024 = static_cast<uint32_t>(
+      std::llround(min_gain_->value() * 1024.0));
+  const uint32_t max_gain_x1024 = static_cast<uint32_t>(
+      std::llround(max_gain_->value() * 1024.0));
+  for (size_t camera = 0; camera < manual_exposure_us_.size(); ++camera) {
+    const QSignalBlocker exposure_blocker(manual_exposure_us_[camera]);
+    const QSignalBlocker gain_blocker(sensor_gain_[camera]);
+    manual_exposure_us_[camera]->setRange(
+        min_exposure_us_->value(), effective_max);
+    sensor_gain_[camera]->setMaximum(
+        static_cast<double>(max_gain_x1024) / 1024.0);
+    sensor_gain_[camera]->setMinimum(
+        static_cast<double>(min_gain_x1024) / 1024.0);
+    manual_exposure_us_[camera]->setToolTip(
+        uiText("Active range at %1 FPS: %2-%3 us (configured maximum %4 us)",
+               "%1 FPS 下当前范围：%2-%3 微秒（配置上限 %4 微秒）")
+            .arg(camera_fps_)
+            .arg(min_exposure_us_->value())
+            .arg(effective_max)
+            .arg(max_exposure_us_->value()));
+  }
+  effective_max_exposure_label_->setText(
+      uiText("Effective maximum at %1 FPS: %2 us (frame period minus 5 ms)",
+             "%1 FPS 下实际最高曝光时间：%2 微秒（帧周期减 5 毫秒）")
+          .arg(camera_fps_)
+          .arg(effective_max));
+}
+
 bool CameraExposurePanel::isDirty() const {
   if (!has_configuration_) return false;
   const prism::ExposureConfiguration edited = editedConfiguration();
-  return edited.automatic_camera_mask !=
+  const prism::ExposureLimits edited_limits = editedLimits();
+  return edited_limits.min_exposure_time_us != limits_.min_exposure_time_us ||
+         edited_limits.max_exposure_time_us != limits_.max_exposure_time_us ||
+         edited_limits.min_gain_x1024 != limits_.min_gain_x1024 ||
+         edited_limits.max_gain_x1024 != limits_.max_gain_x1024 ||
+         edited.automatic_camera_mask !=
              configuration_.automatic_camera_mask ||
          edited.target_brightness != configuration_.target_brightness ||
          edited.manual_exposure_time_us !=
@@ -359,12 +559,16 @@ void CameraExposurePanel::refreshView() {
   const bool can_interact =
       device_open_ && has_configuration_ && !busy_ && !controls_locked_;
   target_brightness_->setEnabled(can_interact);
+  min_exposure_us_->setEnabled(can_interact);
+  max_exposure_us_->setEnabled(can_interact);
+  min_gain_->setEnabled(can_interact);
+  max_gain_->setEnabled(can_interact);
   for (int camera = 0; camera < 4; ++camera) {
     camera_mode_[camera]->setEnabled(can_interact);
     const bool manual =
         camera_mode_[camera]->currentData().toInt() == kManualModeValue;
     manual_exposure_us_[camera]->setEnabled(can_interact && manual);
-    sensor_gain_[camera]->setEnabled(can_interact);
+    sensor_gain_[camera]->setEnabled(can_interact && manual);
   }
   refresh_button_->setEnabled(
       device_open_ && !busy_ && !controls_locked_);

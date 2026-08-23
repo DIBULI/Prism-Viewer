@@ -115,6 +115,13 @@ prism::ExposureConfiguration Client::setExposureConfiguration(
     const prism::ExposureConfiguration& c, uint32_t m) {
   return api_->set_exposure_configuration(handle_, c, m);
 }
+prism::ExposureLimits Client::cameraExposureLimits() {
+  return api_->camera_exposure_limits(handle_);
+}
+prism::ExposureLimits Client::setCameraExposureLimits(
+    const prism::ExposureLimits& limits, uint32_t field_mask) {
+  return api_->set_camera_exposure_limits(handle_, limits, field_mask);
+}
 prism::VideoStatus Client::startVideo1280x1024(uint32_t fps) {
   return api_->start_video(handle_, fps);
 }

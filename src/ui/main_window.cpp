@@ -2533,10 +2533,13 @@ class MainWindow : public QMainWindow {
     device_info_panel_->on_refresh_versions =
         [this]() { refreshDeviceVersions(); };
     camera_exposure_panel_->on_refresh =
-        [this]() { startCameraExposureOperation(std::nullopt); };
+        [this]() {
+          startCameraExposureOperation(std::nullopt, std::nullopt);
+        };
     camera_exposure_panel_->on_apply =
-        [this](const prism::ExposureConfiguration& configuration) {
-          startCameraExposureOperation(configuration);
+        [this](const prism::ExposureConfiguration& configuration,
+               const prism::ExposureLimits& limits) {
+          startCameraExposureOperation(configuration, limits);
         };
     camera_encoding_panel_->on_refresh =
         [this]() { startCameraEncodingOperation(std::nullopt); };
@@ -2872,13 +2875,15 @@ class MainWindow : public QMainWindow {
   struct CameraExposureOperationRequest {
     bool apply = false;
     prism::ExposureConfiguration configuration;
+    prism::ExposureLimits limits;
   };
 
   void publishCameraExposureResult(
-      const prism::ExposureConfiguration& configuration, bool applied) {
-    post([this, configuration, applied]() {
+      const prism::ExposureConfiguration& configuration,
+      const prism::ExposureLimits& limits, bool applied) {
+    post([this, configuration, limits, applied]() {
       camera_exposure_operation_running_ = false;
-      camera_exposure_panel_->setConfiguration(configuration);
+      camera_exposure_panel_->setConfiguration(configuration, limits);
       camera_exposure_panel_->setBusy(false);
       setStatusAppearance(false);
       status_label_->setText(
@@ -2892,12 +2897,19 @@ class MainWindow : public QMainWindow {
               QStringLiteral("HH:mm:ss.zzz ")) +
           QStringLiteral(
               "Camera exposure %1 target=%2 automatic-mask=0x%3 "
-              "manual-us=[%4,%5,%6,%7] gain-x1024=[%8,%9,%10,%11]")
+              "limits-us=[%4,%5 effective=%6] gain-limits-x1024=[%7,%8] "
+              "manual-us=[%9,%10,%11,%12] "
+              "gain-x1024=[%13,%14,%15,%16]")
               .arg(applied ? QStringLiteral("applied")
                            : QStringLiteral("refreshed"))
               .arg(configuration.target_brightness)
               .arg(configuration.automatic_camera_mask, 2, 16,
                    QLatin1Char('0'))
+              .arg(limits.min_exposure_time_us)
+              .arg(limits.max_exposure_time_us)
+              .arg(limits.effective_max_exposure_time_us)
+              .arg(limits.min_gain_x1024)
+              .arg(limits.max_gain_x1024)
               .arg(configuration.manual_exposure_time_us[0])
               .arg(configuration.manual_exposure_time_us[1])
               .arg(configuration.manual_exposure_time_us[2])
@@ -2931,11 +2943,17 @@ class MainWindow : public QMainWindow {
   void runCameraExposureOperation(
       const CameraExposureOperationRequest& request) {
     try {
-      const prism::ExposureConfiguration result =
-          request.apply
-              ? client_.setExposureConfiguration(request.configuration)
-              : client_.cameraExposure();
-      publishCameraExposureResult(result, request.apply);
+      prism::ExposureLimits limits;
+      prism::ExposureConfiguration configuration;
+      if (request.apply) {
+        limits = client_.setCameraExposureLimits(request.limits);
+        configuration =
+            client_.setExposureConfiguration(request.configuration);
+      } else {
+        limits = client_.cameraExposureLimits();
+        configuration = client_.cameraExposure();
+      }
+      publishCameraExposureResult(configuration, limits, request.apply);
     } catch (const std::exception& ex) {
       publishCameraExposureError(toQString(ex.what()));
     }
@@ -2964,7 +2982,8 @@ class MainWindow : public QMainWindow {
   }
 
   void startCameraExposureOperation(
-      std::optional<prism::ExposureConfiguration> requested) {
+      std::optional<prism::ExposureConfiguration> requested,
+      std::optional<prism::ExposureLimits> requested_limits) {
     if (!client_.isOpen()) {
       showOpenDeviceHint(uiText("Camera exposure", "相机曝光"));
       return;
@@ -2983,8 +3002,17 @@ class MainWindow : public QMainWindow {
     }
 
     CameraExposureOperationRequest request;
-    request.apply = requested.has_value();
-    if (requested.has_value()) request.configuration = *requested;
+    request.apply = requested.has_value() && requested_limits.has_value();
+    if (requested.has_value() != requested_limits.has_value()) {
+      publishCameraExposureError(
+          uiText("Incomplete camera exposure request",
+                 "相机曝光请求不完整"));
+      return;
+    }
+    if (request.apply) {
+      request.configuration = *requested;
+      request.limits = *requested_limits;
+    }
 
     camera_exposure_operation_running_ = true;
     camera_exposure_panel_->setBusy(
@@ -3245,7 +3273,8 @@ class MainWindow : public QMainWindow {
       updateDeviceVersions(versions);
       camera_encoding_panel_->setConfiguration(configuration);
       camera_exposure_panel_->setCameraFps(configuration.camera_fps);
-      camera_exposure_panel_->setConfiguration(opened.exposure);
+      camera_exposure_panel_->setConfiguration(
+          opened.exposure, opened.exposure_limits);
       try {
         updateLidarStatus(client_.lidarStatus());
       } catch (const std::exception& lidar_error) {

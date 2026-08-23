@@ -25,6 +25,7 @@ OpenedDevice DeviceSession::open(size_t device_index) {
     opened.device_info = client_.deviceInfo();
     opened.configuration = client_.deviceConfiguration();
     opened.exposure = client_.cameraExposure();
+    opened.exposure_limits = client_.cameraExposureLimits();
     opened.network = client_.networkInfo();
     opened.serial_number = client_.serialNumber();
     opened.path = client_.path();
