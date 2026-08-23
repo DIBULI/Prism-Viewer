@@ -71,8 +71,28 @@ jobs:
           cmake --install build-windows --config Release --prefix $stage
           $exe = Join-Path $stage "bin\prism-viewer.exe"
           & (Join-Path $env:QT_PREFIX "bin\windeployqt.exe") `
-            --release --no-translations --compiler-runtime `
+            --release --no-translations --no-compiler-runtime `
             --dir (Join-Path $stage "bin") $exe
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+            "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = (& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Redist.14.Latest `
+            -property installationPath).Trim()
+          $redistRoot = Join-Path $vsInstall "VC\Redist\MSVC"
+          $redistDir = Get-ChildItem $redistRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+              Join-Path $_.FullName "x64\Microsoft.VC143.CRT"
+            } |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+          if (-not $redistDir) {
+            throw "Visual C++ x64 redistributable runtime was not found"
+          }
+          Copy-Item (Join-Path $redistDir "*.dll") `
+            (Join-Path $stage "bin")
+
           $package = Join-Path $env:RUNNER_TEMP `
             "Prism-Viewer-1.0.0-windows-x64"
           New-Item -ItemType Directory -Path $package | Out-Null
