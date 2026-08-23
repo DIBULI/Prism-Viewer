@@ -374,7 +374,7 @@ jobs:
               test "$(readlink -f "$ssl_crypto")" = \
                 /opt/prism-viewer/lib/libcrypto.so.3
               /opt/prism-viewer/bin/prism-viewer \
-                --window-layout-self-test
+                --startup-self-test
             '
           done
 
@@ -403,13 +403,13 @@ jobs:
 
           QT_QPA_PLATFORM=offscreen \
             "$appimage" --appimage-extract-and-run \
-            --window-layout-self-test
+            --startup-self-test
           for image in ubuntu:22.04 ubuntu:24.04; do
             docker run --rm \
               -e QT_QPA_PLATFORM=offscreen \
               -v "$appimage:/opt/Prism-Viewer.AppImage:ro" \
               "$image" /opt/Prism-Viewer.AppImage \
-              --appimage-extract-and-run --window-layout-self-test
+              --appimage-extract-and-run --startup-self-test
           done
 
       - name: Upload Linux package

@@ -7539,6 +7539,38 @@ int runViewerApplication(int argc, char** argv) {
               << report.toStdString() << "\n";
     return success ? 0 : 13;
   }
+  if (command_line.contains(QStringLiteral("--startup-self-test"))) {
+    window.show();
+    app.processEvents();
+    const auto* dataset_playback_button =
+        window.findChild<QPushButton*>(
+            QStringLiteral("datasetPlaybackButton"));
+    const auto* dataset_playback_speed =
+        window.findChild<QComboBox*>(
+            QStringLiteral("datasetPlaybackSpeedCombo"));
+    const auto* dataset_playback_position =
+        window.findChild<QLabel*>(
+            QStringLiteral("datasetPlaybackPositionLabel"));
+    const auto* lidar_imu_playback =
+        window.findChild<QLabel*>(QStringLiteral("lidarImuPlaybackLabel"));
+    const bool controls_ok =
+        dataset_playback_button != nullptr &&
+        dataset_playback_speed != nullptr &&
+        dataset_playback_position != nullptr &&
+        lidar_imu_playback != nullptr;
+    const bool success = window.isVisible() &&
+        window.centralWidget() != nullptr && controls_ok;
+    std::cout << "main_window_startup_self_test="
+              << (success ? "PASS" : "FAIL")
+              << " visible=" << (window.isVisible() ? "PASS" : "FAIL")
+              << " central_widget="
+              << (window.centralWidget() != nullptr ? "PASS" : "FAIL")
+              << " playback_controls="
+              << (controls_ok ? "PASS" : "FAIL") << "\n";
+    window.close();
+    app.processEvents();
+    return success ? 0 : 14;
+  }
   if (command_line.contains(QStringLiteral("--window-layout-self-test"))) {
     window.ensurePolished();
     if (window.centralWidget() != nullptr &&
