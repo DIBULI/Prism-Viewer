@@ -151,7 +151,7 @@ jobs:
           - package_arch: x64
             runner: ubuntu-22.04
             sdk_arch: linux-x64
-            sdk_sha256: 73c8278aca4a50057d2fc0f897ac465a402bcbae2426a8f4c5b9eaa0ee5b2516
+            sdk_sha256: 3291bc77409be3926850178b7851cff955284cd5d0d3f315840caffcceae5451
             qt_source: aqt
             deploy_runtime: "ON"
             appimage_arch: x86_64
@@ -159,7 +159,7 @@ jobs:
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
-            sdk_sha256: 0c76621dcaa0a049b16db2c6790be8d766b312911fc8797cf300d441c60287e9
+            sdk_sha256: 65d1c9d8307b15a956b5e7d47ea12b1cd872492d9db9773283696702857de4e2
             qt_source: distro
             deploy_runtime: "OFF"
             appimage_arch: aarch64
@@ -191,6 +191,7 @@ jobs:
           packages=(
             binutils
             libgl1-mesa-dev
+            libssl-dev
             ninja-build
             patchelf
             libxcb-cursor0
@@ -199,7 +200,7 @@ jobs:
             libxcb-shape0
             libxcb-xkb1
             libxkbcommon-x11-0
-            libusb-1.0-0
+            libusb-1.0-0-dev
             libssl3
           )
           if [ "$LINUX_PACKAGE_ARCH" = arm64 ]; then
@@ -233,10 +234,13 @@ jobs:
 
       - name: Verify bundled Linux SDK
         run: |
-          sdk="third_party/Prism-SDK/runtime/$LINUX_SDK_ARCH/libprism_usb_sdk.so"
+          sdk="third_party/Prism-SDK/runtime/$LINUX_SDK_ARCH/libprism_usb_sdk.a"
           echo "$LINUX_SDK_SHA256  $sdk" | sha256sum --check
-          file "$sdk" | tee /dev/stderr | grep -q \
-            "$([ "$LINUX_PACKAGE_ARCH" = arm64 ] && echo 'ARM aarch64' || echo 'x86-64')"
+          file "$sdk" | tee /dev/stderr | grep -Fq 'current ar archive'
+          object_headers="$(objdump -f "$sdk")"
+          grep -Fq \
+            "$([ "$LINUX_PACKAGE_ARCH" = arm64 ] && echo 'elf64-littleaarch64' || echo 'elf64-x86-64')" \
+            <<<"$object_headers"
 
       - name: Configure and build Viewer
         run: |
@@ -279,11 +283,10 @@ jobs:
             cp -L "$qt_plugin_source" "$package/plugins/$relative"
           done
 
-          # The SDK links libcrypto directly today, while libssl can also be
-          # loaded by OpenSSL-backed features without appearing in the main
-          # executable's dependency graph. Keep the OpenSSL 3 runtime pair
-          # together so the extracted package never depends on a host OpenSSL
-          # installation.
+          # The statically linked SDK adds libcrypto to the executable, while
+          # libssl can also be loaded by OpenSSL-backed features without
+          # appearing in that dependency graph. Keep the OpenSSL 3 runtime
+          # pair together so the package never uses a host OpenSSL install.
           for name in libcrypto.so.3 libssl.so.3; do
             source="$(ldconfig -p \
               | awk -v library="$name" '$1 == library { print $NF; exit }')"
@@ -339,11 +342,9 @@ jobs:
             fi
           done
 
-          # DT_RUNPATH is not transitive. The executable's $ORIGIN/../lib
-          # entry can locate libprism_usb_sdk.so, but it cannot locate the
-          # SDK's own libcrypto dependency unless the SDK and every other ELF
-          # object carry a path back to the packaged lib directory. Patch a
-          # location-independent RUNPATH into every real ELF file.
+          # DT_RUNPATH is not transitive. Patch every packaged ELF object with
+          # a location-independent path back to the private library directory
+          # so OpenSSL, libusb, Qt, and plugin dependencies remain closed.
           while IFS= read -r -d '' binary; do
             if readelf -h "$binary" >/dev/null 2>&1; then
               relative_lib="$(realpath --relative-to="$(dirname "$binary")" \
@@ -359,7 +360,6 @@ jobs:
           required_patterns=(
             "bin/prism-viewer"
             "bin/qt.conf"
-            "lib/libprism_usb_sdk.so"
             "lib/libQt6Core.so.6"
             "lib/libQt6Gui.so.6"
             "lib/libQt6Widgets.so.6"
@@ -418,16 +418,21 @@ jobs:
                 done < <(ldd "$1")
                 return 1
               }
-              app_sdk="$(resolve_dependency \
-                /opt/prism-viewer/bin/prism-viewer libprism_usb_sdk.so)"
-              sdk_crypto="$(resolve_dependency \
-                /opt/prism-viewer/lib/libprism_usb_sdk.so libcrypto.so.3)"
+              if ldd /opt/prism-viewer/bin/prism-viewer \
+                  | grep -q libprism_usb_sdk; then
+                echo "Viewer still depends on the shared Prism SDK" >&2
+                exit 1
+              fi
+              app_crypto="$(resolve_dependency \
+                /opt/prism-viewer/bin/prism-viewer libcrypto.so.3)"
+              app_libusb="$(resolve_dependency \
+                /opt/prism-viewer/bin/prism-viewer libusb-1.0.so.0)"
               ssl_crypto="$(resolve_dependency \
                 /opt/prism-viewer/lib/libssl.so.3 libcrypto.so.3)"
-              test "$(readlink -f "$app_sdk")" = \
-                /opt/prism-viewer/lib/libprism_usb_sdk.so
-              test "$(readlink -f "$sdk_crypto")" = \
+              test "$(readlink -f "$app_crypto")" = \
                 /opt/prism-viewer/lib/libcrypto.so.3
+              test "$(readlink -f "$app_libusb")" = \
+                /opt/prism-viewer/lib/libusb-1.0.so.0
               test "$(readlink -f "$ssl_crypto")" = \
                 /opt/prism-viewer/lib/libcrypto.so.3
               /opt/prism-viewer/bin/prism-viewer \

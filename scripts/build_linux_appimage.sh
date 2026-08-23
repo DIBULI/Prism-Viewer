@@ -25,7 +25,6 @@ fi
 
 for required in \
   "$package_root/bin/prism-viewer" \
-  "$package_root/lib/libprism_usb_sdk.so" \
   "$package_root/lib/libcrypto.so.3" \
   "$package_root/plugins/platforms/libqxcb.so" \
   "$package_root/plugins/platforms/libqoffscreen.so" \

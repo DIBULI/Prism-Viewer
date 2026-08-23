@@ -24,14 +24,14 @@ final result. With multiple devices, select one and click **Open Device**; the
 same one-time automatic synchronization runs after the first successful open.
 If it fails, capture remains available and **Set Device Time** can retry it.
 
-The Viewer does not compile Host SDK sources. The matching binary-only SDK is
+The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule:
 
 - public headers under `include/prism`;
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
   `GetProcAddress` (the import `.lib` is deliberately not used);
-- architecture-matched `libprism_usb_sdk.so` on Linux x86-64 and arm64,
-  linked as a bundled shared library.
+- architecture-matched `libprism_usb_sdk.a` on Linux x86-64 and arm64,
+  linked into the Viewer executable;
 - `libprism_usb_sdk.dylib` plus its relocatable `libusb` runtime on Apple
   Silicon macOS, linked from the app's `Contents/Frameworks` directory.
 
@@ -136,11 +136,12 @@ chmod +x Prism-Viewer-1.0.0-linux-aarch64.AppImage
 ./Prism-Viewer-1.0.0-linux-aarch64.AppImage
 ```
 
-If FUSE is unavailable, run it with `--appimage-extract-and-run`. The AppImage
-is a single-file container rather than a fully static ELF: the binary-only
-Prism SDK is distributed only as `libprism_usb_sdk.so`, and Qt loads platform,
-image, and SQL plugins dynamically. Those shared objects, OpenSSL, and libusb
-are embedded in the AppImage and resolved from its private runtime paths.
+If FUSE is unavailable, run it with `--appimage-extract-and-run`. The Linux
+Viewer links the Prism SDK implementation statically, so it no longer needs
+`libprism_usb_sdk.so`. The AppImage is still a single-file container rather
+than a fully static ELF because Qt loads platform, image, and SQL plugins
+dynamically; OpenSSL and libusb also remain shared dependencies. Those shared
+objects are embedded in the AppImage and resolved from private runtime paths.
 
 ## Documentation
 

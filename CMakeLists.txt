@@ -61,6 +61,8 @@ set(CMAKE_AUTOUIC OFF)
 set(PRISM_USB_SDK_ROOT
     "${CMAKE_CURRENT_LIST_DIR}/third_party/Prism-SDK"
     CACHE PATH "Prism Host SDK Git submodule root")
+option(PRISM_LINK_STATIC_LINUX_SDK
+  "Link the Prism Host SDK implementation statically on Linux" ON)
 set(PRISM_USB_SDK_INCLUDE_DIR "${PRISM_USB_SDK_ROOT}/include")
 if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/runtime_api.hpp")
   message(FATAL_ERROR
@@ -83,15 +85,33 @@ elseif(APPLE)
   set(PRISM_USB_SDK_LIBUSB_LICENSE
       "${PRISM_USB_SDK_ROOT}/runtime/macos-arm64/libusb-COPYING.txt")
 else()
-  set(PRISM_USB_SDK_RUNTIME
-      "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.so")
+  if(PRISM_LINK_STATIC_LINUX_SDK)
+    set(PRISM_LINUX_SDK_IS_STATIC TRUE)
+    set(PRISM_USB_SDK_RUNTIME
+        "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.a")
+  else()
+    set(PRISM_LINUX_SDK_IS_STATIC FALSE)
+    set(PRISM_USB_SDK_RUNTIME
+        "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.so")
+  endif()
 endif()
 if(NOT WIN32)
-  add_library(prism-viewer-sdk-runtime SHARED IMPORTED GLOBAL)
+  if(PRISM_LINUX_SDK_IS_STATIC)
+    add_library(prism-viewer-sdk-runtime STATIC IMPORTED GLOBAL)
+  else()
+    add_library(prism-viewer-sdk-runtime SHARED IMPORTED GLOBAL)
+  endif()
   set_target_properties(prism-viewer-sdk-runtime PROPERTIES
     IMPORTED_LOCATION "${PRISM_USB_SDK_RUNTIME}")
   target_link_libraries(prism-viewer-sdk INTERFACE
     prism-viewer-sdk-runtime)
+  if(PRISM_LINUX_SDK_IS_STATIC)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(prism-viewer-sdk INTERFACE
+      PkgConfig::LIBUSB OpenSSL::Crypto)
+  endif()
 endif()
 set(PRISM_USB_SDK_RUNTIME_FILES
     "${PRISM_USB_SDK_RUNTIME}" ${PRISM_USB_SDK_RUNTIME_DEPENDENCIES})
@@ -178,9 +198,10 @@ target_link_libraries(prism-viewer PRIVATE
   ${QT_PACKAGE}::Sql
 )
 
-# Keep the bundled SDK runtime in the platform's loader-visible application
-# directory. On Windows no import library is searched or linked. Prism-Viewer
-# never compiles SDK sources.
+# Keep dynamic SDK runtimes in the platform's loader-visible application
+# directory. The Linux static archive is linked into the executable and is not
+# copied into the build or release package. Prism-Viewer never compiles SDK
+# sources.
 function(prism_copy_sdk_runtime target)
   if(APPLE)
     add_custom_command(TARGET ${target} POST_BUILD
@@ -196,7 +217,7 @@ function(prism_copy_sdk_runtime target)
               "$<TARGET_BUNDLE_CONTENT_DIR:${target}>/Resources/licenses"
       VERBATIM
     )
-  else()
+  elseif(NOT PRISM_LINUX_SDK_IS_STATIC)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E copy_if_different
               "${PRISM_USB_SDK_RUNTIME}"
@@ -261,7 +282,7 @@ install(TARGETS prism-viewer
 if(WIN32)
   install(FILES "${PRISM_USB_SDK_RUNTIME}"
     DESTINATION ${CMAKE_INSTALL_BINDIR})
-elseif(NOT APPLE)
+elseif(NOT APPLE AND NOT PRISM_LINUX_SDK_IS_STATIC)
   install(FILES "${PRISM_USB_SDK_RUNTIME}"
     DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
