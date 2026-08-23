@@ -199,6 +199,66 @@ jobs:
           mkdir -p "$package"
           cp -a "$stage"/. "$package"/
 
+          qt_plugins=(
+            "platforms/libqxcb.so"
+            "imageformats/libqjpeg.so"
+            "sqldrivers/libqsqlite.so"
+          )
+          for relative in "${qt_plugins[@]}"; do
+            qt_plugin_source="$QT_PREFIX/plugins/$relative"
+            if [ ! -f "$qt_plugin_source" ]; then
+              echo "Required Qt plugin is missing: $qt_plugin_source" >&2
+              exit 1
+            fi
+            mkdir -p "$package/plugins/$(dirname "$relative")"
+            cp -L "$qt_plugin_source" "$package/plugins/$relative"
+          done
+
+          # Plugins are loaded with dlopen(), so they are not visible from the
+          # main executable's link graph. Resolve their dependencies and any
+          # further transitive dependencies until the package is closed.
+          for pass in {1..10}; do
+            dependency_list="$RUNNER_TEMP/prism-runtime-dependencies-$pass.txt"
+            : > "$dependency_list"
+            while IFS= read -r -d '' binary; do
+              if readelf -h "$binary" >/dev/null 2>&1; then
+                LD_LIBRARY_PATH="$package/lib:$QT_PREFIX/lib" \
+                  ldd "$binary" 2>/dev/null \
+                  | awk '
+                      $2 == "=>" && $3 ~ /^\// { print $3 }
+                      $1 ~ /^\// { print $1 }
+                    ' >> "$dependency_list"
+              fi
+            done < <(find "$package" -type f -print0)
+
+            copied=0
+            while IFS= read -r dependency; do
+              case "$dependency" in
+                "$package"/*) continue ;;
+              esac
+              name="${dependency##*/}"
+              case "$name" in
+                ld-linux* | libc.so.* | libdl.so.* | libm.so.* | \
+                libpthread.so.* | libresolv.so.* | librt.so.* | \
+                libutil.so.*)
+                  continue
+                  ;;
+              esac
+              if [ ! -e "$package/lib/$name" ]; then
+                cp -L "$dependency" "$package/lib/$name"
+                copied=$((copied + 1))
+              fi
+            done < <(sort -u "$dependency_list")
+
+            if [ "$copied" -eq 0 ]; then
+              break
+            fi
+            if [ "$pass" -eq 10 ]; then
+              echo "Runtime dependency collection did not converge" >&2
+              exit 1
+            fi
+          done
+
           required_patterns=(
             "bin/prism-viewer"
             "lib/libprism_usb_sdk.so"
