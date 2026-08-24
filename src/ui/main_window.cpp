@@ -5599,11 +5599,12 @@ class MainWindow : public QMainWindow {
     if (result.success) {
       appendLog(
           QStringLiteral("%1 bag export complete: %2 camera=%3 "
-                         "onboard_imu=%4 lidar_imu=%5 lidar_batches=%6 "
-                         "lidar_points=%7 bytes=%8")
+                         "camera_exposure=%4 onboard_imu=%5 lidar_imu=%6 "
+                         "lidar_batches=%7 lidar_points=%8 bytes=%9")
               .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
+              .arg(result.camera_exposure_messages)
               .arg(result.imu_messages)
               .arg(result.lidar_imu_messages)
               .arg(result.lidar_messages)
@@ -5611,14 +5612,17 @@ class MainWindow : public QMainWindow {
               .arg(result.output_bytes));
       QMessageBox::information(
           this, uiText("ROS bag exported", "ROS Bag 已导出"),
-          uiText("Saved %1 bag:\n%2\n\nCamera messages: %3\n"
-                 "Onboard IMU messages: %4\nLiDAR IMU messages: %5\n"
-                 "LiDAR clouds: %6 (%7 points)",
-                 "已保存 %1 Bag：\n%2\n\n相机消息：%3\n板载 IMU 消息：%4\n"
-                 "雷达 IMU 消息：%5\nLiDAR 点云：%6 批（%7 点）")
+          uiText("Saved %1 bag:\n%2\n\nCamera image messages: %3\n"
+                 "Camera exposure messages: %4\n"
+                 "Onboard IMU messages: %5\nLiDAR IMU messages: %6\n"
+                 "LiDAR clouds: %7 (%8 points)",
+                 "已保存 %1 Bag：\n%2\n\n相机图像消息：%3\n"
+                 "相机曝光消息：%4\n板载 IMU 消息：%5\n"
+                 "雷达 IMU 消息：%6\nLiDAR 点云：%7 批（%8 点）")
               .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
+              .arg(result.camera_exposure_messages)
               .arg(result.imu_messages)
               .arg(result.lidar_imu_messages)
               .arg(result.lidar_messages)

@@ -221,7 +221,7 @@ uint64_t comparableTime(const RosTime& time) {
 class Ros1BagWriter {
  public:
   explicit Ros1BagWriter(const std::filesystem::path& path) {
-    connections_.reserve(8u);
+    connections_.reserve(12u);
     output_.open(path, std::ios::out | std::ios::binary | std::ios::trunc);
     if (!output_.is_open()) throw std::runtime_error("cannot create rosbag");
     static constexpr char kVersion[] = "#ROSBAG V2.0\n";
@@ -418,6 +418,8 @@ const std::string kCompressedImageDefinition =
     "MSG: std_msgs/Header\n" +
     std::string(kHeaderDefinition);
 
+constexpr const char* kUInt32Definition = "uint32 data\n";
+
 const std::string kImuDefinition =
     "std_msgs/Header header\n"
     "geometry_msgs/Quaternion orientation\n"
@@ -464,6 +466,13 @@ Bytes makeRos1CompressedImage(uint32_t sequence, uint64_t timestamp_us,
   appendString(&message, "bgr8; jpeg compressed bgr8");
   appendU32(&message, static_cast<uint32_t>(jpeg.size()));
   message.insert(message.end(), jpeg.begin(), jpeg.end());
+  return message;
+}
+
+Bytes makeRos1UInt32(uint32_t value) {
+  Bytes message;
+  message.reserve(sizeof(value));
+  appendU32(&message, value);
   return message;
 }
 
@@ -612,6 +621,12 @@ Bytes makeRos2CompressedImage(uint64_t timestamp_us,
   writeRos2Header(&writer, timestamp_us, frame_id);
   writer.writeString("bgr8; jpeg compressed bgr8");
   writer.writeOctets(jpeg);
+  return writer.finish();
+}
+
+Bytes makeRos2UInt32(uint32_t value) {
+  CdrWriter writer;
+  writer.writeU32(value);
   return writer.finish();
 }
 
@@ -1193,6 +1208,13 @@ class DatasetBagWriter {
               "8f7a12909da2c9d3332d540a0977563f",
               kCompressedImageDefinition);
         }
+        for (size_t camera = 0; camera < camera_exposure_ros1_.size();
+             ++camera) {
+          camera_exposure_ros1_[camera] = &ros1_->addConnection(
+              "/prism/camera" + std::to_string(camera) + "/exposure_us",
+              "std_msgs/UInt32", "304a39449588c7f8ce2df6e8001c5fce",
+              kUInt32Definition);
+        }
       }
       for (size_t imu = 0; imu < imu_ros1_.size(); ++imu) {
         imu_ros1_[imu] = &ros1_->addConnection(
@@ -1220,6 +1242,12 @@ class DatasetBagWriter {
             "/prism/camera" + std::to_string(camera) + "/image/compressed",
             "sensor_msgs/msg/CompressedImage");
       }
+      for (size_t camera = 0; camera < camera_exposure_ros2_.size();
+           ++camera) {
+        camera_exposure_ros2_[camera] = ros2_->addTopic(
+            "/prism/camera" + std::to_string(camera) + "/exposure_us",
+            "std_msgs/msg/UInt32");
+      }
     }
     for (size_t imu = 0; imu < imu_ros2_.size(); ++imu) {
       imu_ros2_[imu] = ros2_->addTopic(
@@ -1237,17 +1265,21 @@ class DatasetBagWriter {
   }
 
   void writeCamera(size_t camera, uint32_t sequence, uint64_t timestamp_us,
-                   const Bytes& jpeg) {
+                   uint32_t exposure_us, const Bytes& jpeg) {
     const std::string frame_id =
         "camera" + std::to_string(camera) + "_optical_frame";
     if (format_ == RosbagFormat::Ros1) {
       ros1_->writeMessage(
           camera_ros1_.at(camera), timestamp_us,
           makeRos1CompressedImage(sequence, timestamp_us, frame_id, jpeg));
+      ros1_->writeMessage(camera_exposure_ros1_.at(camera), timestamp_us,
+                          makeRos1UInt32(exposure_us));
     } else {
       ros2_->writeMessage(
           camera_ros2_.at(camera), timestamp_us,
           makeRos2CompressedImage(timestamp_us, frame_id, jpeg));
+      ros2_->writeMessage(camera_exposure_ros2_.at(camera), timestamp_us,
+                          makeRos2UInt32(exposure_us));
     }
   }
 
@@ -1308,10 +1340,12 @@ class DatasetBagWriter {
   std::unique_ptr<Ros1BagWriter> ros1_;
   std::unique_ptr<Ros2BagWriter> ros2_;
   std::array<Connection*, 4> camera_ros1_{};
+  std::array<Connection*, 4> camera_exposure_ros1_{};
   std::array<Connection*, 2> imu_ros1_{};
   Connection* lidar_ros1_ = nullptr;
   Connection* lidar_imu_ros1_ = nullptr;
   std::array<int, 4> camera_ros2_{};
+  std::array<int, 4> camera_exposure_ros2_{};
   std::array<int, 2> imu_ros2_{};
   int lidar_ros2_ = 0;
   int lidar_imu_ros2_ = 0;
@@ -1486,7 +1520,8 @@ RosbagExportResult exportDatasetToRosbag(
           std::string trailing;
           if (!(parser >> timestamp_text >> relative_path >> offset >> size >>
                 exposure) ||
-              (parser >> trailing) || size == 0 || size > kMaximumJpegBytes) {
+              (parser >> trailing) || size == 0 || size > kMaximumJpegBytes ||
+              exposure > std::numeric_limits<uint32_t>::max()) {
             throw std::runtime_error("invalid cam" + std::to_string(camera) +
                                      ".tum line " +
                                      std::to_string(line_number));
@@ -1513,8 +1548,10 @@ RosbagExportResult exportDatasetToRosbag(
           Bytes jpeg = readContainerPayload(
               dataset_root, relative_path, offset, static_cast<uint32_t>(size),
               &container, &open_container);
-          writer.writeCamera(camera, sequence++, timestamp_us, jpeg);
+          writer.writeCamera(camera, sequence++, timestamp_us,
+                             static_cast<uint32_t>(exposure), jpeg);
           ++result.camera_messages;
+          ++result.camera_exposure_messages;
           ++completed;
           checkCancelled(cancelled);
           reportProgress(progress, completed, total, stage, false);

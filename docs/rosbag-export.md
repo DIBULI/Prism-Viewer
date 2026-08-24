@@ -16,6 +16,7 @@ Python 包。ROS2 导出依赖随 Viewer 安装的 Qt SQLite 驱动；Ubuntu/Deb
 | Prism 数据 | 话题 | ROS1 类型 | ROS2 类型 |
 |---|---|---|---|
 | Camera 0…3 JPEG | `/prism/cameraN/image/compressed` | `sensor_msgs/CompressedImage` | `sensor_msgs/msg/CompressedImage` |
+| Camera 0…3 实际曝光时间 | `/prism/cameraN/exposure_us` | `std_msgs/UInt32` | `std_msgs/msg/UInt32` |
 | 板载 IMU 0 | `/prism/imu0/data` | `sensor_msgs/Imu` | `sensor_msgs/msg/Imu` |
 | 板载 IMU 1 | `/prism/imu1/data` | `sensor_msgs/Imu` | `sensor_msgs/msg/Imu` |
 | Mid-360/Mid-360S 点云 | `/prism/lidar/points` | `sensor_msgs/PointCloud2` | `sensor_msgs/msg/PointCloud2` |
@@ -26,8 +27,11 @@ IMU；`/prism/lidar/imu/data` 是独立的雷达内置 IMU，不能混入或替�
 三路 IMU 的加速度和角速度都使用数据集中的 SI 单位（m/s²、rad/s）。设备没有
 输出姿态，所以 `orientation_covariance[0]` 为 `-1`。
 
-相机保留原始 JPEG，不做有损重编码。点云字段为 `x`、`y`、`z`（float32 米）、
-`intensity`（float32，来自 Livox reflectivity）和 `tag`（uint8）。
+相机保留原始 JPEG，不做有损重编码。每个图像还会在对应的
+`/prism/cameraN/exposure_us` 话题输出数据集记录的实际曝光时间，`data` 的单位为
+微秒；曝光消息的 Bag 时间戳与对应 JPEG 完全相同。该话题使用标准 `UInt32`
+消息，不需要安装 Prism 自定义 ROS 消息包。点云字段为 `x`、`y`、`z`
+（float32 米）、`intensity`（float32，来自 Livox reflectivity）和 `tag`（uint8）。
 
 ROS2 消息使用 little-endian CDR 序列化。SQLite 数据库采用 rosbag2 schema
 version 3，`metadata.yaml` 采用 version 5，以兼容 ROS2 Humble 及能够读取该

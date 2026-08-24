@@ -358,6 +358,7 @@ int main(int argc, char** argv) {
     const auto result = prism_viewer::dataset::exportDatasetToRosbag(
         root, bag, prism_viewer::dataset::RosbagFormat::Ros1, false);
     if (!result.success || result.camera_messages != 4u ||
+        result.camera_exposure_messages != 4u ||
         result.imu_messages != 2u || result.lidar_messages != 1u ||
         result.lidar_imu_messages != 1u || result.lidar_points != 2u ||
         result.output_bytes == 0u) {
@@ -369,7 +370,8 @@ int main(int argc, char** argv) {
     const std::string magic(bytes.begin(), bytes.begin() + 13);
     if (magic != "#ROSBAG V2.0\n") throw std::runtime_error("bad bag magic");
     const Record file_header = parseRecord(bytes, 13u);
-    if (op(file_header) != 0x03u || fieldU32(file_header, "conn_count") != 8u ||
+    if (op(file_header) != 0x03u ||
+        fieldU32(file_header, "conn_count") != 12u ||
         fieldU32(file_header, "chunk_count") == 0u) {
       throw std::runtime_error("invalid bag file header");
     }
@@ -381,6 +383,7 @@ int main(int argc, char** argv) {
 
     std::map<uint32_t, uint64_t> message_counts;
     std::map<uint32_t, Bytes> first_messages;
+    std::map<uint32_t, Bytes> first_message_times;
     uint64_t index_entries = 0;
     size_t offset = file_header.next_offset;
     while (offset < index_position) {
@@ -407,6 +410,8 @@ int main(int argc, char** argv) {
                         bytes.begin() + static_cast<ptrdiff_t>(
                                             nested.data_offset +
                                             nested.data_size)));
+              first_message_times.emplace(connection,
+                                          nested.fields.at("time"));
             }
           }
           nested_offset = nested.next_offset;
@@ -418,8 +423,8 @@ int main(int argc, char** argv) {
       }
       offset = record.next_offset;
     }
-    if (offset != index_position || index_entries != 8u ||
-        message_counts.size() != 8u) {
+    if (offset != index_position || index_entries != 12u ||
+        message_counts.size() != 12u) {
       throw std::runtime_error("bag chunks or indexes are incomplete");
     }
 
@@ -444,21 +449,34 @@ int main(int argc, char** argv) {
       }
       offset = record.next_offset;
     }
-    if (connection_types.size() != 8u || chunk_infos == 0u ||
+    if (connection_types.size() != 12u || chunk_infos == 0u ||
         connection_types[0] != "sensor_msgs/CompressedImage" ||
-        connection_types[4] != "sensor_msgs/Imu" ||
-        connection_types[6] != "sensor_msgs/PointCloud2" ||
-        connection_types[7] != "sensor_msgs/Imu" ||
-        connection_topics[4] != "/prism/imu0/data" ||
-        connection_topics[5] != "/prism/imu1/data" ||
-        connection_topics[7] != "/prism/lidar/imu/data") {
+        connection_types[4] != "std_msgs/UInt32" ||
+        connection_types[8] != "sensor_msgs/Imu" ||
+        connection_types[10] != "sensor_msgs/PointCloud2" ||
+        connection_types[11] != "sensor_msgs/Imu" ||
+        connection_topics[4] != "/prism/camera0/exposure_us" ||
+        connection_topics[8] != "/prism/imu0/data" ||
+        connection_topics[9] != "/prism/imu1/data" ||
+        connection_topics[11] != "/prism/lidar/imu/data") {
       throw std::runtime_error("bag connections are incorrect");
+    }
+
+    for (uint32_t camera = 0; camera < 4u; ++camera) {
+      Ros1Reader ros1_exposure(first_messages.at(4u + camera));
+      if (ros1_exposure.readU32() != 200u + camera * 10u ||
+          !ros1_exposure.atEnd() ||
+          first_message_times.at(camera) !=
+              first_message_times.at(4u + camera)) {
+        throw std::runtime_error(
+            "ROS1 camera exposure value or timestamp is incorrect");
+      }
     }
 
     const auto nearlyEqual = [](double left, double right) {
       return std::abs(left - right) < 1e-6;
     };
-    Ros1Reader ros1_lidar(first_messages.at(6u));
+    Ros1Reader ros1_lidar(first_messages.at(10u));
     const uint32_t ros1_lidar_sequence = ros1_lidar.readU32();
     const uint32_t ros1_lidar_seconds = ros1_lidar.readU32();
     const uint32_t ros1_lidar_nanoseconds = ros1_lidar.readU32();
@@ -470,7 +488,7 @@ int main(int argc, char** argv) {
       throw std::runtime_error(
           "ROS1 LiDAR did not preserve the normalized RK measurement time");
     }
-    Ros1Reader ros1_lidar_imu(first_messages.at(7u));
+    Ros1Reader ros1_lidar_imu(first_messages.at(11u));
     if (ros1_lidar_imu.readU32() != 0u ||
         ros1_lidar_imu.readU32() != 1780000000u ||
         ros1_lidar_imu.readU32() != 800000u ||
@@ -544,6 +562,7 @@ int main(int argc, char** argv) {
     const auto ros2_result = prism_viewer::dataset::exportDatasetToRosbag(
         root, ros2_bag, prism_viewer::dataset::RosbagFormat::Ros2, false);
     if (!ros2_result.success || ros2_result.camera_messages != 4u ||
+        ros2_result.camera_exposure_messages != 4u ||
         ros2_result.imu_messages != 2u || ros2_result.lidar_messages != 1u ||
         ros2_result.lidar_imu_messages != 1u ||
         ros2_result.lidar_points != 2u || ros2_result.output_bytes == 0u ||
@@ -561,8 +580,9 @@ int main(int argc, char** argv) {
     const std::string metadata = readText(ros2_metadata);
     if (metadata.find("version: 5") == std::string::npos ||
         metadata.find("storage_identifier: sqlite3") == std::string::npos ||
-        metadata.find("message_count: 8") == std::string::npos ||
+        metadata.find("message_count: 12") == std::string::npos ||
         metadata.find("sensor_msgs/msg/CompressedImage") == std::string::npos ||
+        metadata.find("std_msgs/msg/UInt32") == std::string::npos ||
         metadata.find("sensor_msgs/msg/Imu") == std::string::npos ||
         metadata.find("sensor_msgs/msg/PointCloud2") == std::string::npos ||
         metadata.find("dataset_ros2_0.db3") == std::string::npos) {
@@ -570,9 +590,12 @@ int main(int argc, char** argv) {
     }
 
     QByteArray camera_cdr;
+    QByteArray exposure_cdr;
     QByteArray imu_cdr;
     QByteArray lidar_cdr;
     QByteArray lidar_imu_cdr;
+    int64_t camera_timestamp_ns = 0;
+    int64_t exposure_timestamp_ns = 0;
     const QString sqlite_connection =
         QStringLiteral("prism_rosbag2_test_") +
         QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -606,9 +629,11 @@ int main(int argc, char** argv) {
         ros2_types.emplace(topics.value(0).toString().toStdString(),
                            topics.value(1).toString().toStdString());
       }
-      if (ros2_types.size() != 8u ||
+      if (ros2_types.size() != 12u ||
           ros2_types["/prism/camera0/image/compressed"] !=
               "sensor_msgs/msg/CompressedImage" ||
+          ros2_types["/prism/camera0/exposure_us"] !=
+              "std_msgs/msg/UInt32" ||
           ros2_types["/prism/imu0/data"] != "sensor_msgs/msg/Imu" ||
           ros2_types["/prism/imu1/data"] != "sensor_msgs/msg/Imu" ||
           ros2_types["/prism/lidar/imu/data"] != "sensor_msgs/msg/Imu" ||
@@ -618,7 +643,7 @@ int main(int argc, char** argv) {
       }
       QSqlQuery count(database);
       if (!count.exec(QStringLiteral("SELECT COUNT(*) FROM messages;")) ||
-          !count.next() || count.value(0).toULongLong() != 8u) {
+          !count.next() || count.value(0).toULongLong() != 12u) {
         throw std::runtime_error("ROS2 message count is incorrect");
       }
       const auto messageFor = [&database](const QString& topic) {
@@ -633,8 +658,26 @@ int main(int argc, char** argv) {
         }
         return message.value(0).toByteArray();
       };
+      const auto timestampFor = [&database](const QString& topic) {
+        QSqlQuery message(database);
+        message.prepare(QStringLiteral(
+            "SELECT messages.timestamp FROM messages JOIN topics ON "
+            "messages.topic_id=topics.id WHERE topics.name=? "
+            "ORDER BY messages.timestamp, messages.id LIMIT 1;"));
+        message.addBindValue(topic);
+        if (!message.exec() || !message.next()) {
+          throw std::runtime_error("cannot read ROS2 message timestamp");
+        }
+        return message.value(0).toLongLong();
+      };
       camera_cdr =
           messageFor(QStringLiteral("/prism/camera0/image/compressed"));
+      exposure_cdr =
+          messageFor(QStringLiteral("/prism/camera0/exposure_us"));
+      camera_timestamp_ns =
+          timestampFor(QStringLiteral("/prism/camera0/image/compressed"));
+      exposure_timestamp_ns =
+          timestampFor(QStringLiteral("/prism/camera0/exposure_us"));
       imu_cdr = messageFor(QStringLiteral("/prism/imu0/data"));
       lidar_cdr = messageFor(QStringLiteral("/prism/lidar/points"));
       lidar_imu_cdr =
@@ -652,6 +695,13 @@ int main(int argc, char** argv) {
             Bytes({0xffu, 0xd8u, 0u, 0xffu, 0xd9u}) ||
         !camera_message.atEnd()) {
       throw std::runtime_error("ROS2 CompressedImage CDR is incorrect");
+    }
+
+    CdrReader exposure_message(byteArrayToBytes(exposure_cdr));
+    if (exposure_message.readU32() != 200u || !exposure_message.atEnd() ||
+        camera_timestamp_ns != exposure_timestamp_ns) {
+      throw std::runtime_error(
+          "ROS2 camera exposure value or timestamp is incorrect");
     }
 
     CdrReader imu_message(byteArrayToBytes(imu_cdr));
@@ -938,8 +988,9 @@ int main(int argc, char** argv) {
           "v6 manifest camera declaration was silently downgraded");
     }
 
-    // Existing full v3/v4 datasets have no lidar_imu.tum. They must retain
-    // their original seven ROS connections and result accounting.
+    // Existing full v3/v4 datasets have no lidar_imu.tum. Their four camera
+    // indexes still include actual exposure, so each image gains a matching
+    // standard UInt32 exposure topic but no LiDAR IMU topic.
     writeText(root / "dataset.info",
               "format=prism-dataset-v4\nrecording_mode=full\n");
     std::filesystem::remove(root / "lidar_imu.tum");
@@ -950,6 +1001,7 @@ int main(int argc, char** argv) {
             prism_viewer::dataset::RosbagFormat::Ros1, false);
     if (!legacy_full_result.success ||
         legacy_full_result.camera_messages != 4u ||
+        legacy_full_result.camera_exposure_messages != 4u ||
         legacy_full_result.imu_messages != 2u ||
         legacy_full_result.lidar_imu_messages != 0u ||
         legacy_full_result.lidar_messages != 1u) {
@@ -958,7 +1010,7 @@ int main(int argc, char** argv) {
     }
     const Record legacy_full_header =
         parseRecord(readFile(legacy_full_ros1), 13u);
-    if (fieldU32(legacy_full_header, "conn_count") != 7u) {
+    if (fieldU32(legacy_full_header, "conn_count") != 11u) {
       throw std::runtime_error(
           "legacy full dataset gained an unexpected LiDAR IMU connection");
     }
@@ -976,11 +1028,12 @@ int main(int argc, char** argv) {
             prism_viewer::dataset::RosbagFormat::Ros1, false);
     if (!legacy_camera_imu_ros1_result.success ||
         legacy_camera_imu_ros1_result.camera_messages != 4u ||
+        legacy_camera_imu_ros1_result.camera_exposure_messages != 4u ||
         legacy_camera_imu_ros1_result.imu_messages != 2u ||
         legacy_camera_imu_ros1_result.lidar_messages != 0u ||
         legacy_camera_imu_ros1_result.lidar_imu_messages != 0u ||
         fieldU32(parseRecord(readFile(legacy_camera_imu_ros1), 13u),
-                 "conn_count") != 6u) {
+                 "conn_count") != 10u) {
       throw std::runtime_error(
           "legacy camera + onboard IMU ROS1 dataset export failed: " +
           legacy_camera_imu_ros1_result.error);
@@ -996,10 +1049,11 @@ int main(int argc, char** argv) {
         readText(legacy_camera_imu_ros2 / "metadata.yaml");
     if (!legacy_camera_imu_ros2_result.success ||
         legacy_camera_imu_ros2_result.camera_messages != 4u ||
+        legacy_camera_imu_ros2_result.camera_exposure_messages != 4u ||
         legacy_camera_imu_ros2_result.imu_messages != 2u ||
         legacy_camera_imu_ros2_result.lidar_messages != 0u ||
         legacy_camera_imu_ros2_result.lidar_imu_messages != 0u ||
-        legacy_camera_imu_metadata.find("message_count: 6") ==
+        legacy_camera_imu_metadata.find("message_count: 10") ==
             std::string::npos ||
         legacy_camera_imu_metadata.find("PointCloud2") != std::string::npos ||
         legacy_camera_imu_metadata.find("/prism/lidar/imu/data") !=
