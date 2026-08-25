@@ -185,6 +185,16 @@ add_executable(prism-viewer
   src/ui/wifi_hotspot_panel.cpp
   src/ui/zoomable_image_view.cpp
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+    AND PRISM_LINUX_SDK_IS_STATIC
+    AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11)
+  # The bundled static SDK is built with a newer GCC and references the
+  # GLIBCXX_3.4.29 throw helper. Ubuntu 20.04 ships GCC 9, whose standard
+  # library has the exception type but does not export that helper yet.
+  target_sources(prism-viewer PRIVATE
+    src/compat/libstdcxx_bad_array_new_length.cpp)
+endif()
 set_target_properties(prism-viewer PROPERTIES AUTORCC ON)
 
 target_compile_features(prism-viewer PRIVATE cxx_std_17)
