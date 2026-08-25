@@ -7257,6 +7257,39 @@ int runViewerApplication(int argc, char** argv) {
   app.setOrganizationName(QStringLiteral("Prism"));
   app.setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
   const QStringList command_line = QCoreApplication::arguments();
+  const int device_open_self_test =
+      command_line.indexOf(QStringLiteral("--device-open-self-test"));
+  if (device_open_self_test >= 0) {
+    communication::DeviceSession session;
+    try {
+      const auto& devices = session.refresh();
+      if (devices.empty()) {
+        std::cerr << "device open self-test: no Prism USB device found\n";
+        return 20;
+      }
+      const communication::OpenedDevice opened = session.open(0);
+      if (!session.isOpen()) {
+        std::cerr << "device open self-test: SDK did not retain the USB handle\n";
+        return 21;
+      }
+      std::cout << "device open self-test: PASS"
+                << " devices=" << devices.size()
+                << " camera_fps=" << opened.configuration.camera_fps
+                << " serial_length=" << opened.serial_number.size()
+                << " path_length=" << opened.path.size() << "\n";
+      session.close();
+      return 0;
+    } catch (const std::exception& exception) {
+      session.close();
+      std::cerr << "device open self-test: FAIL: " << exception.what()
+                << "\n";
+      return 22;
+    } catch (...) {
+      session.close();
+      std::cerr << "device open self-test: FAIL: unknown exception\n";
+      return 23;
+    }
+  }
   int dataset_self_test =
       command_line.indexOf(QStringLiteral("--dataset-recorder-self-test"));
   const int imu_only_self_test = command_line.indexOf(

@@ -63,6 +63,8 @@ set(PRISM_USB_SDK_ROOT
     CACHE PATH "Prism Host SDK Git submodule root")
 option(PRISM_LINK_STATIC_LINUX_SDK
   "Link the Prism Host SDK implementation statically on Linux" ON)
+set(PRISM_LINUX_SHARED_SDK_RUNTIME "" CACHE FILEPATH
+  "Optional Prism Host SDK shared library used when static Linux linking is disabled")
 set(PRISM_USB_SDK_INCLUDE_DIR "${PRISM_USB_SDK_ROOT}/include")
 if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/runtime_api.hpp")
   message(FATAL_ERROR
@@ -91,8 +93,13 @@ else()
         "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.a")
   else()
     set(PRISM_LINUX_SDK_IS_STATIC FALSE)
-    set(PRISM_USB_SDK_RUNTIME
-        "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.so")
+    if(PRISM_LINUX_SHARED_SDK_RUNTIME)
+      get_filename_component(PRISM_USB_SDK_RUNTIME
+        "${PRISM_LINUX_SHARED_SDK_RUNTIME}" ABSOLUTE)
+    else()
+      set(PRISM_USB_SDK_RUNTIME
+          "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.so")
+    endif()
   endif()
 endif()
 if(NOT WIN32)

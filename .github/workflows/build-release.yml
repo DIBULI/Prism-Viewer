@@ -156,10 +156,14 @@ jobs:
           - package_arch: x64
             runner: ubuntu-22.04
             sdk_arch: linux-x64
-            sdk_sha256: 20c1cb6fe21cc5adb5bd59390b085c5aecec9a5eabfb0ffdc9aea1ef581cee18
+            sdk_linkage: shared
+            sdk_runtime: runtime/ros/ubuntu-20.04-x86_64/lib/libprism_usb_sdk.so
+            sdk_sha256: 1ec8c54e70abe46fa097066305943b7facd46c10e28a2d87e0573aa47333a193
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
+            sdk_linkage: static
+            sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
             sdk_sha256: 52b681595459ac9f4bfddede7c8c217917954c3d74adfb106e82b64cce5a0394
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
@@ -169,6 +173,8 @@ jobs:
     env:
       LINUX_PACKAGE_ARCH: ${{ matrix.package_arch }}
       LINUX_SDK_ARCH: ${{ matrix.sdk_arch }}
+      LINUX_SDK_LINKAGE: ${{ matrix.sdk_linkage }}
+      LINUX_SDK_RUNTIME: ${{ matrix.sdk_runtime }}
       LINUX_SDK_SHA256: ${{ matrix.sdk_sha256 }}
       QT_MAJOR: "5"
     steps:
@@ -215,13 +221,16 @@ jobs:
 
       - name: Verify bundled Linux SDK
         run: |
-          sdk="third_party/Prism-SDK/runtime/$LINUX_SDK_ARCH/libprism_usb_sdk.a"
+          sdk="third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
           echo "$LINUX_SDK_SHA256  $sdk" | sha256sum --check
-          file "$sdk" | tee /dev/stderr | grep -Fq 'current ar archive'
-          object_headers="$(objdump -f "$sdk")"
-          grep -Fq \
-            "$([ "$LINUX_PACKAGE_ARCH" = arm64 ] && echo 'elf64-littleaarch64' || echo 'elf64-x86-64')" \
-            <<<"$object_headers"
+          if [ "$LINUX_SDK_LINKAGE" = static ]; then
+            file "$sdk" | tee /dev/stderr | grep -Fq 'current ar archive'
+            object_headers="$(objdump -f "$sdk")"
+            grep -Fq 'elf64-littleaarch64' <<<"$object_headers"
+          else
+            file "$sdk" | tee /dev/stderr | grep -Fq 'ELF 64-bit LSB shared object, x86-64'
+            objdump -T "$sdk" | grep -Fq 'cameraExposureLimits'
+          fi
 
       - name: Configure and build Viewer
         run: |
@@ -230,6 +239,12 @@ jobs:
             -DBUILD_TESTING=ON
             -DPRISM_DEPLOY_RUNTIME_DEPENDENCIES=OFF
           )
+          if [ "$LINUX_SDK_LINKAGE" = shared ]; then
+            cmake_args+=(
+              -DPRISM_LINK_STATIC_LINUX_SDK=OFF
+              -DPRISM_LINUX_SHARED_SDK_RUNTIME="$GITHUB_WORKSPACE/third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
+            )
+          fi
           cmake -S . -B build-linux-ci -G Ninja "${cmake_args[@]}"
           cmake --build build-linux-ci --parallel
 
@@ -357,6 +372,9 @@ jobs:
             "*/imageformats/libqjpeg.so"
             "*/sqldrivers/libqsqlite.so"
           )
+          if [ "$LINUX_SDK_LINKAGE" = shared ]; then
+            required_patterns+=("lib/libprism_usb_sdk.so")
+          fi
           for pattern in "${required_patterns[@]}"; do
             if ! compgen -G "$package/$pattern" >/dev/null; then
               echo "Missing packaged runtime dependency: $pattern" >&2
@@ -383,6 +401,16 @@ jobs:
           scripts/verify_linux_glibc.sh "$package" 2.31
           QT_QPA_PLATFORM=offscreen \
             "$package/bin/prism-viewer" --startup-self-test
+
+          sdk_commit="$(git -C third_party/Prism-SDK rev-parse HEAD)"
+          {
+            echo "Prism Viewer version: 1.0.0"
+            echo "Prism SDK version: 1.0.0"
+            echo "Prism SDK commit: $sdk_commit"
+            echo "Prism SDK linkage: $LINUX_SDK_LINKAGE"
+            echo "Prism SDK source: third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
+            echo "Prism SDK SHA256: $LINUX_SDK_SHA256"
+          } > "$package/SDK_PROVENANCE.txt"
 
           checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
           (
@@ -467,7 +495,8 @@ jobs:
                   continue
                 fi
                 case "$2:$name" in
-                  crypto:libcrypto.so.* | libusb:libusb-1.0.so.*)
+                  crypto:libcrypto.so.* | libusb:libusb-1.0.so.* | \
+                  sdk:libprism_usb_sdk.so)
                     printf "%s\n" "$path"
                     return 0
                     ;;
@@ -487,8 +516,12 @@ jobs:
               echo "Dependency resolved outside package: $1 -> $resolved" >&2
               return 1
             }
-            if ldd bin/prism-viewer | grep -q libprism_usb_sdk; then
-              echo "Viewer still depends on the shared Prism SDK" >&2
+            if [ "$PACKAGE_ARCH" = x64 ]; then
+              sdk="$(resolve_dependency bin/prism-viewer sdk)"
+              assert_packaged_dependency "$sdk"
+              grep -Fq "Prism SDK linkage: shared" SDK_PROVENANCE.txt
+            elif ldd bin/prism-viewer | grep -q libprism_usb_sdk; then
+              echo "Static arm64 Viewer unexpectedly depends on the shared Prism SDK" >&2
               exit 1
             fi
             app_crypto="$(resolve_dependency bin/prism-viewer crypto)"
