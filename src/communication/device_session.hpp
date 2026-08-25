@@ -14,6 +14,7 @@ struct OpenedDevice {
   prism::DeviceConfiguration configuration;
   prism::ExposureConfiguration exposure;
   prism::ExposureLimits exposure_limits;
+  bool exposure_limits_supported = true;
   prism::NetworkInfo network;
   std::wstring serial_number;
   std::wstring path;

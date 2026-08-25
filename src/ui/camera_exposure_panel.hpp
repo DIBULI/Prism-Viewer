@@ -27,6 +27,7 @@ class CameraExposurePanel final : public QWidget {
   void setDeviceOpen(bool open);
   void setControlsLocked(bool locked);
   void setCaptureActive(bool active);
+  void setLimitsSupported(bool supported);
   void setCameraFps(uint32_t camera_fps);
   void setBusy(bool busy, const QString& message = {});
   void setConfiguration(const prism::ExposureConfiguration& configuration,
@@ -64,6 +65,7 @@ class CameraExposurePanel final : public QWidget {
   bool device_open_ = false;
   bool controls_locked_ = false;
   bool capture_active_ = false;
+  bool limits_supported_ = true;
   bool busy_ = false;
   bool has_configuration_ = false;
   QString busy_message_;
