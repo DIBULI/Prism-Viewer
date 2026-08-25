@@ -1,16 +1,6 @@
 #include "communication/device_session.hpp"
 
 #include <stdexcept>
-#include <string>
-
-namespace {
-
-bool exposureLimitsUnsupported(const std::exception& exception) {
-  return std::string(exception.what()).find("unknown message type") !=
-         std::string::npos;
-}
-
-}  // namespace
 
 namespace prism_viewer::communication {
 
@@ -35,16 +25,7 @@ OpenedDevice DeviceSession::open(size_t device_index) {
     opened.device_info = client_.deviceInfo();
     opened.configuration = client_.deviceConfiguration();
     opened.exposure = client_.cameraExposure();
-    try {
-      opened.exposure_limits = client_.cameraExposureLimits();
-    } catch (const std::exception& exception) {
-      if (!exposureLimitsUnsupported(exception)) throw;
-      // Exposure-limit commands were added after the original 1.0 agent
-      // protocol. Keep the already-open handle and use the SDK defaults when
-      // an older device reports that this optional message is unknown.
-      opened.exposure_limits = prism::ExposureLimits{};
-      opened.exposure_limits_supported = false;
-    }
+    opened.exposure_limits = client_.cameraExposureLimits();
     opened.network = client_.networkInfo();
     opened.serial_number = client_.serialNumber();
     opened.path = client_.path();

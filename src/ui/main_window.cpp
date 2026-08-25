@@ -3158,7 +3158,6 @@ class MainWindow : public QMainWindow {
 
   struct CameraExposureOperationRequest {
     bool apply = false;
-    bool limits_supported = true;
     prism::ExposureConfiguration configuration;
     prism::ExposureLimits limits;
   };
@@ -3168,7 +3167,6 @@ class MainWindow : public QMainWindow {
       const prism::ExposureLimits& limits, bool applied) {
     post([this, configuration, limits, applied]() {
       camera_exposure_operation_running_ = false;
-      camera_exposure_limits_ = limits;
       camera_exposure_panel_->setConfiguration(configuration, limits);
       camera_exposure_panel_->setBusy(false);
       setStatusAppearance(false);
@@ -3232,17 +3230,11 @@ class MainWindow : public QMainWindow {
       prism::ExposureLimits limits;
       prism::ExposureConfiguration configuration;
       if (request.apply) {
-        limits = request.limits;
-        if (request.limits_supported) {
-          limits = client_.setCameraExposureLimits(request.limits);
-        }
+        limits = client_.setCameraExposureLimits(request.limits);
         configuration =
             client_.setExposureConfiguration(request.configuration);
       } else {
-        limits = request.limits;
-        if (request.limits_supported) {
-          limits = client_.cameraExposureLimits();
-        }
+        limits = client_.cameraExposureLimits();
         configuration = client_.cameraExposure();
       }
       publishCameraExposureResult(configuration, limits, request.apply);
@@ -3295,8 +3287,6 @@ class MainWindow : public QMainWindow {
 
     CameraExposureOperationRequest request;
     request.apply = requested.has_value() && requested_limits.has_value();
-    request.limits_supported = camera_exposure_limits_supported_;
-    request.limits = requested_limits.value_or(camera_exposure_limits_);
     if (requested.has_value() != requested_limits.has_value()) {
       publishCameraExposureError(
           uiText("Incomplete camera exposure request",
@@ -3567,18 +3557,8 @@ class MainWindow : public QMainWindow {
       updateDeviceVersions(versions);
       camera_encoding_panel_->setConfiguration(configuration);
       camera_exposure_panel_->setCameraFps(configuration.camera_fps);
-      camera_exposure_limits_ = opened.exposure_limits;
-      camera_exposure_limits_supported_ =
-          opened.exposure_limits_supported;
-      camera_exposure_panel_->setLimitsSupported(
-          camera_exposure_limits_supported_);
       camera_exposure_panel_->setConfiguration(
           opened.exposure, opened.exposure_limits);
-      if (!opened.exposure_limits_supported) {
-        appendLog(QStringLiteral(
-            "Agent does not support exposure-limit queries; using SDK "
-            "defaults and keeping the USB device open"));
-      }
       try {
         updateLidarStatus(client_.lidarStatus());
       } catch (const std::exception& lidar_error) {
@@ -3637,7 +3617,6 @@ class MainWindow : public QMainWindow {
     device_info_panel_->setDeviceOpen(false);
     camera_encoding_panel_->setDeviceOpen(false);
     camera_exposure_panel_->setDeviceOpen(false);
-    camera_exposure_limits_supported_ = false;
     time_sync_label_->setText(uiText("Time sync: device closed", "时间同步：设备已关闭"));
     host_time_sync_label_->setText(
         uiText("Host/device clock: device closed",
@@ -7257,8 +7236,6 @@ class MainWindow : public QMainWindow {
   uint64_t latest_rk_heartbeat_time_us_ = 0;
   bool latest_device_info_valid_ = false;
   bool latest_device_versions_valid_ = false;
-  prism::ExposureLimits camera_exposure_limits_;
-  bool camera_exposure_limits_supported_ = false;
 };
 
 }  // namespace
@@ -7298,9 +7275,6 @@ int runViewerApplication(int argc, char** argv) {
       std::cout << "device open self-test: PASS"
                 << " devices=" << devices.size()
                 << " camera_fps=" << opened.configuration.camera_fps
-                << " exposure_limits="
-                << (opened.exposure_limits_supported ? "supported"
-                                                     : "fallback")
                 << " serial_length=" << opened.serial_number.size()
                 << " path_length=" << opened.path.size() << "\n";
       session.close();

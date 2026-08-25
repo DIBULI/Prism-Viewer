@@ -401,11 +401,6 @@ void CameraExposurePanel::setCaptureActive(bool active) {
   refreshView();
 }
 
-void CameraExposurePanel::setLimitsSupported(bool supported) {
-  limits_supported_ = supported;
-  refreshView();
-}
-
 void CameraExposurePanel::setCameraFps(uint32_t camera_fps) {
   const uint32_t maximum_us = prism::cameraMaxExposureUs(camera_fps);
   if (maximum_us == 0u) return;
@@ -571,13 +566,10 @@ bool CameraExposurePanel::isDirty() const {
   if (!has_configuration_) return false;
   const prism::ExposureConfiguration edited = editedConfiguration();
   const prism::ExposureLimits edited_limits = editedLimits();
-  const bool limits_dirty =
-      limits_supported_ &&
-      (edited_limits.min_exposure_time_us != limits_.min_exposure_time_us ||
-       edited_limits.max_exposure_time_us != limits_.max_exposure_time_us ||
-       edited_limits.min_gain_x1024 != limits_.min_gain_x1024 ||
-       edited_limits.max_gain_x1024 != limits_.max_gain_x1024);
-  return limits_dirty ||
+  return edited_limits.min_exposure_time_us != limits_.min_exposure_time_us ||
+         edited_limits.max_exposure_time_us != limits_.max_exposure_time_us ||
+         edited_limits.min_gain_x1024 != limits_.min_gain_x1024 ||
+         edited_limits.max_gain_x1024 != limits_.max_gain_x1024 ||
          edited.automatic_camera_mask !=
              configuration_.automatic_camera_mask ||
          edited.target_brightness != configuration_.target_brightness ||
@@ -633,13 +625,6 @@ void CameraExposurePanel::refreshView() {
         uiText("Runtime exposure settings have not been read",
                "尚未读取运行时曝光设置"),
         true, false);
-  } else if (!limits_supported_) {
-    setMessage(
-        uiText("This device agent does not support configurable exposure "
-               "limits; per-camera exposure and gain controls remain "
-               "available.",
-               "此设备 Agent 不支持配置曝光范围；仍可使用各相机的曝光和增益控制。"),
-        true, false);
   } else if (capture_active_) {
     setMessage(
         uiText("Live exposure control is available during capture; changes "
@@ -656,10 +641,10 @@ void CameraExposurePanel::refreshView() {
   const bool can_interact =
       device_open_ && has_configuration_ && !busy_ && !controls_locked_;
   target_brightness_->setEnabled(can_interact);
-  min_exposure_us_->setEnabled(can_interact && limits_supported_);
-  max_exposure_us_->setEnabled(can_interact && limits_supported_);
-  min_gain_->setEnabled(can_interact && limits_supported_);
-  max_gain_->setEnabled(can_interact && limits_supported_);
+  min_exposure_us_->setEnabled(can_interact);
+  max_exposure_us_->setEnabled(can_interact);
+  min_gain_->setEnabled(can_interact);
+  max_gain_->setEnabled(can_interact);
   for (int camera = 0; camera < 4; ++camera) {
     camera_mode_[camera]->setEnabled(can_interact);
     const bool manual =
