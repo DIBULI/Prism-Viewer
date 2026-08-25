@@ -134,6 +134,7 @@ else()
   find_package(Qt5 REQUIRED COMPONENTS Widgets Charts Sql)
   set(QT_PACKAGE Qt5)
 endif()
+find_package(Threads REQUIRED)
 
 option(PRISM_DEPLOY_RUNTIME_DEPENDENCIES
   "Install redistributable runtime dependencies for a release package" OFF)
@@ -193,6 +194,7 @@ target_link_libraries(prism-viewer PRIVATE
   prism-viewer-app-theme
   prism-viewer-imu-units
   prism-viewer-sdk
+  Threads::Threads
   ${QT_PACKAGE}::Widgets
   ${QT_PACKAGE}::Charts
   ${QT_PACKAGE}::Sql
