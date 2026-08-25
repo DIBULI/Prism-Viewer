@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libqt5charts5-dev \
       libqt5sql5-sqlite \
       ninja-build \
+      pkg-config \
       python3-pip \
       qtbase5-dev \
     && rm -rf /var/lib/apt/lists/* \
