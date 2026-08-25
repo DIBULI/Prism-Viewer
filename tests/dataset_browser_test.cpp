@@ -137,6 +137,28 @@ int main() {
       throw std::runtime_error("valid IMU-only dataset was rejected");
     }
 
+    const auto single_imu_root = root / "single-synced-imu";
+    createImuOnlyDataset(single_imu_root, normal_imu,
+                         "# IMU1 has no synchronized samples\n");
+    const auto single_imu =
+        prism_viewer::dataset::validatePrismDataset(single_imu_root);
+    if (!single_imu.valid || single_imu.onboard_imus[0].rows != 4u ||
+        single_imu.onboard_imus[1].rows != 0u) {
+      throw std::runtime_error("single synchronized IMU dataset was rejected");
+    }
+
+    const auto empty_imus_root = root / "empty-imus";
+    createImuOnlyDataset(empty_imus_root, "# empty IMU0\n",
+                         "# empty IMU1\n");
+    const auto empty_imus =
+        prism_viewer::dataset::validatePrismDataset(empty_imus_root);
+    if (empty_imus.valid ||
+        !hasIssue(empty_imus,
+                  prism_viewer::dataset::DatasetValidationSeverity::Error,
+                  "all onboard IMU streams are empty")) {
+      throw std::runtime_error("dataset with no synchronized IMU was accepted");
+    }
+
     const auto repeat_root = root / "timestamp-repeat";
     createImuOnlyDataset(
         repeat_root,

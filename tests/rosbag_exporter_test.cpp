@@ -855,6 +855,37 @@ int main(int argc, char** argv) {
       throw std::runtime_error("successful ROS2 bag replacement failed");
     }
 
+    const std::filesystem::path single_imu_root = root / "single-synced-imu";
+    std::filesystem::create_directories(single_imu_root);
+    writeText(single_imu_root / "dataset.info",
+              "format=prism-dataset-v6\n"
+              "complete=1\n"
+              "recording_mode=imu-only\n"
+              "image_storage=none\n"
+              "camera_index=none\n"
+              "lidar_storage=none\n"
+              "lidar_imu_storage=none\n"
+              "time_domain=rk-clock-realtime\n"
+              "timestamp_epoch=unix\n"
+              "alignment=common-device-time-domain\n");
+    writeText(single_imu_root / "imu0.tum",
+              "1780000000.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
+    writeText(single_imu_root / "imu1.tum",
+              "# IMU1 has no synchronized samples\n");
+    const std::filesystem::path single_imu_bag =
+        root / "single-synced-imu.bag";
+    const auto single_imu_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            single_imu_root, single_imu_bag,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (!single_imu_result.success || single_imu_result.imu_messages != 1u ||
+        single_imu_result.camera_messages != 0u ||
+        fieldU32(parseRecord(readFile(single_imu_bag), 13u),
+                 "conn_count") != 2u) {
+      throw std::runtime_error("single synchronized IMU export failed: " +
+                               single_imu_result.error);
+    }
+
     // v5 keeps the original ten-column point index and six-field LiDAR IMU
     // provenance suffix. It must remain exportable after v6 adds strict source
     // flags and the point time interval.

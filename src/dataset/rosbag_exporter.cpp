@@ -1447,10 +1447,12 @@ RosbagExportResult exportDatasetToRosbag(
     for (size_t imu = 0; imu < imu_rows.size(); ++imu) {
       imu_rows[imu] = countRows(
           dataset_root / ("imu" + std::to_string(imu) + ".tum"), true);
-      if (strict_time_v6 && imu_rows[imu] == 0u) {
-        throw std::runtime_error("v6 onboard IMU stream is empty");
-      }
       total += imu_rows[imu];
+    }
+    if (strict_time_v6 &&
+        std::none_of(imu_rows.begin(), imu_rows.end(),
+                     [](uint64_t rows) { return rows != 0u; })) {
+      throw std::runtime_error("all v6 onboard IMU streams are empty");
     }
     const std::filesystem::path lidar_index = dataset_root / "lidar.tum";
     const uint64_t lidar_rows = countRows(lidar_index, false);

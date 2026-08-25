@@ -708,10 +708,11 @@ DatasetValidationResult validatePrismDatasetImpl(
                       &result.onboard_imus[imu], &result);
     checkManifestCount("imu" + std::to_string(imu) + "_samples",
                        result.onboard_imus[imu].rows);
-    if (timestamps.empty()) {
-      addIssue(&result, DatasetValidationSeverity::Error, filename, 0,
-               "onboard IMU stream is empty");
-    }
+  }
+  if (std::none_of(result.onboard_imus.begin(), result.onboard_imus.end(),
+                   [](const auto& stream) { return stream.rows != 0u; })) {
+    addIssue(&result, DatasetValidationSeverity::Error, "imu0.tum", 0,
+             "all onboard IMU streams are empty");
   }
 
   const std::filesystem::path lidar_path = root / "lidar.tum";

@@ -1153,11 +1153,9 @@ class DatasetRecorder {
 
   void validateRequiredStreams() {
     std::vector<std::string> missing;
-    for (size_t sensor = 0; sensor < imu_counts_.size(); ++sensor) {
-      if (imu_counts_[sensor] == 0) {
-        missing.push_back("synchronized onboard IMU" +
-                          std::to_string(sensor));
-      }
+    if (std::none_of(imu_counts_.begin(), imu_counts_.end(),
+                     [](uint64_t count) { return count != 0; })) {
+      missing.push_back("synchronized onboard IMU samples");
     }
     const bool imu_only = mode_.load(std::memory_order_relaxed) ==
                           DatasetRecordingMode::ImuOnly;
@@ -3918,16 +3916,16 @@ class MainWindow : public QMainWindow {
     const bool sensor_board_synced =
         latest_device_info_valid_ &&
         latest_device_info_.sensor_board_time_synced;
-    const bool both_onboard_imus_synced =
+    const bool any_onboard_imu_synced =
         latest_device_info_valid_ &&
-        (latest_device_info_.imu_time_synced_mask & 0x03u) == 0x03u;
-    if (!sensor_board_synced || !both_onboard_imus_synced) {
+        (latest_device_info_.imu_time_synced_mask & 0x03u) != 0u;
+    if (!sensor_board_synced || !any_onboard_imu_synced) {
       const QString detail = uiText(
-          "Recording requires the sensor-board and both onboard IMUs to be "
-          "synchronized to the RK device time domain. Wait until IMU0 and "
-          "IMU1 both show synced before recording.",
-          "录制要求 sensor-board 与两路板载 IMU 均同步到 RK 设备时间域。"
-          "请等待 IMU0、IMU1 均显示“已同步”后再录制。");
+          "Recording requires the sensor-board and at least one onboard IMU "
+          "to be synchronized to the RK device time domain. Wait until IMU0 "
+          "or IMU1 shows synced before recording.",
+          "录制要求 sensor-board 与至少一路板载 IMU 同步到 RK 设备时间域。"
+          "请等待 IMU0 或 IMU1 任一路显示“已同步”后再录制。");
       appendLog(QStringLiteral(
                     "Dataset recording rejected: sensor_board_synced=%1 "
                     "imu_time_synced_mask=0x%2")
@@ -7622,6 +7620,30 @@ int runViewerApplication(int argc, char** argv) {
         shouldTakeFrameJob(true, true, 100, 100) &&
         !shouldTakeFrameJob(true, true, 300, 200);
 
+    // One synchronized onboard IMU is sufficient. The other index remains
+    // present but empty so stream identity is stable for readers/exporters.
+    const std::filesystem::path single_imu_root =
+        test_root / "single-synced-imu";
+    DatasetRecorder single_imu_recorder;
+    std::string single_imu_error;
+    bool single_imu_ok = single_imu_recorder.start(
+        single_imu_root, true, DatasetRecordingMode::ImuOnly, false,
+        &single_imu_error);
+    if (single_imu_ok) {
+      single_imu_recorder.appendImu(imu0);
+      single_imu_recorder.appendImu(unsynced_imu1);
+      const DatasetRecordingSummary single_imu_summary =
+          single_imu_recorder.stop();
+      const DatasetValidationResult single_imu_validation =
+          validatePrismDataset(single_imu_root);
+      single_imu_ok = single_imu_summary.success &&
+                      single_imu_summary.sample_count[0] == 1u &&
+                      single_imu_summary.sample_count[1] == 0u &&
+                      single_imu_summary.unsynced_imu_samples_dropped[1] ==
+                          1u &&
+                      single_imu_validation.valid;
+    }
+
     // A recording that receives only unsynchronized samples is explicitly
     // unusable; it must not report success merely because empty files were
     // flushed without an I/O error.
@@ -7660,7 +7682,8 @@ int runViewerApplication(int argc, char** argv) {
                          manifest_unsynced_drops_ok &&
                          strict_time_drop_counts_ok && lidar_v6_source_ok &&
                          lidar_imu_v6_source_ok && writer_queue_order_ok &&
-                         unsynced_only_fails && in_progress_manifest_ok &&
+                         single_imu_ok && unsynced_only_fails &&
+                         in_progress_manifest_ok &&
                          summary.sample_count[0] == 1 &&
                          summary.sample_count[1] == 1 && browser_load_ok &&
                          auxiliary_streams_ok && no_lidar_ok &&
@@ -7695,6 +7718,7 @@ int runViewerApplication(int argc, char** argv) {
               << " no_lidar=" << (no_lidar_ok ? "PASS" : "FAIL")
               << " queue_order="
               << (writer_queue_order_ok ? "PASS" : "FAIL")
+              << " single_imu=" << (single_imu_ok ? "PASS" : "FAIL")
               << " empty_strict="
               << (unsynced_only_fails ? "PASS" : "FAIL")
               << " in_progress="

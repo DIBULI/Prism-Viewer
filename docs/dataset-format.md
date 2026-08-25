@@ -169,7 +169,8 @@ timestamp_s ax_m_s2 ay_m_s2 az_m_s2 gx_rad_s gy_rad_s gz_rad_s
 
 时间戳保留到微秒；加速度单位为 `m/s²`，角速度单位为 `rad/s`。v6 只写入
 `timestamp_synced=1` 的板载 IMU 样本，未同步样本只计入 manifest 的
-`unsynced_imuN_samples_dropped`。
+`unsynced_imuN_samples_dropped`。IMU0、IMU1 至少一路同步即可开始并完成录制；
+未同步通道的索引文件可以为空，但两路都为空的数据集无效。
 
 ## 雷达内置 IMU
 
