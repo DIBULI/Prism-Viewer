@@ -146,9 +146,9 @@ jobs:
 
   linux:
     name: linux-${{ matrix.package_arch }}
-    # The binary-only Prism SDK requires GLIBC_2.34. Build on the oldest
-    # compatible Ubuntu LTS so the tar archive and AppImage also run on newer
-    # distributions instead of inheriting Ubuntu 24.04's newer glibc ABI.
+    # Build and collect every non-glibc runtime inside Ubuntu 20.04. This keeps
+    # the host ABI at GLIBC_2.31 while remaining forward-compatible with newer
+    # Ubuntu LTS releases.
     strategy:
       fail-fast: false
       matrix:
@@ -157,83 +157,58 @@ jobs:
             runner: ubuntu-22.04
             sdk_arch: linux-x64
             sdk_sha256: 20c1cb6fe21cc5adb5bd59390b085c5aecec9a5eabfb0ffdc9aea1ef581cee18
-            qt_source: aqt
-            deploy_runtime: "ON"
-            appimage_arch: x86_64
-            appimagetool_sha256: a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_sha256: 52b681595459ac9f4bfddede7c8c217917954c3d74adfb106e82b64cce5a0394
-            qt_source: distro
-            deploy_runtime: "OFF"
-            appimage_arch: aarch64
-            appimagetool_sha256: 1b00524ba8c6b678dc15ef88a5c25ec24def36cdfc7e3abb32ddcd068e8007fe
     runs-on: ${{ matrix.runner }}
+    container: ubuntu:20.04
+    defaults:
+      run:
+        shell: bash
     env:
       LINUX_PACKAGE_ARCH: ${{ matrix.package_arch }}
       LINUX_SDK_ARCH: ${{ matrix.sdk_arch }}
       LINUX_SDK_SHA256: ${{ matrix.sdk_sha256 }}
-      LINUX_DEPLOY_RUNTIME: ${{ matrix.deploy_runtime }}
-      LINUX_APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
-      APPIMAGETOOL_SHA256: ${{ matrix.appimagetool_sha256 }}
+      QT_MAJOR: "5"
     steps:
+      - name: Install Ubuntu 20.04 build dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            binutils \
+            build-essential \
+            ca-certificates \
+            file \
+            git \
+            libgl1-mesa-dev \
+            libqt5charts5-dev \
+            libqt5sql5-sqlite \
+            libssl-dev \
+            libusb-1.0-0-dev \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-keysyms1 \
+            libxcb-shape0 \
+            libxcb-xkb1 \
+            libxkbcommon-x11-0 \
+            ninja-build \
+            patchelf \
+            python3-pip \
+            qt5-image-formats-plugins \
+            qtbase5-dev
+          python3 -m pip install --no-cache-dir cmake==3.31.6
+
       - name: Check out Viewer
         uses: actions/checkout@v7
         with:
           submodules: recursive
           persist-credentials: false
 
-      - name: Set up Python
-        if: matrix.qt_source == 'aqt'
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          packages=(
-            binutils
-            libgl1-mesa-dev
-            libssl-dev
-            ninja-build
-            patchelf
-            libxcb-cursor0
-            libxcb-icccm4
-            libxcb-keysyms1
-            libxcb-shape0
-            libxcb-xkb1
-            libxkbcommon-x11-0
-            libusb-1.0-0-dev
-            libssl3
-          )
-          if [ "$LINUX_PACKAGE_ARCH" = arm64 ]; then
-            packages+=(
-              libqt6charts6-dev
-              libqt6sql6-sqlite
-              qt6-base-dev
-              qt6-image-formats-plugins
-            )
-          fi
-          sudo apt-get install -y "${packages[@]}"
-
-      - name: Install Qt 6.8.3
-        if: matrix.qt_source == 'aqt'
-        run: |
-          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
-          qt_root="$RUNNER_TEMP/Qt"
-          aqt install-qt linux desktop 6.8.3 linux_gcc_64 \
-            -O "$qt_root" -m qtcharts
-          qt_prefix="$qt_root/6.8.3/gcc_64"
-          echo "QT_PREFIX=$qt_prefix" >> "$GITHUB_ENV"
-          echo "QT_PLUGIN_DIR=$qt_prefix/plugins" >> "$GITHUB_ENV"
-          echo "$qt_prefix/bin" >> "$GITHUB_PATH"
-
       - name: Locate distro Qt
-        if: matrix.qt_source == 'distro'
         run: |
-          qt_plugin_dir="$(qmake6 -query QT_INSTALL_PLUGINS)"
+          qt_plugin_dir="$(qmake -query QT_INSTALL_PLUGINS)"
           test -d "$qt_plugin_dir"
           echo "QT_PLUGIN_DIR=$qt_plugin_dir" >> "$GITHUB_ENV"
 
@@ -252,11 +227,8 @@ jobs:
           cmake_args=(
             -DCMAKE_BUILD_TYPE=Release
             -DBUILD_TESTING=ON
-            -DPRISM_DEPLOY_RUNTIME_DEPENDENCIES="$LINUX_DEPLOY_RUNTIME"
+            -DPRISM_DEPLOY_RUNTIME_DEPENDENCIES=OFF
           )
-          if [ -n "${QT_PREFIX:-}" ]; then
-            cmake_args+=("-DCMAKE_PREFIX_PATH=$QT_PREFIX")
-          fi
           cmake -S . -B build-linux-ci -G Ninja "${cmake_args[@]}"
           cmake --build build-linux-ci --parallel
 
@@ -288,11 +260,17 @@ jobs:
             cp -L "$qt_plugin_source" "$package/plugins/$relative"
           done
 
-          # The statically linked SDK adds libcrypto to the executable, while
-          # libssl can also be loaded by OpenSSL-backed features without
-          # appearing in that dependency graph. Keep the OpenSSL 3 runtime
-          # pair together so the package never uses a host OpenSSL install.
-          for name in libcrypto.so.3 libssl.so.3; do
+          # Keep the matching OpenSSL runtime pair from the 20.04 build
+          # environment. The SDK uses libcrypto directly; libssl is bundled
+          # alongside it so optional TLS-backed paths never use the host copy.
+          crypto_name="$(ldd "$package/bin/prism-viewer" \
+            | awk '$1 ~ /^libcrypto[.]so[.]/ { print $1; exit }')"
+          if [ -z "$crypto_name" ]; then
+            echo "Viewer is not linked to a recognizable libcrypto" >&2
+            exit 1
+          fi
+          ssl_name="${crypto_name/libcrypto/libssl}"
+          for name in "$crypto_name" "$ssl_name"; do
             source="$(ldconfig -p \
               | awk -v library="$name" '$1 == library { print $NF; exit }')"
             if [ -z "$source" ] || [ ! -f "$source" ]; then
@@ -310,7 +288,7 @@ jobs:
             : > "$dependency_list"
             while IFS= read -r -d '' binary; do
               if readelf -h "$binary" >/dev/null 2>&1; then
-                LD_LIBRARY_PATH="$package/lib${QT_PREFIX:+:$QT_PREFIX/lib}" \
+                LD_LIBRARY_PATH="$package/lib" \
                   ldd "$binary" 2>/dev/null \
                   | awk '
                       $2 == "=>" && $3 ~ /^\// { print $3 }
@@ -365,13 +343,13 @@ jobs:
           required_patterns=(
             "bin/prism-viewer"
             "bin/qt.conf"
-            "lib/libQt6Core.so.6"
-            "lib/libQt6Gui.so.6"
-            "lib/libQt6Widgets.so.6"
-            "lib/libQt6Charts.so.6"
-            "lib/libQt6Sql.so.6"
-            "lib/libcrypto.so.3"
-            "lib/libssl.so.3"
+            "lib/libQt${QT_MAJOR}Core.so.${QT_MAJOR}"
+            "lib/libQt${QT_MAJOR}Gui.so.${QT_MAJOR}"
+            "lib/libQt${QT_MAJOR}Widgets.so.${QT_MAJOR}"
+            "lib/libQt${QT_MAJOR}Charts.so.${QT_MAJOR}"
+            "lib/libQt${QT_MAJOR}Sql.so.${QT_MAJOR}"
+            "lib/libcrypto.so.*"
+            "lib/libssl.so.*"
             "lib/libusb-1.0.so.0"
             "*/platforms/libqxcb.so"
             "*/platforms/libqoffscreen.so"
@@ -401,54 +379,9 @@ jobs:
             exit 1
           fi
 
-          for image in ubuntu:22.04 ubuntu:24.04; do
-            docker run --rm \
-              -e QT_QPA_PLATFORM=offscreen \
-              -v "$package:/opt/prism-viewer:ro" \
-              "$image" /bin/bash -euc '
-              while IFS= read -r relative; do
-                output="$(ldd "/opt/prism-viewer/$relative" 2>&1)"
-                printf "\n[%s]\n%s\n" "$relative" "$output"
-                if grep -q "not found" <<<"$output"; then
-                  exit 1
-                fi
-              done < /opt/prism-viewer/ELF_FILES.txt
-
-              resolve_dependency() {
-                while read -r name marker path remainder; do
-                  if [ "$name" = "$2" ] && [ "$marker" = "=>" ]; then
-                    printf "%s\n" "$path"
-                    return 0
-                  fi
-                done < <(ldd "$1")
-                return 1
-              }
-              assert_packaged_dependency() {
-                resolved="$(readlink -f "$1")"
-                case "$resolved" in
-                  /opt/prism-viewer/lib/*) return 0 ;;
-                esac
-                echo "Dependency resolved outside package: $1 -> $resolved" >&2
-                return 1
-              }
-              if ldd /opt/prism-viewer/bin/prism-viewer \
-                  | grep -q libprism_usb_sdk; then
-                echo "Viewer still depends on the shared Prism SDK" >&2
-                exit 1
-              fi
-              app_crypto="$(resolve_dependency \
-                /opt/prism-viewer/bin/prism-viewer libcrypto.so.3)"
-              app_libusb="$(resolve_dependency \
-                /opt/prism-viewer/bin/prism-viewer libusb-1.0.so.0)"
-              ssl_crypto="$(resolve_dependency \
-                /opt/prism-viewer/lib/libssl.so.3 libcrypto.so.3)"
-              assert_packaged_dependency "$app_crypto"
-              assert_packaged_dependency "$app_libusb"
-              assert_packaged_dependency "$ssl_crypto"
-              /opt/prism-viewer/bin/prism-viewer \
-                --startup-self-test
-            '
-          done
+          scripts/verify_linux_glibc.sh "$package" 2.31
+          QT_QPA_PLATFORM=offscreen \
+            "$package/bin/prism-viewer" --startup-self-test
 
           checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
           (
@@ -462,37 +395,105 @@ jobs:
             "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-$LINUX_PACKAGE_ARCH.tar.gz" \
             "$(basename "$package")"
 
-          appimagetool="$RUNNER_TEMP/appimagetool-$LINUX_APPIMAGE_ARCH.AppImage"
-          curl --fail --location --retry 3 \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$LINUX_APPIMAGE_ARCH.AppImage" \
-            --output "$appimagetool"
-          echo "$APPIMAGETOOL_SHA256  $appimagetool" \
-            | sha256sum --check
-          chmod 0755 "$appimagetool"
-          appimage="$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-$LINUX_APPIMAGE_ARCH.AppImage"
-          scripts/build_linux_appimage.sh \
-            "$package" "$appimage" "$appimagetool" \
-            "$LINUX_APPIMAGE_ARCH"
-
-          QT_QPA_PLATFORM=offscreen \
-            "$appimage" --appimage-extract-and-run \
-            --startup-self-test
-          for image in ubuntu:22.04 ubuntu:24.04; do
-            docker run --rm \
-              -e QT_QPA_PLATFORM=offscreen \
-              -v "$appimage:/opt/Prism-Viewer.AppImage:ro" \
-              "$image" /opt/Prism-Viewer.AppImage \
-              --appimage-extract-and-run --startup-self-test
-          done
-
       - name: Upload Linux package
         uses: actions/upload-artifact@v7
         with:
           name: prism-viewer-1.0.0-linux-${{ matrix.package_arch }}
           if-no-files-found: error
-          path: |
-            Prism-Viewer-1.0.0-linux-${{ matrix.package_arch }}.tar.gz
-            Prism-Viewer-1.0.0-linux-${{ matrix.appimage_arch }}.AppImage
+          path: Prism-Viewer-1.0.0-linux-${{ matrix.package_arch }}.tar.gz
+
+  linux-smoke:
+    name: linux-${{ matrix.package_arch }}-ubuntu-${{ matrix.ubuntu }}
+    needs: [linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_arch: x64
+            runner: ubuntu-22.04
+            ubuntu: "20.04"
+          - package_arch: x64
+            runner: ubuntu-22.04
+            ubuntu: "24.04"
+          - package_arch: arm64
+            runner: ubuntu-22.04-arm
+            ubuntu: "20.04"
+          - package_arch: arm64
+            runner: ubuntu-22.04-arm
+            ubuntu: "24.04"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Download Linux package
+        uses: actions/download-artifact@v8
+        with:
+          name: prism-viewer-1.0.0-linux-${{ matrix.package_arch }}
+          path: package-download
+
+      - name: Verify packaged dependencies and start Viewer
+        env:
+          PACKAGE_ARCH: ${{ matrix.package_arch }}
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+        run: |
+          mkdir package-root
+          tar -xzf \
+            "package-download/Prism-Viewer-1.0.0-linux-$PACKAGE_ARCH.tar.gz" \
+            -C package-root
+          package="$PWD/package-root/Prism-Viewer-1.0.0-linux-$PACKAGE_ARCH"
+          test -x "$package/bin/prism-viewer"
+          docker run --rm \
+            -e QT_QPA_PLATFORM=offscreen \
+            -v "$package:/opt/prism-viewer:ro" \
+            "ubuntu:$UBUNTU_VERSION" /bin/bash -euc '
+            cd /opt/prism-viewer
+            sha256sum --check SHA256SUMS.txt
+            while IFS= read -r relative; do
+              output="$(ldd "/opt/prism-viewer/$relative" 2>&1)"
+              printf "\n[%s]\n%s\n" "$relative" "$output"
+              if grep -q "not found" <<<"$output"; then
+                exit 1
+              fi
+            done < ELF_FILES.txt
+
+            resolve_dependency() {
+              while read -r name marker path remainder; do
+                if [ "$marker" != "=>" ]; then
+                  continue
+                fi
+                case "$2:$name" in
+                  crypto:libcrypto.so.* | libusb:libusb-1.0.so.*)
+                    printf "%s\n" "$path"
+                    return 0
+                    ;;
+                esac
+              done < <(ldd "$1")
+              return 1
+            }
+            assert_packaged_dependency() {
+              if [ -z "$1" ]; then
+                echo "Required packaged dependency was not resolved" >&2
+                return 1
+              fi
+              resolved="$(readlink -f "$1")"
+              case "$resolved" in
+                /opt/prism-viewer/lib/*) return 0 ;;
+              esac
+              echo "Dependency resolved outside package: $1 -> $resolved" >&2
+              return 1
+            }
+            if ldd bin/prism-viewer | grep -q libprism_usb_sdk; then
+              echo "Viewer still depends on the shared Prism SDK" >&2
+              exit 1
+            fi
+            app_crypto="$(resolve_dependency bin/prism-viewer crypto)"
+            app_libusb="$(resolve_dependency bin/prism-viewer libusb)"
+            ssl="$(find lib -maxdepth 1 -type f -name "libssl.so.*" \
+              -print -quit)"
+            ssl_crypto="$(resolve_dependency "$ssl" crypto)"
+            assert_packaged_dependency "$app_crypto"
+            assert_packaged_dependency "$app_libusb"
+            assert_packaged_dependency "$ssl_crypto"
+            bin/prism-viewer --startup-self-test
+          '
 
   macos-arm64:
     # GitHub's runner-images catalog maps this fixed label to the standard
@@ -657,7 +658,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
-    needs: [windows-x64, linux, macos-arm64]
+    needs: [windows-x64, linux-smoke, macos-arm64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -668,9 +669,6 @@ jobs:
           pattern: prism-viewer-1.0.0-*
           path: release-assets
           merge-multiple: true
-
-      - name: Exclude AppImage from GitHub Release
-        run: find release-assets -maxdepth 1 -type f -name '*.AppImage' -delete
 
       - name: Publish GitHub Release
         env:

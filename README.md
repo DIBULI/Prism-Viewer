@@ -121,27 +121,23 @@ reduce compatibility rather than improve it. Windows and Linux archives
 contain a SHA-256 file manifest, and CI checks every packaged Linux binary in
 a minimal Ubuntu image before publishing a release.
 
-Linux releases also provide single-file AppImages for x86-64 and arm64:
-`Prism-Viewer-1.0.0-linux-x86_64.AppImage` and
-`Prism-Viewer-1.0.0-linux-aarch64.AppImage`. Both are built natively on Ubuntu
-22.04 and support matching-architecture distributions with glibc 2.34 or newer
-(Ubuntu 22.04 or an equivalent baseline):
+Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
+2.31 or newer. CI extracts each tar archive and starts the packaged Viewer in
+both Ubuntu 20.04 and Ubuntu 24.04 containers before publishing it:
 
 ```sh
-chmod +x Prism-Viewer-1.0.0-linux-x86_64.AppImage
-./Prism-Viewer-1.0.0-linux-x86_64.AppImage
+tar -xzf Prism-Viewer-1.0.0-linux-x64.tar.gz
+./Prism-Viewer-1.0.0-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-chmod +x Prism-Viewer-1.0.0-linux-aarch64.AppImage
-./Prism-Viewer-1.0.0-linux-aarch64.AppImage
+tar -xzf Prism-Viewer-1.0.0-linux-arm64.tar.gz
+./Prism-Viewer-1.0.0-linux-arm64/bin/prism-viewer
 ```
 
-If FUSE is unavailable, run it with `--appimage-extract-and-run`. The Linux
-Viewer links the Prism SDK implementation statically, so it no longer needs
-`libprism_usb_sdk.so`. The AppImage is still a single-file container rather
-than a fully static ELF because Qt loads platform, image, and SQL plugins
-dynamically; OpenSSL and libusb also remain shared dependencies. Those shared
-objects are embedded in the AppImage and resolved from private runtime paths.
+The Linux Viewer links the Prism SDK implementation statically, so it no
+longer needs `libprism_usb_sdk.so`. Qt still loads platform, image, and SQL
+plugins dynamically; the tar archive therefore includes Qt, OpenSSL, libusb,
+and their recursive runtime dependencies under private runtime paths.
 
 ## Documentation
 
