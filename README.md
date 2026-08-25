@@ -123,7 +123,7 @@ a minimal Ubuntu image before publishing a release.
 
 Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 2.31 or newer. CI extracts each tar archive and starts the packaged Viewer in
-both Ubuntu 20.04 and Ubuntu 24.04 containers before publishing it:
+Ubuntu 20.04, Ubuntu 22.04, and Ubuntu 24.04 containers before publishing it:
 
 ```sh
 tar -xzf Prism-Viewer-1.0.0-linux-x64.tar.gz
@@ -133,6 +133,11 @@ tar -xzf Prism-Viewer-1.0.0-linux-x64.tar.gz
 tar -xzf Prism-Viewer-1.0.0-linux-arm64.tar.gz
 ./Prism-Viewer-1.0.0-linux-arm64/bin/prism-viewer
 ```
+
+The Windows x64 release supports Windows 10 version 1809 or newer and Windows
+11. Windows ARM64 is not currently supported. The macOS arm64 release targets
+macOS 13.0 and supports macOS 13 Ventura, macOS 14 Sonoma, and macOS 15
+Sequoia on Apple Silicon; Intel Macs and macOS 12 or earlier are not supported.
 
 The Linux Viewer links the Prism SDK implementation statically, so it no
 longer needs `libprism_usb_sdk.so`. Qt still loads platform, image, and SQL

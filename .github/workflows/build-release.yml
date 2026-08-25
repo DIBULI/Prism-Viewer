@@ -415,10 +415,16 @@ jobs:
             ubuntu: "20.04"
           - package_arch: x64
             runner: ubuntu-22.04
+            ubuntu: "22.04"
+          - package_arch: x64
+            runner: ubuntu-22.04
             ubuntu: "24.04"
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             ubuntu: "20.04"
+          - package_arch: arm64
+            runner: ubuntu-22.04-arm
+            ubuntu: "22.04"
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             ubuntu: "24.04"
