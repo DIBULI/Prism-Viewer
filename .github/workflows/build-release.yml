@@ -477,6 +477,7 @@ jobs:
           test -x "$package/bin/prism-viewer"
           docker run --rm \
             -e QT_QPA_PLATFORM=offscreen \
+            -e PACKAGE_ARCH="$PACKAGE_ARCH" \
             -v "$package:/opt/prism-viewer:ro" \
             "ubuntu:$UBUNTU_VERSION" /bin/bash -euc '
             cd /opt/prism-viewer
