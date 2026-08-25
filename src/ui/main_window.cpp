@@ -2776,9 +2776,13 @@ class MainWindow : public QMainWindow {
             log_text_, &QPlainTextEdit::clear);
     connect(close_log_button, &QPushButton::clicked,
             log_dialog_, &QDialog::hide);
-    connect(imu_selector_group_, &QButtonGroup::idToggled,
-            this, [this](int sensor, bool checked) {
-              if (checked && imu_plot_ != nullptr) imu_plot_->setSensor(sensor);
+    connect(imu_selector_group_,
+            QOverload<QAbstractButton*, bool>::of(
+                &QButtonGroup::buttonToggled),
+            this, [this](QAbstractButton* button, bool checked) {
+              if (checked && imu_plot_ != nullptr) {
+                imu_plot_->setSensor(imu_selector_group_->id(button));
+              }
             });
     connect(imu_acceleration_unit_selector_,
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
