@@ -62,8 +62,7 @@ sudo apt install build-essential cmake qtbase5-dev libqt5charts5-dev \
 
 ### Linux USB permissions
 
-Install the following udev rule so Prism Viewer can open the Prism-A4L USB
-device as a normal user. The released device uses VID:PID `2207:1201`:
+Install the udev rule for the Prism-A4L USB device (`2207:1201`):
 
 ```sh
 sudo tee /etc/udev/rules.d/99-prism-usb.rules >/dev/null <<'EOF'
@@ -74,27 +73,8 @@ EOF
 sudo groupadd -f plugdev
 sudo usermod -aG plugdev "$USER"
 sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=usb --action=add
 ```
-
-Unplug and reconnect the Prism USB cable after installing the rule. Sign out
-and back in once if the current account was newly added to `plugdev`. Then
-verify the device node and access permissions:
-
-```sh
-lsusb -d 2207:1201
-
-usb_node="$(
-  lsusb -d 2207:1201 |
-  awk '{gsub(":", "", $4); printf "/dev/bus/usb/%s/%s\n", $2, $4; exit}'
-)"
-
-stat -c '%A %U %G %n' "$usb_node"
-test -r "$usb_node" && test -w "$usb_node" &&
-  echo "PASS: current user can access Prism USB" ||
-  echo "FAIL: Prism USB access denied"
-```
-
-Run Prism Viewer as the normal desktop user; do not run it with `sudo`.
 
 For an Ubuntu 22.04 container:
 
