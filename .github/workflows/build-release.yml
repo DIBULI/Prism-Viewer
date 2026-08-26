@@ -586,7 +586,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="615396aa3ea5f11e8bec8da6df7185d2e681e7e3b6b31a2a45622f15ad7e0551"
+          sdk_expected="9f215299b523324de2549ac6d4690441299e3b006831284625f3b4de05a5ff84"
           libusb_expected="6f65716831f5072bbae4286903c1efce7588ecdbf9d9d4df01122a30cded3b01"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
