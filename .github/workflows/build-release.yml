@@ -51,7 +51,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "58f5636e23cfe5d399df219e064d2716a5d45049eab7da91f84993a01e35c51d"
+          $expected = "6ee2def2aaf702147303e1d4d2b20ba4ef0a0531951e4585fe4aa73c52268bf9"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -158,13 +158,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/ros/ubuntu-20.04-x86_64/lib/libprism_usb_sdk.so
-            sdk_sha256: 1ec8c54e70abe46fa097066305943b7facd46c10e28a2d87e0573aa47333a193
+            sdk_sha256: f1d2174b3917d02b6b52ad581efd0d5ab9e2a27b5957779471e6b19f7051eefb
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: 52b681595459ac9f4bfddede7c8c217917954c3d74adfb106e82b64cce5a0394
+            sdk_sha256: b6763de2c6c164e9b0e3f76f4ec6cdcc086d8d2a62aacfe3a74d6d3d60a893f9
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -586,7 +586,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="35afe9431db86ab8c7f4c73703b46fbeda08eb009007ee0070fdbfee0587c987"
+          sdk_expected="615396aa3ea5f11e8bec8da6df7185d2e681e7e3b6b31a2a45622f15ad7e0551"
           libusb_expected="6f65716831f5072bbae4286903c1efce7588ecdbf9d9d4df01122a30cded3b01"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
