@@ -1516,7 +1516,9 @@ class ImuPlotWidget : public QWidget {
     }
     samples.push_back(point);
     while (!samples.empty() &&
-           (samples.size() > 1200 || point.time_s - samples.front().time_s > 15.0)) {
+           (samples.size() > kMaximumRetainedSamples ||
+            point.time_s - samples.front().time_s >
+                kRetentionWindowSeconds)) {
       samples.pop_front();
     }
     if (static_cast<int>(sample.sensor_id) == selected_sensor_) dirty_ = true;
@@ -1527,7 +1529,19 @@ class ImuPlotWidget : public QWidget {
     return series_[static_cast<size_t>(sensor)].size();
   }
 
+  double sampleSpanSeconds(int sensor) const noexcept {
+    if (sensor < 0 || sensor >= static_cast<int>(series_.size())) return 0.0;
+    const auto& samples = series_[static_cast<size_t>(sensor)];
+    if (samples.size() < 2u) return 0.0;
+    return samples.back().time_s - samples.front().time_s;
+  }
+
  private:
+  static constexpr double kVisibleWindowSeconds = 10.0;
+  static constexpr double kRetentionWindowSeconds = 15.0;
+  static constexpr size_t kMaximumRetainedSamples = 30000u;
+  static constexpr size_t kMaximumRenderedPointsPerSeries = 2400u;
+
   struct PlotSample {
     double time_s = 0.0;
     std::array<double, 3> accel_mg{};
@@ -1589,7 +1603,7 @@ class ImuPlotWidget : public QWidget {
     panel->chart->setMargins(QMargins(4, 2, 4, 2));
 
     panel->x_axis = new QValueAxis(panel->chart);
-    panel->x_axis->setRange(-10.0, 0.0);
+    panel->x_axis->setRange(-kVisibleWindowSeconds, 0.0);
     panel->x_axis->setTickCount(6);
     panel->x_axis->setLabelFormat("%.1f s");
     panel->x_axis->setTitleText(uiText("Time to now", "距当前时间"));
@@ -1624,7 +1638,7 @@ class ImuPlotWidget : public QWidget {
     zero_pen.setCosmetic(true);
     panel->zero_line->setPen(zero_pen);
     panel->zero_line->setName(uiText("Zero", "零线"));
-    panel->zero_line->append(-10.0, 0.0);
+    panel->zero_line->append(-kVisibleWindowSeconds, 0.0);
     panel->zero_line->append(0.0, 0.0);
     panel->chart->addSeries(panel->zero_line);
     panel->zero_line->attachAxis(panel->x_axis);
@@ -1658,7 +1672,7 @@ class ImuPlotWidget : public QWidget {
   void resetPanelView(ChartPanel* panel, bool acceleration) {
     panel->chart->zoomReset();
     panel->manual_view = false;
-    panel->x_axis->setRange(-10.0, 0.0);
+    panel->x_axis->setRange(-kVisibleWindowSeconds, 0.0);
     refreshPanel(panel, acceleration);
   }
 
@@ -1714,25 +1728,32 @@ class ImuPlotWidget : public QWidget {
   void refreshPanel(ChartPanel* panel, bool acceleration) {
     const auto& samples = series_[selected_sensor_];
     const double end_time = samples.empty() ? 0.0 : samples.back().time_s;
+    size_t first_visible = 0u;
+    while (first_visible < samples.size() &&
+           samples[first_visible].time_s - end_time <
+               -kVisibleWindowSeconds) {
+      ++first_visible;
+    }
+    const size_t visible_count = samples.size() - first_visible;
     bool have_visible_value = false;
     double visible_min = 0.0;
     double visible_max = 0.0;
     for (size_t axis = 0; axis < panel->series.size(); ++axis) {
       QList<QPointF> points;
-      points.reserve(static_cast<qsizetype>(samples.size()));
-      for (const auto& point : samples) {
-        const double x = point.time_s - end_time;
-        if (x < -10.0) continue;
-        const double value =
-            acceleration
-                ? convertAcceleration(point.accel_mg[axis],
-                                      AccelerationUnit::MilliGravity,
-                                      acceleration_unit_)
-                : convertAngularVelocity(
-                      point.gyro_mdps[axis],
-                      AngularVelocityUnit::MilliDegreesPerSecond,
-                      angular_velocity_unit_);
-        points.append(QPointF(x, value));
+      points.reserve(static_cast<qsizetype>(std::min(
+          visible_count, kMaximumRenderedPointsPerSeries)));
+      auto value_at = [&](size_t index) {
+        const PlotSample& point = samples[index];
+        return acceleration
+            ? convertAcceleration(point.accel_mg[axis],
+                                  AccelerationUnit::MilliGravity,
+                                  acceleration_unit_)
+            : convertAngularVelocity(
+                  point.gyro_mdps[axis],
+                  AngularVelocityUnit::MilliDegreesPerSecond,
+                  angular_velocity_unit_);
+      };
+      auto track_value = [&](double value) {
         if (!have_visible_value) {
           visible_min = value;
           visible_max = value;
@@ -1740,6 +1761,57 @@ class ImuPlotWidget : public QWidget {
         } else {
           visible_min = std::min(visible_min, value);
           visible_max = std::max(visible_max, value);
+        }
+      };
+      auto append_point = [&](size_t index, double value) {
+        points.append(QPointF(samples[index].time_s - end_time, value));
+      };
+
+      if (visible_count <= kMaximumRenderedPointsPerSeries) {
+        for (size_t index = first_visible; index < samples.size(); ++index) {
+          const double value = value_at(index);
+          track_value(value);
+          append_point(index, value);
+        }
+      } else {
+        // Keep a min/max envelope per time bucket. This covers the full
+        // 10-second window without sending every ~800 Hz sample to QtCharts,
+        // while retaining short spikes that a simple stride could miss.
+        const size_t bucket_count =
+            std::max<size_t>(1u,
+                kMaximumRenderedPointsPerSeries / 2u);
+        for (size_t bucket = 0u; bucket < bucket_count; ++bucket) {
+          const size_t begin = first_visible +
+              bucket * visible_count / bucket_count;
+          const size_t end = first_visible +
+              (bucket + 1u) * visible_count / bucket_count;
+          if (begin >= end) continue;
+          size_t minimum_index = begin;
+          size_t maximum_index = begin;
+          double minimum_value = value_at(begin);
+          double maximum_value = minimum_value;
+          track_value(minimum_value);
+          for (size_t index = begin + 1u; index < end; ++index) {
+            const double value = value_at(index);
+            track_value(value);
+            if (value < minimum_value) {
+              minimum_value = value;
+              minimum_index = index;
+            }
+            if (value > maximum_value) {
+              maximum_value = value;
+              maximum_index = index;
+            }
+          }
+          if (minimum_index == maximum_index) {
+            append_point(minimum_index, minimum_value);
+          } else if (minimum_index < maximum_index) {
+            append_point(minimum_index, minimum_value);
+            append_point(maximum_index, maximum_value);
+          } else {
+            append_point(maximum_index, maximum_value);
+            append_point(minimum_index, minimum_value);
+          }
         }
       }
       panel->series[axis]->replace(points);
@@ -3158,6 +3230,60 @@ class MainWindow : public QMainWindow {
                     .arg(dataset_playback_lidar_points_);
     }
     return success;
+  }
+
+  bool runImuPlotWindowSelfTest(QString* report) {
+    dataset_imu_plot_->clear();
+    dataset_imu_plot_->setActive(true);
+    prism::ImuSample sample;
+    sample.sensor_id = 0u;
+    constexpr size_t kSampleCount = 8001u;
+    constexpr int64_t kSamplePeriodMicroseconds = 1250;
+    for (size_t index = 0u; index < kSampleCount; ++index) {
+      sample.accel_mg[0] = static_cast<int32_t>(index);
+      sample.accel_mg[1] = -static_cast<int32_t>(index);
+      sample.accel_mg[2] = 1000;
+      sample.gyro_mdps[0] = static_cast<int32_t>(index);
+      sample.gyro_mdps[1] = -static_cast<int32_t>(index);
+      sample.gyro_mdps[2] = 0;
+      const auto recorded_time = std::chrono::steady_clock::time_point(
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+              std::chrono::microseconds(
+                  static_cast<int64_t>(index) *
+                  kSamplePeriodMicroseconds)));
+      dataset_imu_plot_->appendSample(sample, recorded_time);
+    }
+    dataset_imu_plot_->setSensor(0);
+    auto* acceleration_plot = dataset_imu_plot_->findChild<QChartView*>(
+        QStringLiteral("datasetImuAccelerationPlot"));
+    QLineSeries* trace = nullptr;
+    if (acceleration_plot != nullptr) {
+      const auto chart_series = acceleration_plot->chart()->series();
+      if (!chart_series.isEmpty()) {
+        trace = qobject_cast<QLineSeries*>(chart_series.front());
+      }
+    }
+    const bool retention_ok =
+        dataset_imu_plot_->sampleCount(0) == kSampleCount &&
+        dataset_imu_plot_->sampleSpanSeconds(0) >= 9.999;
+    const bool rendering_ok =
+        trace != nullptr && trace->count() > 0 && trace->count() <= 2400 &&
+        trace->at(0).x() <= -9.99 &&
+        trace->at(trace->count() - 1).x() >= -0.01;
+    if (report != nullptr) {
+      *report = QStringLiteral("retention=%1 rendering=%2 samples=%3 "
+                              "span=%4 rendered=%5")
+                    .arg(retention_ok ? QStringLiteral("PASS")
+                                      : QStringLiteral("FAIL"))
+                    .arg(rendering_ok ? QStringLiteral("PASS")
+                                      : QStringLiteral("FAIL"))
+                    .arg(dataset_imu_plot_->sampleCount(0))
+                    .arg(dataset_imu_plot_->sampleSpanSeconds(0), 0, 'f', 3)
+                    .arg(trace == nullptr ? 0 : trace->count());
+    }
+    dataset_imu_plot_->setActive(false);
+    dataset_imu_plot_->clear();
+    return retention_ok && rendering_ok;
   }
 
  protected:
@@ -8260,8 +8386,11 @@ int runViewerApplication(int argc, char** argv) {
       dataset_overview_ok = dataset_overview_ok &&
           !dataset_metadata_details->isVisible();
     }
+    QString imu_window_report;
+    const bool imu_window_ok =
+        window.runImuPlotWindowSelfTest(&imu_window_report);
     const bool success = playback_controls_ok && imu_layout_ok &&
-        lidar_layout_ok && dataset_overview_ok &&
+        lidar_layout_ok && dataset_overview_ok && imu_window_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
         minimum.height() <= kMaximumMainWindowMinimumHeight;
     std::cout << "main_window_layout_self_test="
@@ -8279,7 +8408,10 @@ int runViewerApplication(int argc, char** argv) {
               << " lidar_horizontal="
               << (lidar_layout_ok ? "PASS" : "FAIL")
               << " dataset_overview="
-              << (dataset_overview_ok ? "PASS" : "FAIL") << "\n";
+              << (dataset_overview_ok ? "PASS" : "FAIL")
+              << " imu_10s_window="
+              << (imu_window_ok ? "PASS" : "FAIL")
+              << " " << imu_window_report.toStdString() << "\n";
     window.close();
     app.processEvents();
     return success ? 0 : 12;
