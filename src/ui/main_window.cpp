@@ -1408,14 +1408,19 @@ class InteractiveImuChartView final : public QChartView {
 
 class ImuPlotWidget : public QWidget {
  public:
-  explicit ImuPlotWidget(QWidget* parent = nullptr) : QWidget(parent) {
+  explicit ImuPlotWidget(QWidget* parent = nullptr,
+                         const QString& object_name_prefix = QString())
+      : QWidget(parent) {
     setMinimumHeight(280);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     auto* splitter = new QSplitter(Qt::Horizontal, this);
-    splitter->setObjectName(QStringLiteral("imuPlotSplitter"));
+    splitter->setObjectName(
+        object_name_prefix.isEmpty()
+            ? QStringLiteral("imuPlotSplitter")
+            : object_name_prefix + QStringLiteral("PlotSplitter"));
     splitter->setChildrenCollapsible(false);
     splitter->setHandleWidth(8);
     createPanel(&accel_panel_, uiText("Acceleration XYZ (g)", "加速度 XYZ (g)"),
@@ -1425,18 +1430,21 @@ class ImuPlotWidget : public QWidget {
                 uiText("Angular rate (", "角速度 (") + QChar(0x00b0) +
                     QStringLiteral("/s)"),
                 10.0);
+    const QString prefix = object_name_prefix.isEmpty()
+        ? QStringLiteral("imu")
+        : object_name_prefix;
     accel_panel_.view->setObjectName(
-        QStringLiteral("imuAccelerationPlot"));
+        prefix + QStringLiteral("AccelerationPlot"));
     gyro_panel_.view->setObjectName(
-        QStringLiteral("imuGyroscopePlot"));
+        prefix + QStringLiteral("GyroscopePlot"));
     accel_panel_.title_label->setObjectName(
-        QStringLiteral("imuAccelerationTitle"));
+        prefix + QStringLiteral("AccelerationTitle"));
     gyro_panel_.title_label->setObjectName(
-        QStringLiteral("imuGyroscopeTitle"));
+        prefix + QStringLiteral("GyroscopeTitle"));
     accel_panel_.legend_label->setObjectName(
-        QStringLiteral("imuAccelerationLegend"));
+        prefix + QStringLiteral("AccelerationLegend"));
     gyro_panel_.legend_label->setObjectName(
-        QStringLiteral("imuGyroscopeLegend"));
+        prefix + QStringLiteral("GyroscopeLegend"));
     updateUnitAppearance();
     splitter->addWidget(accel_panel_.container);
     splitter->addWidget(gyro_panel_.container);
@@ -1512,6 +1520,11 @@ class ImuPlotWidget : public QWidget {
       samples.pop_front();
     }
     if (static_cast<int>(sample.sensor_id) == selected_sensor_) dirty_ = true;
+  }
+
+  size_t sampleCount(int sensor) const noexcept {
+    if (sensor < 0 || sensor >= static_cast<int>(series_.size())) return 0u;
+    return series_[static_cast<size_t>(sensor)].size();
   }
 
  private:
@@ -2234,6 +2247,7 @@ class MainWindow : public QMainWindow {
     tabs_->addTab(wifi_hotspot_panel_, uiText("Network", "网络"));
 
     dataset_page_ = new QWidget(tabs_);
+    dataset_page_->setObjectName(QStringLiteral("datasetPage"));
     auto* dataset_layout = new QVBoxLayout(dataset_page_);
     dataset_layout->setContentsMargins(8, 8, 8, 8);
     dataset_layout->setSpacing(10);
@@ -2352,6 +2366,11 @@ class MainWindow : public QMainWindow {
     dataset_export_rosbag_button_ = new QPushButton(
         uiText("Export ROS Bag...", "导出 ROS Bag..."), dataset_page_);
     dataset_export_rosbag_button_->setEnabled(false);
+    dataset_metadata_toggle_button_ = new QPushButton(
+        uiText("Show Metadata", "显示 Metadata"), dataset_page_);
+    dataset_metadata_toggle_button_->setObjectName(
+        QStringLiteral("datasetMetadataToggleButton"));
+    dataset_metadata_toggle_button_->setCheckable(true);
     auto* rosbag_export_menu = new QMenu(dataset_export_rosbag_button_);
     auto* export_ros1_action = rosbag_export_menu->addAction(
         uiText("ROS1 Bag (.bag)", "ROS1 Bag（.bag）"));
@@ -2371,6 +2390,7 @@ class MainWindow : public QMainWindow {
     dataset_controls->addWidget(dataset_open_button_);
     dataset_controls->addWidget(dataset_validate_button_);
     dataset_controls->addWidget(dataset_export_rosbag_button_);
+    dataset_controls->addWidget(dataset_metadata_toggle_button_);
     dataset_controls->addWidget(dataset_path_label_, 1);
     dataset_layout->addLayout(dataset_controls);
 
@@ -2456,9 +2476,16 @@ class MainWindow : public QMainWindow {
     dataset_playback_timer_->setSingleShot(true);
     dataset_playback_timer_->setTimerType(Qt::PreciseTimer);
 
+    auto* dataset_overview_splitter =
+        new QSplitter(Qt::Horizontal, dataset_page_);
+    dataset_overview_splitter->setObjectName(
+        QStringLiteral("datasetPlaybackOverviewSplitter"));
+    dataset_overview_splitter->setChildrenCollapsible(false);
+    dataset_overview_splitter->setHandleWidth(8);
+
     auto* dataset_images_group = new QGroupBox(
         uiText("Recorded camera frame set", "已记录的四路相机帧集"),
-        dataset_page_);
+        dataset_overview_splitter);
     auto* dataset_images_grid = new QGridLayout(dataset_images_group);
     dataset_images_grid->setHorizontalSpacing(10);
     dataset_images_grid->setVerticalSpacing(10);
@@ -2487,11 +2514,131 @@ class MainWindow : public QMainWindow {
       stack->addWidget(dataset_image_labels_[camera], 1);
       dataset_images_grid->addWidget(tile, camera / 2, camera % 2);
     }
-    dataset_layout->addWidget(dataset_images_group, 1);
+    auto* dataset_sensor_splitter =
+        new QSplitter(Qt::Vertical, dataset_overview_splitter);
+    dataset_sensor_splitter->setObjectName(
+        QStringLiteral("datasetSensorPreviewSplitter"));
+    dataset_sensor_splitter->setChildrenCollapsible(false);
+    dataset_sensor_splitter->setHandleWidth(8);
+
+    auto* dataset_imu_group = new QGroupBox(
+        uiText("Onboard IMU playback", "板载 IMU 回放"),
+        dataset_sensor_splitter);
+    auto* dataset_imu_layout = new QVBoxLayout(dataset_imu_group);
+    dataset_imu_layout->setContentsMargins(8, 12, 8, 8);
+    dataset_imu_layout->setSpacing(6);
+    auto* dataset_imu_header = new QHBoxLayout();
+    dataset_imu_header->setSpacing(6);
+    dataset_imu_header->addWidget(
+        new QLabel(uiText("Show:", "显示："), dataset_imu_group));
+    dataset_imu_selector_group_ = new QButtonGroup(dataset_imu_group);
+    dataset_imu_selector_group_->setExclusive(true);
+    dataset_imu0_selector_ = new QPushButton(
+        QStringLiteral("IMU 0"), dataset_imu_group);
+    dataset_imu1_selector_ = new QPushButton(
+        QStringLiteral("IMU 1"), dataset_imu_group);
+    dataset_imu0_selector_->setObjectName(
+        QStringLiteral("datasetImuSelectButton"));
+    dataset_imu1_selector_->setObjectName(
+        QStringLiteral("datasetImuSelectButton"));
+    dataset_imu0_selector_->setCheckable(true);
+    dataset_imu1_selector_->setCheckable(true);
+    dataset_imu_selector_group_->addButton(dataset_imu0_selector_, 0);
+    dataset_imu_selector_group_->addButton(dataset_imu1_selector_, 1);
+    dataset_imu0_selector_->setChecked(true);
+    dataset_imu_header->addWidget(dataset_imu0_selector_);
+    dataset_imu_header->addWidget(dataset_imu1_selector_);
+    dataset_imu_status_label_ = new QLabel(
+        uiText("No dataset IMU loaded", "尚未加载数据集 IMU"),
+        dataset_imu_group);
+    dataset_imu_status_label_->setObjectName(
+        QStringLiteral("datasetImuPlaybackStatusLabel"));
+    dataset_imu_status_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 5px; padding: 4px 8px;"));
+    dataset_imu_header->addWidget(dataset_imu_status_label_, 1);
+    dataset_imu_layout->addLayout(dataset_imu_header);
+    dataset_imu_plot_ = new ImuPlotWidget(
+        dataset_imu_group, QStringLiteral("datasetImu"));
+    dataset_imu_plot_->setObjectName(
+        QStringLiteral("datasetImuPlotWidget"));
+    dataset_imu_plot_->setMinimumHeight(220);
+    dataset_imu_layout->addWidget(dataset_imu_plot_, 1);
+
+    auto* dataset_lidar_group = new QGroupBox(
+        uiText("LiDAR playback", "雷达回放"), dataset_sensor_splitter);
+    auto* dataset_lidar_layout = new QVBoxLayout(dataset_lidar_group);
+    dataset_lidar_layout->setContentsMargins(8, 12, 8, 8);
+    dataset_lidar_layout->setSpacing(6);
+    auto* dataset_lidar_header = new QHBoxLayout();
+    dataset_lidar_header->setSpacing(6);
+    dataset_lidar_status_label_ = new QLabel(
+        uiText("No dataset LiDAR loaded", "尚未加载数据集雷达"),
+        dataset_lidar_group);
+    dataset_lidar_status_label_->setObjectName(
+        QStringLiteral("datasetLidarPlaybackStatusLabel"));
+    dataset_lidar_status_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 5px; padding: 4px 8px;"));
+    auto* dataset_lidar_top_view_button = new QPushButton(
+        uiText("Top view", "俯视"), dataset_lidar_group);
+    auto* dataset_lidar_reset_view_button = new QPushButton(
+        uiText("Reset view", "重置视角"), dataset_lidar_group);
+    dataset_lidar_header->addWidget(dataset_lidar_status_label_, 1);
+    dataset_lidar_header->addWidget(dataset_lidar_top_view_button);
+    dataset_lidar_header->addWidget(dataset_lidar_reset_view_button);
+    dataset_lidar_layout->addLayout(dataset_lidar_header);
+    dataset_lidar_imu_status_label_ = new QLabel(
+        uiText("Dataset LiDAR IMU: no playback sample",
+               "数据集雷达 IMU：尚无回放样本"),
+        dataset_lidar_group);
+    dataset_lidar_imu_status_label_->setObjectName(
+        QStringLiteral("datasetLidarImuPlaybackStatusLabel"));
+    dataset_lidar_imu_status_label_->setStyleSheet(QStringLiteral(
+        "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+        "border-radius: 5px; padding: 4px 8px;"));
+    dataset_lidar_layout->addWidget(dataset_lidar_imu_status_label_);
+    dataset_lidar_point_cloud_widget_ =
+        new prism_viewer::LidarPointCloudWidget(dataset_lidar_group);
+    dataset_lidar_point_cloud_widget_->setObjectName(
+        QStringLiteral("datasetLidarPointCloudWidget"));
+    dataset_lidar_point_cloud_widget_->setMinimumSize(0, 220);
+    dataset_lidar_point_cloud_widget_->setPointSize(
+        lidar_point_size_spin_->value());
+    dataset_lidar_layout->addWidget(dataset_lidar_point_cloud_widget_, 1);
+    connect(dataset_lidar_top_view_button, &QPushButton::clicked,
+            dataset_lidar_point_cloud_widget_,
+            &prism_viewer::LidarPointCloudWidget::setTopView);
+    connect(dataset_lidar_reset_view_button, &QPushButton::clicked,
+            dataset_lidar_point_cloud_widget_,
+            &prism_viewer::LidarPointCloudWidget::resetView);
+    connect(dataset_imu_selector_group_,
+            QOverload<QAbstractButton*, bool>::of(
+                &QButtonGroup::buttonToggled),
+            this, [this](QAbstractButton* button, bool checked) {
+              if (checked && dataset_imu_plot_ != nullptr) {
+                dataset_imu_plot_->setSensor(
+                    dataset_imu_selector_group_->id(button));
+              }
+            });
+
+    dataset_sensor_splitter->addWidget(dataset_imu_group);
+    dataset_sensor_splitter->addWidget(dataset_lidar_group);
+    dataset_sensor_splitter->setStretchFactor(0, 1);
+    dataset_sensor_splitter->setStretchFactor(1, 1);
+    dataset_sensor_splitter->setSizes({320, 320});
+    dataset_overview_splitter->addWidget(dataset_images_group);
+    dataset_overview_splitter->addWidget(dataset_sensor_splitter);
+    dataset_overview_splitter->setStretchFactor(0, 6);
+    dataset_overview_splitter->setStretchFactor(1, 5);
+    dataset_overview_splitter->setSizes({800, 650});
+    dataset_layout->addWidget(dataset_overview_splitter, 1);
 
     dataset_details_ = new QPlainTextEdit(dataset_page_);
+    dataset_details_->setObjectName(QStringLiteral("datasetMetadataDetails"));
     dataset_details_->setReadOnly(true);
     dataset_details_->setMaximumHeight(120);
+    dataset_details_->setVisible(false);
     dataset_layout->addWidget(dataset_details_);
     dataset_camera_zoom_dialog_ = new CameraZoomDialog(this);
 
@@ -2657,6 +2804,8 @@ class MainWindow : public QMainWindow {
     imu_layout->addWidget(imu_table_);
     imu_plot_ = new ImuPlotWidget(imu_group);
     imu_plot_->setUnits(acceleration_unit_, angular_velocity_unit_);
+    dataset_imu_plot_->setUnits(acceleration_unit_,
+                                angular_velocity_unit_);
     imu_layout->addWidget(imu_plot_, 1);
     imu_page_layout->addWidget(imu_group, 4);
 
@@ -2726,6 +2875,7 @@ class MainWindow : public QMainWindow {
             QOverload<int>::of(&QSpinBox::valueChanged),
             this, [this](int size) {
               lidar_point_cloud_widget_->setPointSize(size);
+              dataset_lidar_point_cloud_widget_->setPointSize(size);
               QSettings(QStringLiteral("DIBULI"),
                         QStringLiteral("PrismViewer"))
                   .setValue(QStringLiteral("lidar/point_size"), size);
@@ -2798,6 +2948,8 @@ class MainWindow : public QMainWindow {
               refreshLatestImuTableValues();
               imu_plot_->setUnits(acceleration_unit_,
                                   angular_velocity_unit_);
+              dataset_imu_plot_->setUnits(acceleration_unit_,
+                                          angular_velocity_unit_);
             });
     connect(imu_angular_velocity_unit_selector_,
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -2814,6 +2966,8 @@ class MainWindow : public QMainWindow {
               refreshLatestImuTableValues();
               imu_plot_->setUnits(acceleration_unit_,
                                   angular_velocity_unit_);
+              dataset_imu_plot_->setUnits(acceleration_unit_,
+                                          angular_velocity_unit_);
             });
     connect(imu_temperature_unit_selector_,
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -2834,6 +2988,13 @@ class MainWindow : public QMainWindow {
             this, [this]() { openRecordedDataset(); });
     connect(dataset_validate_button_, &QPushButton::clicked,
             this, [this]() { validateRecordedDataset(); });
+    connect(dataset_metadata_toggle_button_, &QPushButton::toggled,
+            this, [this](bool visible) {
+              dataset_details_->setVisible(visible);
+              dataset_metadata_toggle_button_->setText(
+                  visible ? uiText("Hide Metadata", "隐藏 Metadata")
+                          : uiText("Show Metadata", "显示 Metadata"));
+            });
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) {
               showDatasetFrame(frame);
@@ -2962,16 +3123,25 @@ class MainWindow : public QMainWindow {
         lidar_point_cloud_widget_->pointCount() == 2u &&
         dataset_playback_lidar_imu_count_ == 1u &&
         lidar_imu_playback_label_->text().contains(QStringLiteral("1/1"));
+    const bool overview_rendered =
+        events_dispatched && dataset_imu_plot_->sampleCount(0) == 1u &&
+        dataset_imu_plot_->sampleCount(1) == 1u &&
+        dataset_imu_status_label_->text().contains(QStringLiteral("1/1")) &&
+        dataset_lidar_point_cloud_widget_->pointCount() == 2u &&
+        dataset_lidar_status_label_->text() == lidar_status_label_->text() &&
+        dataset_lidar_imu_status_label_->text().contains(
+            QStringLiteral("1/1"));
     const bool pages_available =
         imu_page_->isEnabled() && lidar_page_->isEnabled() &&
         imu0_selector_->isEnabled() && imu1_selector_->isEnabled() &&
         dataset_playback_button_->isEnabled();
     const bool success = streams_loaded && events_dispatched && imu_rendered &&
-                         lidar_rendered && pages_available;
+                         lidar_rendered && overview_rendered &&
+                         pages_available;
     if (report != nullptr) {
       *report = QStringLiteral(
-                    "streams=%1 dispatch=%2 imu=%3 lidar=%4 pages=%5 "
-                    "events=%6 points=%7")
+                    "streams=%1 dispatch=%2 imu=%3 lidar=%4 overview=%5 "
+                    "pages=%6 events=%7 points=%8")
                     .arg(streams_loaded ? QStringLiteral("PASS")
                                         : QStringLiteral("FAIL"))
                     .arg(events_dispatched ? QStringLiteral("PASS")
@@ -2979,7 +3149,9 @@ class MainWindow : public QMainWindow {
                     .arg(imu_rendered ? QStringLiteral("PASS")
                                       : QStringLiteral("FAIL"))
                     .arg(lidar_rendered ? QStringLiteral("PASS")
-                                        : QStringLiteral("FAIL"))
+                                         : QStringLiteral("FAIL"))
+                    .arg(overview_rendered ? QStringLiteral("PASS")
+                                            : QStringLiteral("FAIL"))
                     .arg(pages_available ? QStringLiteral("PASS")
                                          : QStringLiteral("FAIL"))
                     .arg(dataset_playback_data_.timeline.size())
@@ -3033,6 +3205,10 @@ class MainWindow : public QMainWindow {
         window_active && tabs_->currentWidget() == imu_page_;
     imu_ui_enabled_.store(imu_active, std::memory_order_release);
     if (imu_plot_ != nullptr) imu_plot_->setActive(imu_active);
+    if (dataset_imu_plot_ != nullptr) {
+      dataset_imu_plot_->setActive(
+          window_active && tabs_->currentWidget() == dataset_page_);
+    }
     lidar_ui_enabled_.store(
         window_active && tabs_->currentWidget() == lidar_page_,
         std::memory_order_release);
@@ -4954,6 +5130,31 @@ class MainWindow : public QMainWindow {
     dataset_playback_lidar_points_ = 0u;
     dataset_playback_lidar_imu_count_ = 0u;
     if (imu_plot_ != nullptr) imu_plot_->clear();
+    if (dataset_imu_plot_ != nullptr) dataset_imu_plot_->clear();
+    if (dataset_imu_status_label_ != nullptr) {
+      const size_t imu0_samples =
+          dataset_playback_data_.onboard_imus[0].size();
+      const size_t imu1_samples =
+          dataset_playback_data_.onboard_imus[1].size();
+      dataset_imu_status_label_->setText(
+          imu0_samples == 0u && imu1_samples == 0u
+              ? uiText("No onboard IMU data in the loaded dataset",
+                       "已加载的数据集中没有板载 IMU 数据")
+              : uiText("Ready | IMU 0: %1 | IMU 1: %2",
+                       "已就绪 | IMU 0：%1 | IMU 1：%2")
+                    .arg(imu0_samples)
+                    .arg(imu1_samples));
+      dataset_imu_status_label_->setStyleSheet(QStringLiteral(
+          "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+          "border-radius: 5px; padding: 4px 8px;"));
+      if (imu0_samples == 0u && imu1_samples != 0u) {
+        dataset_imu1_selector_->setChecked(true);
+        imu1_selector_->setChecked(true);
+      } else {
+        dataset_imu0_selector_->setChecked(true);
+        imu0_selector_->setChecked(true);
+      }
+    }
     if (imu_table_ != nullptr) {
       imu_table_->setUpdatesEnabled(false);
       for (int sensor = 0; sensor < imu_table_->rowCount(); ++sensor) {
@@ -4973,21 +5174,32 @@ class MainWindow : public QMainWindow {
     if (lidar_point_cloud_widget_ != nullptr) {
       lidar_point_cloud_widget_->clearPoints();
     }
+    if (dataset_lidar_point_cloud_widget_ != nullptr) {
+      dataset_lidar_point_cloud_widget_->clearPoints();
+    }
     if (!dataset_playback_data_.lidar_batches.empty()) {
-      lidar_status_label_->setText(
+      const QString text =
           uiText("Dataset LiDAR ready | %1 batches",
                  "数据集雷达已就绪 | %1 批")
-              .arg(dataset_playback_data_.lidar_batches.size()));
-      lidar_status_label_->setStyleSheet(QStringLiteral(
+              .arg(dataset_playback_data_.lidar_batches.size());
+      const QString style = QStringLiteral(
           "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
-          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      lidar_status_label_->setText(text);
+      lidar_status_label_->setStyleSheet(style);
+      dataset_lidar_status_label_->setText(text);
+      dataset_lidar_status_label_->setStyleSheet(style);
     } else {
-      lidar_status_label_->setText(
+      const QString text =
           uiText("No LiDAR point data in the loaded dataset",
-                 "已加载的数据集中没有雷达点云数据"));
-      lidar_status_label_->setStyleSheet(QStringLiteral(
+                 "已加载的数据集中没有雷达点云数据");
+      const QString style = QStringLiteral(
           "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
-          "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+      lidar_status_label_->setText(text);
+      lidar_status_label_->setStyleSheet(style);
+      dataset_lidar_status_label_->setText(text);
+      dataset_lidar_status_label_->setStyleSheet(style);
     }
     if (lidar_imu_playback_label_ != nullptr) {
       lidar_imu_playback_label_->setText(
@@ -4999,6 +5211,10 @@ class MainWindow : public QMainWindow {
       lidar_imu_playback_label_->setStyleSheet(QStringLiteral(
           "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
           "border-radius: 6px; padding: 7px 10px;"));
+      dataset_lidar_imu_status_label_->setText(
+          lidar_imu_playback_label_->text());
+      dataset_lidar_imu_status_label_->setStyleSheet(
+          lidar_imu_playback_label_->styleSheet());
     }
   }
 
@@ -5062,6 +5278,17 @@ class MainWindow : public QMainWindow {
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::microseconds(recorded.timestamp_us)));
     imu_plot_->appendSample(sample, recorded_time);
+    dataset_imu_plot_->appendSample(sample, recorded_time);
+    dataset_imu_status_label_->setText(
+        uiText("Played | IMU 0: %1/%2 | IMU 1: %3/%4",
+               "已回放 | IMU 0：%1/%2 | IMU 1：%3/%4")
+            .arg(dataset_playback_imu_counts_[0])
+            .arg(dataset_playback_data_.onboard_imus[0].size())
+            .arg(dataset_playback_imu_counts_[1])
+            .arg(dataset_playback_data_.onboard_imus[1].size()));
+    dataset_imu_status_label_->setStyleSheet(QStringLiteral(
+        "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+        "border-radius: 5px; padding: 4px 8px;"));
   }
 
   bool applyDatasetLidarBatch(size_t stream_index) {
@@ -5082,6 +5309,9 @@ class MainWindow : public QMainWindow {
       lidar_status_label_->setStyleSheet(QStringLiteral(
           "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+      dataset_lidar_status_label_->setText(lidar_status_label_->text());
+      dataset_lidar_status_label_->setStyleSheet(
+          lidar_status_label_->styleSheet());
       appendLog(QStringLiteral("Dataset LiDAR playback failed: %1")
                     .arg(detail));
       return false;
@@ -5093,6 +5323,7 @@ class MainWindow : public QMainWindow {
                         stored.reflectivity, stored.tag});
     }
     lidar_point_cloud_widget_->appendPoints(points);
+    dataset_lidar_point_cloud_widget_->appendPoints(points);
     dataset_playback_lidar_points_ += points.size();
     const QString model =
         batch.model == static_cast<uint8_t>(prism::LidarModel::Mid360)
@@ -5113,6 +5344,9 @@ class MainWindow : public QMainWindow {
     lidar_status_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    dataset_lidar_status_label_->setText(lidar_status_label_->text());
+    dataset_lidar_status_label_->setStyleSheet(
+        lidar_status_label_->styleSheet());
     return true;
   }
 
@@ -5148,6 +5382,10 @@ class MainWindow : public QMainWindow {
     lidar_imu_playback_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
         "border-radius: 6px; padding: 7px 10px;"));
+    dataset_lidar_imu_status_label_->setText(
+        lidar_imu_playback_label_->text());
+    dataset_lidar_imu_status_label_->setStyleSheet(
+        lidar_imu_playback_label_->styleSheet());
   }
 
   bool dispatchDatasetPlaybackEvent(const DatasetPlaybackEvent& event) {
@@ -7130,6 +7368,7 @@ class MainWindow : public QMainWindow {
   QPushButton* dataset_open_button_ = nullptr;
   QPushButton* dataset_validate_button_ = nullptr;
   QPushButton* dataset_export_rosbag_button_ = nullptr;
+  QPushButton* dataset_metadata_toggle_button_ = nullptr;
   QLabel* dataset_path_label_ = nullptr;
   QLabel* dataset_summary_label_ = nullptr;
   QLabel* dataset_frame_label_ = nullptr;
@@ -7140,6 +7379,15 @@ class MainWindow : public QMainWindow {
   QLabel* dataset_playback_position_label_ = nullptr;
   QSlider* dataset_frame_slider_ = nullptr;
   QTimer* dataset_playback_timer_ = nullptr;
+  QButtonGroup* dataset_imu_selector_group_ = nullptr;
+  QPushButton* dataset_imu0_selector_ = nullptr;
+  QPushButton* dataset_imu1_selector_ = nullptr;
+  QLabel* dataset_imu_status_label_ = nullptr;
+  ImuPlotWidget* dataset_imu_plot_ = nullptr;
+  QLabel* dataset_lidar_status_label_ = nullptr;
+  QLabel* dataset_lidar_imu_status_label_ = nullptr;
+  prism_viewer::LidarPointCloudWidget*
+      dataset_lidar_point_cloud_widget_ = nullptr;
   std::array<ImageViewLabel*, 4> dataset_image_labels_{};
   QPlainTextEdit* dataset_details_ = nullptr;
   CameraZoomDialog* dataset_camera_zoom_dialog_ = nullptr;
@@ -7803,11 +8051,18 @@ int runViewerApplication(int argc, char** argv) {
             QStringLiteral("datasetPlaybackPositionLabel"));
     const auto* lidar_imu_playback =
         window.findChild<QLabel*>(QStringLiteral("lidarImuPlaybackLabel"));
+    const auto* dataset_metadata_toggle = window.findChild<QPushButton*>(
+        QStringLiteral("datasetMetadataToggleButton"));
+    const auto* dataset_metadata_details = window.findChild<QPlainTextEdit*>(
+        QStringLiteral("datasetMetadataDetails"));
     const bool controls_ok =
         dataset_playback_button != nullptr &&
         dataset_playback_speed != nullptr &&
         dataset_playback_position != nullptr &&
-        lidar_imu_playback != nullptr;
+        lidar_imu_playback != nullptr && dataset_metadata_toggle != nullptr &&
+        dataset_metadata_details != nullptr &&
+        !dataset_metadata_toggle->isChecked() &&
+        !dataset_metadata_details->isVisible();
     const bool success = window.isVisible() &&
         window.centralWidget() != nullptr && controls_ok;
     std::cout << "main_window_startup_self_test="
@@ -7869,11 +8124,29 @@ int runViewerApplication(int argc, char** argv) {
         window.findChild<QWidget*>(QStringLiteral("lidarControlSidebar"));
     auto* lidar_cloud =
         window.findChild<QWidget*>(QStringLiteral("lidarPointCloudWidget"));
+    auto* dataset_page =
+        window.findChild<QWidget*>(QStringLiteral("datasetPage"));
+    auto* dataset_overview_splitter = window.findChild<QSplitter*>(
+        QStringLiteral("datasetPlaybackOverviewSplitter"));
+    auto* dataset_sensor_splitter = window.findChild<QSplitter*>(
+        QStringLiteral("datasetSensorPreviewSplitter"));
+    auto* dataset_imu_preview = window.findChild<QWidget*>(
+        QStringLiteral("datasetImuPlotWidget"));
+    auto* dataset_lidar_preview = window.findChild<QWidget*>(
+        QStringLiteral("datasetLidarPointCloudWidget"));
+    auto* dataset_metadata_toggle = window.findChild<QPushButton*>(
+        QStringLiteral("datasetMetadataToggleButton"));
+    auto* dataset_metadata_details = window.findChild<QPlainTextEdit*>(
+        QStringLiteral("datasetMetadataDetails"));
     const bool playback_controls_ok =
         dataset_playback_button != nullptr &&
         dataset_playback_speed != nullptr &&
         dataset_playback_position != nullptr &&
         lidar_imu_playback != nullptr &&
+        dataset_metadata_toggle != nullptr &&
+        dataset_metadata_details != nullptr &&
+        !dataset_metadata_toggle->isChecked() &&
+        !dataset_metadata_details->isVisible() &&
         dataset_playback_speed->count() == 6 &&
         dataset_playback_speed->currentData().toDouble() > 0.0 &&
         !dataset_playback_button->isEnabled();
@@ -7958,8 +8231,37 @@ int runViewerApplication(int argc, char** argv) {
                         lidar_sizes[1] > lidar_sizes[0] &&
                         lidar_cloud->height() >= lidar_sidebar->height() - 2;
     }
+    bool dataset_overview_ok =
+        main_tabs != nullptr && dataset_page != nullptr &&
+        dataset_overview_splitter != nullptr &&
+        dataset_sensor_splitter != nullptr &&
+        dataset_imu_preview != nullptr && dataset_lidar_preview != nullptr &&
+        dataset_overview_splitter->orientation() == Qt::Horizontal &&
+        dataset_overview_splitter->count() == 2 &&
+        dataset_sensor_splitter->orientation() == Qt::Vertical &&
+        dataset_sensor_splitter->count() == 2;
+    if (dataset_overview_ok) {
+      main_tabs->setCurrentWidget(dataset_page);
+      app.processEvents();
+      const QList<int> overview_sizes = dataset_overview_splitter->sizes();
+      const QList<int> sensor_sizes = dataset_sensor_splitter->sizes();
+      dataset_overview_ok =
+          overview_sizes.size() == 2 && overview_sizes[0] > 0 &&
+          overview_sizes[1] > 0 && sensor_sizes.size() == 2 &&
+          sensor_sizes[0] > 0 && sensor_sizes[1] > 0 &&
+          dataset_imu_preview->isVisible() &&
+          dataset_lidar_preview->isVisible();
+      dataset_metadata_toggle->setChecked(true);
+      app.processEvents();
+      dataset_overview_ok = dataset_overview_ok &&
+          dataset_metadata_details->isVisible();
+      dataset_metadata_toggle->setChecked(false);
+      app.processEvents();
+      dataset_overview_ok = dataset_overview_ok &&
+          !dataset_metadata_details->isVisible();
+    }
     const bool success = playback_controls_ok && imu_layout_ok &&
-        lidar_layout_ok &&
+        lidar_layout_ok && dataset_overview_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
         minimum.height() <= kMaximumMainWindowMinimumHeight;
     std::cout << "main_window_layout_self_test="
@@ -7975,7 +8277,9 @@ int runViewerApplication(int argc, char** argv) {
               << " imu_zoom="
               << (imu_zoom_ok ? "PASS" : "FAIL")
               << " lidar_horizontal="
-              << (lidar_layout_ok ? "PASS" : "FAIL") << "\n";
+              << (lidar_layout_ok ? "PASS" : "FAIL")
+              << " dataset_overview="
+              << (dataset_overview_ok ? "PASS" : "FAIL") << "\n";
     window.close();
     app.processEvents();
     return success ? 0 : 12;
