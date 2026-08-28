@@ -51,10 +51,20 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "6ee2def2aaf702147303e1d4d2b20ba4ef0a0531951e4585fe4aa73c52268bf9"
+          $expected = "5992b255f93c1cbef52bf227fc354ee6fe1f7621225fbc6d5d88a4981e3b8cb1"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
+          }
+          $contents = [Text.Encoding]::ASCII.GetString(
+            [IO.File]::ReadAllBytes($dll))
+          if (-not $contents.Contains(
+              'camera exposure time must be 50..995000 us')) {
+            throw "Bundled SDK does not accept the 50 us exposure limit"
+          }
+          if ($contents.Contains(
+              'camera exposure time must be 200..995000 us')) {
+            throw "Bundled SDK contains the obsolete 200 us exposure limit"
           }
 
       - name: Configure and build Viewer
@@ -158,13 +168,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/ros/ubuntu-20.04-x86_64/lib/libprism_usb_sdk.so
-            sdk_sha256: f1d2174b3917d02b6b52ad581efd0d5ab9e2a27b5957779471e6b19f7051eefb
+            sdk_sha256: 917665c9e8204e3c117ab6e60ecdfff263f36e46ecd12d89b406f4f8cffe548f
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: b6763de2c6c164e9b0e3f76f4ec6cdcc086d8d2a62aacfe3a74d6d3d60a893f9
+            sdk_sha256: 45dde324e5bff5285de24944741ae67b425a4b8d6f50a788200a78c0655086a8
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -222,7 +232,16 @@ jobs:
       - name: Verify bundled Linux SDK
         run: |
           sdk="third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
+          sdk_strings="$RUNNER_TEMP/prism-sdk-strings.txt"
           echo "$LINUX_SDK_SHA256  $sdk" | sha256sum --check
+          strings "$sdk" > "$sdk_strings"
+          grep -Fq 'camera exposure time must be 50..995000 us' \
+            "$sdk_strings"
+          if grep -Fq 'camera exposure time must be 200..995000 us' \
+              "$sdk_strings"; then
+            echo "Bundled SDK contains the obsolete 200 us exposure limit" >&2
+            exit 1
+          fi
           if [ "$LINUX_SDK_LINKAGE" = static ]; then
             file "$sdk" | tee /dev/stderr | grep -Fq 'current ar archive'
             object_headers="$(objdump -f "$sdk")"
@@ -586,7 +605,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="9f215299b523324de2549ac6d4690441299e3b006831284625f3b4de05a5ff84"
+          sdk_expected="070f33890c47d54189a0ac13726ed9ff4dceff798ea93090995950853ecd7de5"
           libusb_expected="6f65716831f5072bbae4286903c1efce7588ecdbf9d9d4df01122a30cded3b01"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
@@ -604,6 +623,15 @@ jobs:
           fi
           if [ ! -s "$license" ]; then
             echo "Bundled libusb license is missing or empty" >&2
+            exit 1
+          fi
+          sdk_strings="$RUNNER_TEMP/prism-sdk-macos-strings.txt"
+          strings "$sdk" > "$sdk_strings"
+          grep -Fq 'camera exposure time must be 50..995000 us' \
+            "$sdk_strings"
+          if grep -Fq 'camera exposure time must be 200..995000 us' \
+              "$sdk_strings"; then
+            echo "Bundled SDK contains the obsolete 200 us exposure limit" >&2
             exit 1
           fi
           for runtime in "$sdk" "$libusb"; do
