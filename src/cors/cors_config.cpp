@@ -108,8 +108,11 @@ QString validateCorsConfiguration(
 
 QByteArray buildNmeaGga(const QDateTime& utc, double latitude_degrees,
                         double longitude_degrees, double altitude_meters) {
+  const QTime utc_time = utc.toUTC().time();
   const QString time =
-      utc.toUTC().time().toString(QStringLiteral("hhmmss.zz"));
+      QStringLiteral("%1.%2")
+          .arg(utc_time.toString(QStringLiteral("hhmmss")))
+          .arg(utc_time.msec() / 10, 2, 10, QLatin1Char('0'));
   const QChar latitude_hemisphere =
       latitude_degrees < 0.0 ? QLatin1Char('S') : QLatin1Char('N');
   const QChar longitude_hemisphere =
