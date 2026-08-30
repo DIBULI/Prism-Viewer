@@ -22,7 +22,9 @@ OpenedDevice DeviceSession::open(size_t device_index) {
     OpenedDevice opened;
     opened.hello = client_.hello();
     opened.versions = client_.deviceVersions();
-    opened.device_info = client_.deviceInfo();
+    const DeviceInfoStatus device_info = readDeviceInfo(client_);
+    opened.device_info = device_info.info;
+    opened.time_sync_provider = device_info.time_sync_provider;
     opened.configuration = client_.deviceConfiguration();
     opened.exposure = client_.cameraExposure();
     opened.exposure_limits = client_.cameraExposureLimits();

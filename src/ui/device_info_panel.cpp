@@ -46,6 +46,22 @@ QString maskText(uint8_t value) {
       .arg(static_cast<unsigned int>(value), 2, 16, QLatin1Char('0'));
 }
 
+QString timeSyncProviderText(
+    communication::TimeSyncProvider provider) {
+  switch (provider) {
+    case communication::TimeSyncProvider::Unsynced:
+      return uiText("None (unsynchronized)", "无（未同步）");
+    case communication::TimeSyncProvider::RkPtp:
+      return uiText("RK (PTP)", "RK（PTP）");
+    case communication::TimeSyncProvider::Gps:
+      return QStringLiteral("GPS");
+    case communication::TimeSyncProvider::LegacyUnknown:
+      return uiText("Unknown (legacy DeviceInfo)",
+                    "未知（旧版 DeviceInfo）");
+  }
+  return uiText("Unknown", "未知");
+}
+
 QString deviceListText(uint8_t mask, int device_count,
                        const QString& device_name) {
   QStringList devices;
@@ -151,6 +167,8 @@ DeviceInfoPanel::DeviceInfoPanel(QWidget* parent) : QWidget(parent) {
 
 void DeviceInfoPanel::clear() {
   info_ = {};
+  time_sync_provider_ =
+      communication::TimeSyncProvider::Unsynced;
   has_info_ = false;
   has_versions_ = false;
   controls_locked_ = false;
@@ -170,8 +188,11 @@ void DeviceInfoPanel::setControlsLocked(bool locked) {
   refreshView();
 }
 
-void DeviceInfoPanel::setInfo(const prism::DeviceInfo& info) {
+void DeviceInfoPanel::setInfo(
+    const prism::DeviceInfo& info,
+    communication::TimeSyncProvider time_sync_provider) {
   info_ = info;
+  time_sync_provider_ = time_sync_provider;
   has_info_ = true;
   error_.clear();
   refreshView();
@@ -282,6 +303,9 @@ void DeviceInfoPanel::refreshView() {
        yesNo(info_.sensor_board_online)},
       {QStringLiteral("sensor-board"), uiText("Time synchronized", "时间已同步"),
        yesNo(info_.sensor_board_time_synced)},
+      {QStringLiteral("sensor-board"),
+       uiText("Time sync provider", "时间同步提供方"),
+       timeSyncProviderText(time_sync_provider_)},
       {QStringLiteral("sensor-board"), uiText("Transfer error", "传输错误"),
        sensorBoardErrorText(info_)},
       {QStringLiteral("IMU"), uiText("Detected count", "检测数量"),

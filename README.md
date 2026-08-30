@@ -7,7 +7,8 @@ It provides four-camera MJPEG preview, two onboard IMUs plus optional
 Mid-360/Mid-360S IMU recording, LiDAR point-cloud display with adjustable point
 rendering plus top/reset view presets, switchable live onboard-IMU display
 units, per-camera runtime SC130GS exposure/gain control, device configuration,
-system upgrade, synchronized camera/onboard-IMU/LiDAR/LiDAR-IMU dataset playback
+system upgrade, CORS/NTRIP correction forwarding for RK-side RTK, synchronized
+camera/onboard-IMU/LiDAR/LiDAR-IMU dataset playback
 at 0.25x through 8x, and ROS1/ROS2 bag export. IMU display units
 are independent from the fixed SI units used by datasets and ROS bags. New v6
 recordings use RK `CLOCK_REALTIME` with a Unix epoch as the
@@ -23,6 +24,29 @@ before capture is enabled. The clock status strip reports progress and the
 final result. With multiple devices, select one and click **Open Device**; the
 same one-time automatic synchronization runs after the first successful open.
 If it fails, capture remains available and **Set Device Time** can retry it.
+
+## CORS / RTK
+
+Open a USB device, then use the **CORS / RTK** tab to configure and start an
+NTRIP correction session. China Mobile CORS is currently registered as the
+`china_mobile` service provider with:
+
+- automatic primary-to-backup caster failover;
+- WGS84 port 8002 and CGCS2000 port 8001;
+- the RTCM33_GRCEJ, RTCM33_GRCEpro, RTCM33_GRCE, RTCM33_GRC, and RTCM30_GR
+  mountpoints;
+- periodic GGA generated from the manually entered approximate rover position.
+
+The stable `cors/serviceProvider` setting and provider catalog are the
+extension point for adding Qianxun and other providers later. Caster RTCM is
+forwarded only to the RK Agent's Host CORS input; it is not sent back to the
+sensor-board GNSS receiver. The session can remain active during camera/IMU
+capture, and Viewer serializes correction commands with stream reads on the
+shared USB client.
+
+Passwords are never written to Viewer logs. They are session-only unless
+**Remember password** is explicitly enabled; that option stores the password
+in the current user's local Qt settings.
 
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule:
@@ -51,7 +75,7 @@ git submodule update --init --recursive
 
 ## Build
 
-Install Qt Widgets, Qt Charts, and Qt SQL/SQLite. On Ubuntu/Debian:
+Install Qt Widgets, Qt Charts, Qt Network, and Qt SQL/SQLite. On Ubuntu/Debian:
 
 ```sh
 sudo apt install build-essential cmake qtbase5-dev libqt5charts5-dev \

@@ -1,7 +1,10 @@
+#include "communication/device_info_compat.hpp"
 #include "communication/prism_runtime.hpp"
+#include "communication/rtk_corrections.hpp"
 #include "common/ui_text.hpp"
 #include "communication/device_session.hpp"
 #include "control/operation_controller.hpp"
+#include "cors/cors_session.hpp"
 #include "dataset/dataset_browser.hpp"
 #include "dataset/dataset_playback.hpp"
 #include "dataset/dataset_playback_timing.hpp"
@@ -13,6 +16,7 @@
 #include "ui/camera_encoding_panel.hpp"
 #include "ui/camera_exposure_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
+#include "ui/cors_panel.hpp"
 #include "ui/device_info_panel.hpp"
 #include "ui/image_view_label.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
@@ -113,6 +117,8 @@ QT_CHARTS_USE_NAMESPACE
 #include <sstream>
 #include <string>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -163,6 +169,9 @@ using prism_viewer::dataset::TumFileSummary;
 using prism_viewer::dataset::inspectDatasetCameraIndexes;
 using prism_viewer::dataset::firstDatasetPlaybackEventAfter;
 using prism_viewer::dataset::loadDatasetLidarPoints;
+using prism_viewer::communication::TimeSyncProvider;
+using prism_viewer::communication::readDeviceInfo;
+using prism_viewer::communication::timeSyncProviderName;
 using prism_viewer::dataset::loadDatasetPlaybackData;
 using prism_viewer::dataset::loadDatasetImage;
 using prism_viewer::dataset::loadDatasetImageIndex;
@@ -176,10 +185,26 @@ using prism_viewer::imu_units::convertTemperature;
 using prism_viewer::ui::CameraEncodingPanel;
 using prism_viewer::ui::CameraExposurePanel;
 using prism_viewer::ui::CameraZoomDialog;
+using prism_viewer::ui::CorsPanel;
 using prism_viewer::ui::DeviceInfoPanel;
 using prism_viewer::ui::WifiHotspotPanel;
 using prism_viewer::ui::WifiHotspotViewState;
 using prism_viewer::ui::decodePreviewJpeg;
+
+QString timeSyncProviderText(TimeSyncProvider provider) {
+  switch (provider) {
+    case TimeSyncProvider::Unsynced:
+      return uiText("none", "无");
+    case TimeSyncProvider::RkPtp:
+      return uiText("RK (PTP)", "RK（PTP）");
+    case TimeSyncProvider::Gps:
+      return QStringLiteral("GPS");
+    case TimeSyncProvider::LegacyUnknown:
+      return uiText("unknown (legacy DeviceInfo)",
+                    "未知（旧版 DeviceInfo）");
+  }
+  return uiText("unknown", "未知");
+}
 
 QString accelerationUnitText(AccelerationUnit unit) {
   switch (unit) {
@@ -2318,6 +2343,10 @@ class MainWindow : public QMainWindow {
     wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);
     tabs_->addTab(wifi_hotspot_panel_, uiText("Network", "网络"));
 
+    cors_panel_ = new CorsPanel(tabs_);
+    tabs_->addTab(cors_panel_,
+                  uiText("CORS / RTK", "CORS / RTK"));
+
     dataset_page_ = new QWidget(tabs_);
     dataset_page_->setObjectName(QStringLiteral("datasetPage"));
     auto* dataset_layout = new QVBoxLayout(dataset_page_);
@@ -2971,6 +3000,11 @@ class MainWindow : public QMainWindow {
     device_info_panel_->on_refresh = [this]() { refreshDeviceInfo(); };
     device_info_panel_->on_refresh_versions =
         [this]() { refreshDeviceVersions(); };
+    cors_panel_->on_connect =
+        [this](const prism_viewer::cors::CorsConfiguration& configuration) {
+          startCorsSession(configuration);
+        };
+    cors_panel_->on_disconnect = [this]() { stopCorsSession(); };
     camera_exposure_panel_->on_refresh =
         [this]() {
           startCameraExposureOperation(std::nullopt, std::nullopt);
@@ -3119,7 +3153,7 @@ class MainWindow : public QMainWindow {
           page == lidar_page_ && hasDatasetLidarPlayback();
       if (!client_.isOpen() && !dataset_imu_page && !dataset_lidar_page &&
           (page == camera_page_ || page == imu_page_ || page == lidar_page_ ||
-           page == wifi_hotspot_panel_)) {
+           page == wifi_hotspot_panel_ || page == cors_panel_)) {
         const QString section =
             page == camera_page_
                 ? uiText("Camera", "相机")
@@ -3127,7 +3161,9 @@ class MainWindow : public QMainWindow {
                        ? QStringLiteral("IMU")
                        : (page == lidar_page_
                               ? QStringLiteral("LiDAR")
-                              : uiText("Network", "网络")));
+                              : (page == cors_panel_
+                                     ? QStringLiteral("CORS / RTK")
+                                     : uiText("Network", "网络"))));
         showOpenDeviceHint(section);
       }
     });
@@ -3154,6 +3190,7 @@ class MainWindow : public QMainWindow {
       live_camera_zoom_dialog_->on_selected_camera_changed = {};
       live_camera_zoom_dialog_->on_visibility_changed = {};
     }
+    cors_session_.stop();
     stopWorker();
     stopCameraPreviewWorker();
     dataset_recorder_.stop();
@@ -3288,6 +3325,7 @@ class MainWindow : public QMainWindow {
 
  protected:
   void closeEvent(QCloseEvent* event) override {
+    cors_session_.stop();
     stopWorker();
     dataset_recorder_.stop();
     client_.closeDevice();
@@ -3358,6 +3396,126 @@ class MainWindow : public QMainWindow {
                "%1 不可用：请先打开设备").arg(section));
   }
 
+  template <typename Function>
+  std::invoke_result_t<Function&> withClientIo(Function&& function) {
+    std::lock_guard<std::mutex> lock(client_io_mutex_);
+    return function();
+  }
+
+  template <typename Function>
+  std::invoke_result_t<Function&> runCorsUsbCommand(Function&& function) {
+    std::lock_guard<std::mutex> lock(client_io_mutex_);
+    const auto started_at = std::chrono::steady_clock::now();
+    const auto record_duration = [this, started_at]() {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - started_at);
+      cors_usb_command_time_us_.fetch_add(
+          static_cast<uint64_t>(std::max<int64_t>(0, elapsed.count())),
+          std::memory_order_acq_rel);
+    };
+    try {
+      if constexpr (std::is_void_v<std::invoke_result_t<Function&>>) {
+        function();
+        record_duration();
+        return;
+      } else {
+        auto result = function();
+        record_duration();
+        return result;
+      }
+    } catch (...) {
+      record_duration();
+      throw;
+    }
+  }
+
+  void startCorsSession(
+      const prism_viewer::cors::CorsConfiguration& configuration) {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(QStringLiteral("CORS / RTK"));
+      return;
+    }
+    if (time_sync_running_ || wifi_operation_running_ ||
+        camera_exposure_operation_running_ ||
+        camera_encoding_operation_running_ ||
+        lidar_network_operation_running_ || upgrade_running_) {
+      QMessageBox::warning(
+          this, uiText("CORS controls unavailable", "CORS 控制不可用"),
+          uiText("Wait for the current device operation to finish.",
+                 "请等待当前设备操作完成。"));
+      return;
+    }
+
+    prism_viewer::cors::CorsCorrectionTransport transport;
+    transport.begin = [this]() {
+      return runCorsUsbCommand([this]() {
+        return prism_viewer::communication::beginRtkCorrections(client_);
+      });
+    };
+    transport.send = [this](const uint8_t* data, size_t size) {
+      return runCorsUsbCommand([this, data, size]() {
+        return prism_viewer::communication::sendRtkCorrections(
+            client_, data, size, 3000);
+      });
+    };
+    transport.end = [this]() {
+      return runCorsUsbCommand([this]() {
+        return prism_viewer::communication::endRtkCorrections(client_);
+      });
+    };
+
+    try {
+      cors_session_.start(
+          configuration, std::move(transport),
+          [this, provider = configuration.service_provider,
+           mountpoint = configuration.mountpoint](
+              const prism_viewer::cors::CorsSessionStatus& status) {
+            post([this, provider, mountpoint, status]() {
+              const bool phase_changed =
+                  status.phase != latest_cors_status_.phase;
+              latest_cors_status_ = status;
+              if (cors_panel_ != nullptr) cors_panel_->setSessionStatus(status);
+              if (phase_changed) {
+                appendLogLine(
+                    QDateTime::currentDateTime().toString(
+                        QStringLiteral("HH:mm:ss.zzz ")) +
+                    QStringLiteral(
+                        "CORS phase=%1 serviceProvider=%2 mountpoint=%3 "
+                        "endpoint=%4 error=%5")
+                        .arg(prism_viewer::cors::corsSessionPhaseName(
+                                 status.phase),
+                             provider, mountpoint, status.endpoint,
+                             status.error));
+              }
+              refreshControls();
+            });
+          });
+      appendLog(
+          QStringLiteral("CORS requested serviceProvider=%1 mountpoint=%2")
+              .arg(configuration.service_provider, configuration.mountpoint));
+    } catch (const std::exception& error) {
+      prism_viewer::cors::CorsSessionStatus status;
+      status.phase = prism_viewer::cors::CorsSessionPhase::Error;
+      status.error = QString::fromUtf8(error.what());
+      latest_cors_status_ = status;
+      cors_panel_->setSessionStatus(status);
+    }
+    refreshControls();
+  }
+
+  void stopCorsSession() {
+    if (cors_session_.active()) {
+      auto stopping = latest_cors_status_;
+      stopping.phase = prism_viewer::cors::CorsSessionPhase::Stopping;
+      cors_panel_->setSessionStatus(stopping);
+    }
+    cors_session_.stop();
+    latest_cors_status_ = {};
+    cors_panel_->setSessionStatus(latest_cors_status_);
+    appendLog(QStringLiteral("CORS session stopped"));
+    refreshControls();
+  }
+
   void startCameraEncodingOperation(
       std::optional<prism::DeviceConfiguration> requested) {
     if (!client_.isOpen()) {
@@ -3366,7 +3524,8 @@ class MainWindow : public QMainWindow {
     }
     if (camera_encoding_operation_running_) return;
     if (worker_running_ || time_sync_running_ || wifi_operation_running_ ||
-        camera_exposure_operation_running_ || upgrade_running_ ||
+        camera_exposure_operation_running_ || cors_session_.active() ||
+        upgrade_running_ ||
         client_.streamTransferActive()) {
       QMessageBox::warning(
           this,
@@ -3409,7 +3568,8 @@ class MainWindow : public QMainWindow {
           if (latest_device_info_valid_) {
             latest_device_info_.camera_fps =
                 static_cast<uint16_t>(configuration.camera_fps);
-            device_info_panel_->setInfo(latest_device_info_);
+            device_info_panel_->setInfo(
+                latest_device_info_, latest_time_sync_provider_);
             renderDeviceInfoStatus();
           }
           setStatusAppearance(false);
@@ -3531,14 +3691,16 @@ class MainWindow : public QMainWindow {
     try {
       prism::ExposureLimits limits;
       prism::ExposureConfiguration configuration;
-      if (request.apply) {
-        limits = client_.setCameraExposureLimits(request.limits);
-        configuration =
-            client_.setExposureConfiguration(request.configuration);
-      } else {
-        limits = client_.cameraExposureLimits();
-        configuration = client_.cameraExposure();
-      }
+      withClientIo([&]() {
+        if (request.apply) {
+          limits = client_.setCameraExposureLimits(request.limits);
+          configuration =
+              client_.setExposureConfiguration(request.configuration);
+        } else {
+          limits = client_.cameraExposureLimits();
+          configuration = client_.cameraExposure();
+        }
+      });
       publishCameraExposureResult(configuration, limits, request.apply);
     } catch (const std::exception& ex) {
       publishCameraExposureError(toQString(ex.what()));
@@ -3635,7 +3797,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
-        camera_encoding_operation_running_ ||
+        camera_encoding_operation_running_ || cors_session_.active() ||
         upgrade_running_ ||
         client_.streamTransferActive()) {
       QMessageBox::warning(
@@ -3825,6 +3987,7 @@ class MainWindow : public QMainWindow {
       const auto& hello = opened.hello;
       const auto& versions = opened.versions;
       const auto& device_info = opened.device_info;
+      const auto time_sync_provider = opened.time_sync_provider;
       const auto& configuration = opened.configuration;
       const auto& network = opened.network;
       const QString serial = wideToQString(opened.serial_number);
@@ -3844,7 +4007,7 @@ class MainWindow : public QMainWindow {
       appendLog(
           QStringLiteral(
               "DeviceInfo serial=%1 USB=%2 IMUs=%3 cameras=%4 "
-              "IMU-fps=%5 camera-fps=%6 WiFi=%7")
+              "IMU-fps=%5 camera-fps=%6 WiFi=%7 time-sync-provider=%8")
               .arg(toQString(device_info.product_serial))
               .arg(QString::fromLatin1(
                   prism_runtime::usbLinkSpeedName(device_info.usb_speed)))
@@ -3854,8 +4017,10 @@ class MainWindow : public QMainWindow {
               .arg(device_info.camera_fps)
               .arg(device_info.wifi.present
                        ? toQString(device_info.wifi.ssid)
-                       : QStringLiteral("not-present")));
-      updateDeviceInfo(device_info);
+                       : QStringLiteral("not-present"))
+              .arg(QString::fromLatin1(
+                  timeSyncProviderName(time_sync_provider))));
+      updateDeviceInfo(device_info, time_sync_provider);
       updateDeviceVersions(versions);
       camera_encoding_panel_->setConfiguration(configuration);
       camera_exposure_panel_->setCameraFps(configuration.camera_fps);
@@ -3899,6 +4064,12 @@ class MainWindow : public QMainWindow {
         camera_encoding_operation_running_) {
       return;
     }
+    if (latest_cors_status_.phase !=
+        prism_viewer::cors::CorsSessionPhase::Disconnected) {
+      stopCorsSession();
+    } else {
+      cors_session_.stop();
+    }
     if (worker_running_) {
       appendLog(QStringLiteral("Close requested; stopping active streams first"));
       stopWorker();
@@ -3907,10 +4078,11 @@ class MainWindow : public QMainWindow {
     }
     if (dataset_recorder_.isActive()) stopImuRecording();
     if (client_.isOpen()) {
-      client_.closeDevice();
+      withClientIo([this]() { client_.closeDevice(); });
       appendLog(QStringLiteral("USB device closed"));
     }
     latest_device_info_valid_ = false;
+    latest_time_sync_provider_ = TimeSyncProvider::Unsynced;
     latest_device_versions_valid_ = false;
     latest_rk_heartbeat_time_us_ = 0;
     requested_lidar_model_.store(
@@ -3926,6 +4098,7 @@ class MainWindow : public QMainWindow {
     setStatusAppearance(false);
     status_label_->setText(uiText("Device closed", "设备已关闭"));
     wifi_hotspot_panel_->setDeviceOpen(false);
+    cors_panel_->setDeviceOpen(false);
     if (lidar_point_cloud_widget_ != nullptr) {
       lidar_point_cloud_widget_->clearPoints();
     }
@@ -3943,16 +4116,18 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
-        camera_encoding_operation_running_ ||
+        camera_encoding_operation_running_ || cors_session_.active() ||
         upgrade_running_ ||
         client_.streamTransferActive()) {
       return;
     }
 
     try {
-      const auto info = client_.deviceInfo();
-      updateDeviceInfo(info);
-      appendLog(QStringLiteral("DeviceInfo refreshed"));
+      const auto status = readDeviceInfo(client_);
+      updateDeviceInfo(status.info, status.time_sync_provider);
+      appendLog(QStringLiteral("DeviceInfo refreshed; time-sync-provider=%1")
+                    .arg(QString::fromLatin1(
+                        timeSyncProviderName(status.time_sync_provider))));
     } catch (const std::exception& ex) {
       const QString error = QString::fromUtf8(ex.what());
       if (device_info_panel_ != nullptr) {
@@ -3969,7 +4144,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
-        camera_encoding_operation_running_ ||
+        camera_encoding_operation_running_ || cors_session_.active() ||
         upgrade_running_ ||
         client_.streamTransferActive()) {
       return;
@@ -4047,7 +4222,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
-        camera_encoding_operation_running_ ||
+        camera_encoding_operation_running_ || cors_session_.active() ||
         client_.streamTransferActive()) {
       QMessageBox::warning(
           this, uiText("Time synchronization unavailable", "无法进行时间同步"),
@@ -4445,7 +4620,7 @@ class MainWindow : public QMainWindow {
 
   void startSystemUpgrade() {
     if (worker_running_ || wifi_operation_running_ ||
-        camera_exposure_operation_running_ ||
+        camera_exposure_operation_running_ || cors_session_.active() ||
         camera_encoding_operation_running_ || !client_.isOpen()) {
       if (!client_.isOpen()) {
         showOpenDeviceHint(uiText("system upgrade", "系统升级"));
@@ -4664,6 +4839,7 @@ class MainWindow : public QMainWindow {
     const bool busy = running || time_syncing || wifi_busy || exposure_busy ||
                       encoding_busy || lidar_network_busy;
     const bool upgrading = upgrade_running_;
+    const bool cors_active = cors_session_.active();
     const bool device_open = client_.isOpen();
     const bool selection_valid = device_selector_->currentIndex() >= 0 &&
         device_selector_->currentIndex() < static_cast<int>(devices_.size());
@@ -4686,7 +4862,7 @@ class MainWindow : public QMainWindow {
           lidar_enabled_checkbox_->isChecked());
     }
     const bool lidar_network_controls_enabled =
-        device_open && !busy && !upgrading &&
+        device_open && !busy && !upgrading && !cors_active &&
         !client_.streamTransferActive();
     if (lidar_network_enabled_checkbox_ != nullptr) {
       lidar_network_enabled_checkbox_->setEnabled(
@@ -4708,13 +4884,18 @@ class MainWindow : public QMainWindow {
       wifi_hotspot_panel_->setDeviceOpen(device_open);
       wifi_hotspot_panel_->setControlsLocked(
           running || time_syncing || exposure_busy || encoding_busy ||
-          upgrading ||
+          upgrading || cors_active ||
           client_.streamTransferActive());
+    }
+    if (cors_panel_ != nullptr) {
+      cors_panel_->setEnabled(device_open);
+      cors_panel_->setDeviceOpen(device_open);
     }
     if (device_info_panel_ != nullptr) {
       device_info_panel_->setDeviceOpen(device_open);
       device_info_panel_->setControlsLocked(
-          busy || upgrading || client_.streamTransferActive());
+          busy || upgrading || cors_active ||
+          client_.streamTransferActive());
     }
     if (camera_exposure_panel_ != nullptr) {
       camera_exposure_panel_->setDeviceOpen(device_open);
@@ -4727,7 +4908,8 @@ class MainWindow : public QMainWindow {
       camera_encoding_panel_->setCaptureActive(
           running || client_.streamTransferActive());
       camera_encoding_panel_->setControlsLocked(
-          time_syncing || wifi_busy || exposure_busy || upgrading);
+          time_syncing || wifi_busy || exposure_busy || upgrading ||
+          cors_active);
     }
     const bool imu_available = device_open || hasDatasetImuPlayback();
     if (imu0_selector_ != nullptr) imu0_selector_->setEnabled(imu_available);
@@ -4739,8 +4921,10 @@ class MainWindow : public QMainWindow {
     start_button_->setEnabled(!busy && device_open);
     stop_button_->setEnabled(running);
     host_time_sync_button_->setEnabled(
-        !busy && device_open && !client_.streamTransferActive());
-    system_upgrade_button_->setEnabled(!busy && device_open);
+        !busy && device_open && !cors_active &&
+        !client_.streamTransferActive());
+    system_upgrade_button_->setEnabled(
+        !busy && device_open && !cors_active);
     const bool imu_recording = dataset_recorder_.isActive();
     if (imu_record_start_button_ != nullptr) {
       imu_record_start_button_->setEnabled(running && !imu_recording);
@@ -4925,7 +5109,7 @@ class MainWindow : public QMainWindow {
     }
     if (worker_running_ || time_sync_running_ || wifi_operation_running_ ||
         camera_exposure_operation_running_ ||
-        camera_encoding_operation_running_ ||
+        camera_encoding_operation_running_ || cors_session_.active() ||
         lidar_network_operation_running_ || upgrade_running_ ||
         client_.streamTransferActive()) {
       QMessageBox::warning(
@@ -5065,6 +5249,8 @@ class MainWindow : public QMainWindow {
                     .toString(
                         QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"));
     }
+    const QString provider =
+        timeSyncProviderText(latest_time_sync_provider_);
 
     QString text;
     QString style;
@@ -5075,37 +5261,41 @@ class MainWindow : public QMainWindow {
                     info.sensor_board_error_code))
               : toQString(info.sensor_board_error);
       text = uiText(
-                 "sensor-board transfer error: %1 | flags=0x%2 | RK %3",
-                 "sensor-board 传输错误：%1 | 标志=0x%2 | RK %3")
+                 "sensor-board transfer error: %1 | flags=0x%2 | "
+                 "provider: %3 | RK %4",
+                 "sensor-board 传输错误：%1 | 标志=0x%2 | 提供方：%3 | RK %4")
                  .arg(detail)
                  .arg(info.sensor_board_error_flags, 8, 16,
                       QLatin1Char('0'))
+                 .arg(provider)
                  .arg(rk_time);
       style = QStringLiteral(
           "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
     } else if (!info.sensor_board_online) {
-      text = uiText("Time sync: sensor-board offline | RK %1 | "
-                    "IMU0 %2 | IMU1 %3",
-                    "时间同步：sensor-board 离线 | RK %1 | "
-                    "IMU0 %2 | IMU1 %3")
-                 .arg(rk_time, imu_text(0), imu_text(1));
+      text = uiText("Time sync: sensor-board offline | provider: %1 | RK %2 | "
+                    "IMU0 %3 | IMU1 %4",
+                    "时间同步：sensor-board 离线 | 提供方：%1 | RK %2 | "
+                    "IMU0 %3 | IMU1 %4")
+                 .arg(provider, rk_time, imu_text(0), imu_text(1));
       style = QStringLiteral(
           "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
     } else if (!info.sensor_board_time_synced) {
-      text = uiText("Time sync: UNSYNCED | RK %1 | waiting for GPS/NMEA + PPS | "
-                    "IMU0 %2 | IMU1 %3",
-                    "时间同步：未同步 | RK %1 | 等待 GPS/NMEA + PPS | "
-                    "IMU0 %2 | IMU1 %3")
-                 .arg(rk_time, imu_text(0), imu_text(1));
+      text = uiText("Time sync: UNSYNCED | provider: %1 | RK %2 | "
+                    "waiting for GPS/NMEA + PPS | IMU0 %3 | IMU1 %4",
+                    "时间同步：未同步 | 提供方：%1 | RK %2 | "
+                    "等待 GPS/NMEA + PPS | IMU0 %3 | IMU1 %4")
+                 .arg(provider, rk_time, imu_text(0), imu_text(1));
       style = QStringLiteral(
           "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
     } else {
-      text = uiText("Time sync: SYNCED | RK %1 | IMU0 %2 | IMU1 %3",
-                    "时间同步：已同步 | RK %1 | IMU0 %2 | IMU1 %3")
-                 .arg(rk_time, imu_text(0), imu_text(1));
+      text = uiText("Time sync: SYNCED | provider: %1 | RK %2 | "
+                    "IMU0 %3 | IMU1 %4",
+                    "时间同步：已同步 | 提供方：%1 | RK %2 | "
+                    "IMU0 %3 | IMU1 %4")
+                 .arg(provider, rk_time, imu_text(0), imu_text(1));
       style = QStringLiteral(
           "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
@@ -5116,7 +5306,7 @@ class MainWindow : public QMainWindow {
         QStringLiteral(
             "DeviceInfo: product=%1 USB=%2 IMUs=%3 mask=0x%4 "
             "cameras=%5 mask=0x%6 IMU-fps=%7 camera-fps=%8 "
-            "sensor-board-error=0x%9")
+            "sensor-board-error=0x%9 time-sync-provider=%10")
             .arg(toQString(info.product_serial))
             .arg(QString::fromLatin1(
                 prism_runtime::usbLinkSpeedName(info.usb_speed)))
@@ -5127,15 +5317,18 @@ class MainWindow : public QMainWindow {
             .arg(info.imu_fps)
             .arg(info.camera_fps)
             .arg(info.sensor_board_error_flags, 8, 16,
-                 QLatin1Char('0')));
+                 QLatin1Char('0'))
+            .arg(provider));
   }
 
-  void updateDeviceInfo(const prism::DeviceInfo& info) {
-    post([this, info]() {
+  void updateDeviceInfo(const prism::DeviceInfo& info,
+                        TimeSyncProvider time_sync_provider) {
+    post([this, info, time_sync_provider]() {
       latest_device_info_ = info;
+      latest_time_sync_provider_ = time_sync_provider;
       latest_device_info_valid_ = true;
       if (device_info_panel_ != nullptr) {
-        device_info_panel_->setInfo(info);
+        device_info_panel_->setInfo(info, time_sync_provider);
       }
       renderDeviceInfoStatus();
     });
@@ -6751,10 +6944,12 @@ class MainWindow : public QMainWindow {
       while (!stop_requested_ && !sensor_board_link_ready) {
         processPendingCameraExposureOperation();
         try {
-          const auto info = client_.deviceInfo();
+          const auto status =
+              withClientIo([this]() { return readDeviceInfo(client_); });
+          const auto& info = status.info;
           capture_device_info = info;
           capture_device_info_at = std::chrono::steady_clock::now();
-          updateDeviceInfo(info);
+          updateDeviceInfo(info, status.time_sync_provider);
           sensor_board_link_ready = info.sensor_board_online;
         } catch (const std::exception&) {
         }
@@ -6788,7 +6983,8 @@ class MainWindow : public QMainWindow {
        * camera_fps selected in the Stream panel.
        */
       aggregate_stream_start_attempted = true;
-      const auto status = client_.startVideo1280x1024();
+      const auto status = withClientIo(
+          [this]() { return client_.startVideo1280x1024(); });
       video_started = true;
       appendLog(QStringLiteral("Video started cameras=%1 fps=%2 size=%3x%4")
                     .arg(status.cameras)
@@ -6841,7 +7037,9 @@ class MainWindow : public QMainWindow {
              * Return flow-control credit once the four JPEGs and their exact
              * per-frame metadata are both available in memory.
              */
-            client_.sendVideoAck(completed.frame_id);
+            withClientIo([this, &completed]() {
+              client_.sendVideoAck(completed.frame_id);
+            });
             if (received_at >= next_camera_status_post) {
               next_camera_status_post =
                   received_at + kCameraStatusUiPeriod;
@@ -7068,12 +7266,12 @@ class MainWindow : public QMainWindow {
             dataset_recorder_.appendLidarImu(sample);
           });
       try {
-        imu_stream.start();
+        withClientIo([&imu_stream]() { imu_stream.start(); });
       } catch (...) {
         if (video_started) {
           try {
             aggregate_stream_stop_attempted = true;
-            client_.stopVideo();
+            withClientIo([this]() { client_.stopVideo(); });
             video_started = false;
           } catch (const std::exception& stop_error) {
             appendLog(QStringLiteral(
@@ -7086,8 +7284,11 @@ class MainWindow : public QMainWindow {
       appendLog(QStringLiteral("IMU started through agent SDK ImuStream"));
       if (requested_lidar_model != prism::LidarModel::None) {
         try {
-          lidar_stream.start(requested_lidar_model);
-          updateLidarStatus(client_.lidarStatus());
+          withClientIo([&lidar_stream, requested_lidar_model]() {
+            lidar_stream.start(requested_lidar_model);
+          });
+          updateLidarStatus(withClientIo(
+              [this]() { return client_.lidarStatus(); }));
           appendLog(QStringLiteral("LiDAR started model=%1")
                         .arg(requested_lidar_model == prism::LidarModel::Mid360
                                  ? QStringLiteral("Mid-360")
@@ -7095,7 +7296,7 @@ class MainWindow : public QMainWindow {
         } catch (...) {
           try {
             aggregate_stream_stop_attempted = true;
-            imu_stream.stop();
+            withClientIo([&imu_stream]() { imu_stream.stop(); });
             video_started = false;
           } catch (const std::exception& stop_error) {
             appendLog(QStringLiteral(
@@ -7113,6 +7314,18 @@ class MainWindow : public QMainWindow {
       last_video_chunk_at = capture_started_at;
       auto next_device_info_query =
           capture_started_at + std::chrono::milliseconds(500);
+      uint64_t accounted_cors_command_time_us =
+          cors_usb_command_time_us_.load(std::memory_order_acquire);
+      const auto compensateCorsUsbCommandTime = [&]() {
+        const uint64_t current =
+            cors_usb_command_time_us_.load(std::memory_order_acquire);
+        const uint64_t delta = current - accounted_cors_command_time_us;
+        if (delta != 0u) {
+          last_completed_camera_frame_set_at +=
+              std::chrono::microseconds(delta);
+          accounted_cors_command_time_us = current;
+        }
+      };
       appendLog(QStringLiteral(
                     "Camera frame-set progress watchdog armed: timeout=%1 ms; "
                     "only complete four-camera frame sets count as progress")
@@ -7121,6 +7334,8 @@ class MainWindow : public QMainWindow {
                              .count()));
       auto throwIfCameraFrameSetProgressStalled =
           [&](std::chrono::steady_clock::time_point now) {
+            compensateCorsUsbCommandTime();
+            now = std::chrono::steady_clock::now();
             const auto camera_progress_age =
                 now - last_completed_camera_frame_set_at;
             if (camera_progress_age < kCameraFrameSetProgressTimeout) return;
@@ -7180,6 +7395,7 @@ class MainWindow : public QMainWindow {
       std::exception_ptr capture_error;
       try {
         while (!stop_requested_) {
+          compensateCorsUsbCommandTime();
           /*
            * SDK commands synchronously consume the shared USB IN endpoint and
            * defer stream frames until the command response arrives. Exclude
@@ -7238,10 +7454,12 @@ class MainWindow : public QMainWindow {
               camera_progress_age < kCameraControlCommandFreshnessLimit) {
             const auto query_started_at = std::chrono::steady_clock::now();
             try {
-              const auto info = client_.deviceInfo();
+              const auto status =
+                  withClientIo([this]() { return readDeviceInfo(client_); });
+              const auto& info = status.info;
               capture_device_info = info;
               capture_device_info_at = std::chrono::steady_clock::now();
-              updateDeviceInfo(info);
+              updateDeviceInfo(info, status.time_sync_provider);
               if (!info.sensor_board_online) {
                 appendLog(QStringLiteral(
                     "DeviceInfo reports sensor-board offline; stopping camera "
@@ -7254,7 +7472,8 @@ class MainWindow : public QMainWindow {
               }
               if (requested_lidar_model != prism::LidarModel::None) {
                 try {
-                  updateLidarStatus(client_.lidarStatus());
+                  updateLidarStatus(withClientIo(
+                      [this]() { return client_.lidarStatus(); }));
                 } catch (const std::exception& lidar_error) {
                   appendLog(QStringLiteral("LiDAR status refresh failed: %1")
                                 .arg(lidar_error.what()));
@@ -7274,7 +7493,10 @@ class MainWindow : public QMainWindow {
 
           prism::Frame frame;
           try {
-            frame = client_.readFrame(1000);
+            frame = withClientIo([this]() {
+              return client_.readFrame(
+                  cors_session_.active() ? 100u : 1000u);
+            });
           } catch (const std::exception& ex) {
             ++consecutive_usb_read_errors;
             if (consecutive_usb_read_errors == 1) {
@@ -7322,7 +7544,9 @@ class MainWindow : public QMainWindow {
                * credit even when one camera image is corrupt or incomplete.
                * The assembler emits every retired ID exactly once.
                */
-              client_.sendVideoAck(discarded);
+              withClientIo([this, discarded]() {
+                client_.sendVideoAck(discarded);
+              });
             }
             if (!result.completed.has_value()) continue;
             handleCompletedCameraFrame(std::move(*result.completed));
@@ -7347,14 +7571,14 @@ class MainWindow : public QMainWindow {
 
       std::exception_ptr lidar_stop_error;
       try {
-        lidar_stream.stop();
+        withClientIo([&lidar_stream]() { lidar_stream.stop(); });
       } catch (...) {
         lidar_stop_error = std::current_exception();
       }
       std::exception_ptr stop_error;
       aggregate_stream_stop_attempted = true;
       try {
-        imu_stream.stop();
+        withClientIo([&imu_stream]() { imu_stream.stop(); });
         // IMU_STOP is the aggregate Camera + IMU stop transaction.
         video_started = false;
       } catch (...) {
@@ -7399,7 +7623,7 @@ class MainWindow : public QMainWindow {
           !aggregate_stream_stop_attempted && client_.isOpen()) {
         aggregate_stream_stop_attempted = true;
         try {
-          client_.stopVideo();
+          withClientIo([this]() { client_.stopVideo(); });
           appendLog(QStringLiteral(
               "Capture error rollback stopped camera and IMU streams"));
         } catch (const std::exception& stop_error) {
@@ -7409,7 +7633,8 @@ class MainWindow : public QMainWindow {
         }
       }
       if (aggregate_stream_start_attempted && client_.isOpen()) {
-        client_.closeDevice();
+        cors_session_.requestStop();
+        withClientIo([this]() { client_.closeDevice(); });
         appendLog(camera_progress_stalled
                       ? QStringLiteral(
                             "USB session closed after camera frame-set stall "
@@ -7427,6 +7652,7 @@ class MainWindow : public QMainWindow {
           camera_encoding_panel_->setDeviceOpen(false);
           camera_exposure_panel_->setDeviceOpen(false);
           wifi_hotspot_panel_->setDeviceOpen(false);
+          cors_panel_->setDeviceOpen(false);
           time_sync_label_->setText(
               uiText("Time sync: device closed", "时间同步：设备已关闭"));
           host_time_sync_label_->setText(uiText(
@@ -7485,6 +7711,7 @@ class MainWindow : public QMainWindow {
   QLabel* lidar_network_status_label_ = nullptr;
   prism_viewer::LidarPointCloudWidget* lidar_point_cloud_widget_ = nullptr;
   WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
+  CorsPanel* cors_panel_ = nullptr;
   QWidget* dataset_page_ = nullptr;
   std::array<ImageViewLabel*, 4> image_labels_{};
   std::array<QLabel*, 4> frame_labels_{};
@@ -7556,6 +7783,9 @@ class MainWindow : public QMainWindow {
   QString recorded_dataset_root_;
 
   prism_viewer::control::OperationController operation_controller_;
+  prism_viewer::cors::CorsSession cors_session_;
+  std::mutex client_io_mutex_;
+  std::atomic<uint64_t> cors_usb_command_time_us_{0};
   std::array<std::thread, 2> camera_preview_workers_;
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> worker_running_{false};
@@ -7606,6 +7836,9 @@ class MainWindow : public QMainWindow {
   TemperatureUnit temperature_unit_ =
       prism_viewer::imu_units::kDefaultTemperatureUnit;
   prism::DeviceInfo latest_device_info_;
+  TimeSyncProvider latest_time_sync_provider_ =
+      TimeSyncProvider::Unsynced;
+  prism_viewer::cors::CorsSessionStatus latest_cors_status_;
   prism::DeviceVersions latest_device_versions_;
   uint64_t latest_rk_heartbeat_time_us_ = 0;
   bool latest_device_info_valid_ = false;

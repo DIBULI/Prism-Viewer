@@ -1,5 +1,6 @@
 #pragma once
 
+#include "communication/device_info_compat.hpp"
 #include "communication/prism_runtime.hpp"
 
 #include <cstddef>
@@ -11,6 +12,7 @@ struct OpenedDevice {
   prism::HelloInfo hello;
   prism::DeviceVersions versions;
   prism::DeviceInfo device_info;
+  TimeSyncProvider time_sync_provider = TimeSyncProvider::Unsynced;
   prism::DeviceConfiguration configuration;
   prism::ExposureConfiguration exposure;
   prism::ExposureLimits exposure_limits;

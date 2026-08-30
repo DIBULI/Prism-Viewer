@@ -1,5 +1,6 @@
 #pragma once
 
+#include "communication/device_info_compat.hpp"
 #include "prism/usb/common.hpp"
 
 #include <QtCore/QString>
@@ -23,7 +24,8 @@ class DeviceInfoPanel final : public QWidget {
   void clear();
   void setDeviceOpen(bool open);
   void setControlsLocked(bool locked);
-  void setInfo(const prism::DeviceInfo& info);
+  void setInfo(const prism::DeviceInfo& info,
+               communication::TimeSyncProvider time_sync_provider);
   void setVersions(const prism::DeviceVersions& versions);
   void setError(const QString& error);
   void setVersionError(const QString& error);
@@ -40,6 +42,8 @@ class DeviceInfoPanel final : public QWidget {
   QPushButton* version_refresh_button_ = nullptr;
 
   prism::DeviceInfo info_;
+  communication::TimeSyncProvider time_sync_provider_ =
+      communication::TimeSyncProvider::Unsynced;
   prism::DeviceVersions versions_;
   bool device_open_ = false;
   bool controls_locked_ = false;

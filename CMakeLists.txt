@@ -134,11 +134,11 @@ if(APPLE AND NOT EXISTS "${PRISM_USB_SDK_LIBUSB_LICENSE}")
     "Bundled libusb license is missing: ${PRISM_USB_SDK_LIBUSB_LICENSE}")
 endif()
 
-find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql)
+find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql Network)
 if(Qt6_FOUND)
   set(QT_PACKAGE Qt6)
 else()
-  find_package(Qt5 REQUIRED COMPONENTS Widgets Charts Sql)
+  find_package(Qt5 REQUIRED COMPONENTS Widgets Charts Sql Network)
   set(QT_PACKAGE Qt5)
 endif()
 find_package(Threads REQUIRED)
@@ -172,8 +172,12 @@ target_compile_features(prism-viewer-imu-units PUBLIC cxx_std_17)
 add_executable(prism-viewer
   resources/prism.qrc
   src/common/ui_text.cpp
+  src/communication/device_info_compat.cpp
   src/communication/device_session.cpp
   src/communication/prism_runtime.cpp
+  src/communication/rtk_corrections.cpp
+  src/cors/cors_config.cpp
+  src/cors/cors_session.cpp
   src/control/operation_controller.cpp
   src/dataset/dataset_browser.cpp
   src/dataset/dataset_playback.cpp
@@ -184,6 +188,7 @@ add_executable(prism-viewer
   src/ui/camera_zoom_dialog.cpp
   src/ui/camera_encoding_panel.cpp
   src/ui/camera_exposure_panel.cpp
+  src/ui/cors_panel.cpp
   src/ui/device_info_panel.cpp
   src/ui/image_view_label.cpp
   src/ui/lidar_point_cloud_widget.cpp
@@ -215,6 +220,7 @@ target_link_libraries(prism-viewer PRIVATE
   ${QT_PACKAGE}::Widgets
   ${QT_PACKAGE}::Charts
   ${QT_PACKAGE}::Sql
+  ${QT_PACKAGE}::Network
 )
 
 # Keep dynamic SDK runtimes in the platform's loader-visible application
@@ -362,6 +368,53 @@ if(BUILD_TESTING)
   target_compile_features(imu-units-test PRIVATE cxx_std_17)
   target_link_libraries(imu-units-test PRIVATE prism-viewer-imu-units)
   add_test(NAME imu-units COMMAND imu-units-test)
+
+  add_executable(cors-config-test
+    src/cors/cors_config.cpp
+    tests/cors_config_test.cpp
+  )
+  target_include_directories(cors-config-test PRIVATE src)
+  target_compile_features(cors-config-test PRIVATE cxx_std_17)
+  target_link_libraries(cors-config-test PRIVATE ${QT_PACKAGE}::Core)
+  if(MSVC)
+    target_compile_options(cors-config-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(cors-config-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME cors-config COMMAND cors-config-test)
+  add_executable(rtk-corrections-test
+    src/communication/rtk_corrections.cpp
+    tests/rtk_corrections_test.cpp
+  )
+  target_include_directories(rtk-corrections-test PRIVATE src)
+  target_compile_features(rtk-corrections-test PRIVATE cxx_std_17)
+  target_link_libraries(rtk-corrections-test PRIVATE prism-viewer-sdk)
+  if(MSVC)
+    target_compile_options(
+      rtk-corrections-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(
+      rtk-corrections-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME rtk-corrections COMMAND rtk-corrections-test)
+
+  add_executable(device-info-compat-test
+    src/communication/device_info_compat.cpp
+    src/communication/prism_runtime.cpp
+    tests/device_info_compat_test.cpp
+  )
+  target_include_directories(device-info-compat-test PRIVATE src)
+  target_compile_features(device-info-compat-test PRIVATE cxx_std_17)
+  target_link_libraries(device-info-compat-test PRIVATE prism-viewer-sdk)
+  if(MSVC)
+    target_compile_options(
+      device-info-compat-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(
+      device-info-compat-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME device-info-compat COMMAND device-info-compat-test)
+
 
   add_executable(imu-timestamp-policy-test
     tests/imu_timestamp_policy_test.cpp
@@ -526,6 +579,29 @@ if(BUILD_TESTING)
   add_test(NAME camera-exposure-panel COMMAND camera-exposure-panel-test)
   if(UNIX)
     set_tests_properties(camera-exposure-panel PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+  endif()
+
+  add_executable(cors-panel-test
+    src/common/ui_text.cpp
+    src/communication/rtk_corrections.cpp
+    src/cors/cors_config.cpp
+    src/cors/cors_session.cpp
+    src/ui/cors_panel.cpp
+    tests/cors_panel_test.cpp
+  )
+  target_include_directories(cors-panel-test PRIVATE src)
+  target_compile_features(cors-panel-test PRIVATE cxx_std_17)
+  target_link_libraries(cors-panel-test PRIVATE
+    prism-viewer-sdk
+    ${QT_PACKAGE}::Widgets
+    ${QT_PACKAGE}::Network
+    Threads::Threads
+  )
+  add_test(NAME cors-panel COMMAND cors-panel-test)
+  if(UNIX)
+    set_tests_properties(cors-panel PROPERTIES
       ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
   endif()
