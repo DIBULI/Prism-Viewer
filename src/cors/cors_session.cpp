@@ -220,8 +220,12 @@ void CorsSession::workerMain(CorsConfiguration configuration,
                (pending.size() >= kMaximumCorrectionBatchBytes ||
                 flush_timer.elapsed() >= kCorrectionFlushMs ||
                 socket_closed)) {
+          // QByteArray::size() is qsizetype in Qt 6 and int in older Qt.
+          // Narrow only after proving the value fits the bounded batch.
           const int chunk_size =
-              std::min(pending.size(), kMaximumCorrectionBatchBytes);
+              pending.size() < kMaximumCorrectionBatchBytes
+                  ? static_cast<int>(pending.size())
+                  : kMaximumCorrectionBatchBytes;
           const QByteArray chunk = pending.left(chunk_size);
           pending.remove(0, chunk_size);
           status.rtk_status = transport.send(
