@@ -1,6 +1,8 @@
 #include "communication/rtk_corrections.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -10,8 +12,10 @@ namespace {
 constexpr uint16_t kProtocolVersion = 1u;
 constexpr size_t kBeginPayloadSize = 8u;
 constexpr size_t kStatusPayloadSize = 88u;
+constexpr size_t kNavigationStatusPayloadSize = 168u;
 constexpr size_t kMaximumChunkSize = 16u * 1024u;
 constexpr uint32_t kKnownFlags = 0x7fu;
+constexpr uint32_t kKnownNavigationFlags = 0x0fu;
 
 constexpr auto kBeginFrame = static_cast<prism::FrameType>(0x17);
 constexpr auto kDataFrame = static_cast<prism::FrameType>(0x18);
@@ -19,6 +23,9 @@ constexpr auto kEndFrame = static_cast<prism::FrameType>(0x19);
 constexpr auto kStatusFrame = static_cast<prism::FrameType>(0x1a);
 constexpr auto kStatusResponseFrame =
     static_cast<prism::FrameType>(0x95);
+constexpr auto kNavigationStatusFrame = static_cast<prism::FrameType>(0x1b);
+constexpr auto kNavigationStatusResponseFrame =
+    static_cast<prism::FrameType>(0x96);
 
 uint16_t readLe16(const std::vector<uint8_t>& bytes, size_t offset) {
   return static_cast<uint16_t>(bytes.at(offset)) |
@@ -38,6 +45,15 @@ uint64_t readLe64(const std::vector<uint8_t>& bytes, size_t offset) {
     value |= static_cast<uint64_t>(bytes.at(offset + index))
              << (index * 8u);
   }
+  return value;
+}
+
+double readLeDouble(const std::vector<uint8_t>& bytes, size_t offset) {
+  const uint64_t bits = readLe64(bytes, offset);
+  double value = 0.0;
+  static_assert(sizeof(value) == sizeof(bits),
+                "wire double must be IEEE-754 binary64");
+  std::memcpy(&value, &bits, sizeof(value));
   return value;
 }
 
@@ -158,6 +174,98 @@ RtkCorrectionStatus queryRtkCorrectionStatus(
       sendCommand(client, kStatusFrame, {}, 3000));
 }
 
+RtkNavigationStatus parseRtkNavigationStatus(const prism::Frame& frame) {
+  if (frame.type != kNavigationStatusResponseFrame ||
+      frame.payload.size() != kNavigationStatusPayloadSize ||
+      readLe16(frame.payload, 0) != kProtocolVersion ||
+      readLe16(frame.payload, 2) != kNavigationStatusPayloadSize) {
+    throw std::runtime_error("not an RTK navigation status response");
+  }
+
+  RtkNavigationStatus status;
+  status.version = readLe16(frame.payload, 0);
+  status.flags = readLe32(frame.payload, 4);
+  if ((status.flags & ~kKnownNavigationFlags) != 0u) {
+    throw std::runtime_error("unknown RTK navigation status flags");
+  }
+  status.error_code = static_cast<int32_t>(readLe32(frame.payload, 8));
+  status.base_source =
+      static_cast<RtkBaseSource>(readLe16(frame.payload, 12));
+  status.solution = static_cast<RtkSolution>(readLe16(frame.payload, 14));
+  status.confidence =
+      static_cast<RtkConfidence>(readLe16(frame.payload, 16));
+  status.satellites = readLe16(frame.payload, 18);
+  status.confidence_score = readLe16(frame.payload, 20);
+  if (readLe16(frame.payload, 22) != 0u) {
+    throw std::runtime_error("RTK navigation reserved field is non-zero");
+  }
+  status.confidence_reasons = readLe32(frame.payload, 24);
+  status.base_station_id = static_cast<int32_t>(readLe32(frame.payload, 28));
+  status.consecutive_fix_epochs = readLe32(frame.payload, 32);
+  status.consecutive_float_epochs = readLe32(frame.payload, 36);
+  status.solution_epoch_us = static_cast<int64_t>(readLe64(frame.payload, 40));
+  status.latitude_deg = readLeDouble(frame.payload, 48);
+  status.longitude_deg = readLeDouble(frame.payload, 56);
+  status.ellipsoidal_height_m = readLeDouble(frame.payload, 64);
+  status.east_std_m = readLeDouble(frame.payload, 72);
+  status.north_std_m = readLeDouble(frame.payload, 80);
+  status.up_std_m = readLeDouble(frame.payload, 88);
+  status.differential_age_s = readLeDouble(frame.payload, 96);
+  status.ambiguity_ratio = readLeDouble(frame.payload, 104);
+  status.position_jump_m = readLeDouble(frame.payload, 112);
+  status.solution_count = readLe64(frame.payload, 120);
+  status.fix_count = readLe64(frame.payload, 128);
+  status.float_count = readLe64(frame.payload, 136);
+  status.rover_observation_epochs = readLe64(frame.payload, 144);
+  status.base_observation_epochs = readLe64(frame.payload, 152);
+  status.decoder_errors = readLe64(frame.payload, 160);
+  status.solution_valid = (status.flags & (1u << 0u)) != 0u;
+  status.base_position_valid = (status.flags & (1u << 1u)) != 0u;
+  status.confidence_valid = (status.flags & (1u << 2u)) != 0u;
+  status.position_jump_valid = (status.flags & (1u << 3u)) != 0u;
+
+  if (status.base_source < RtkBaseSource::None ||
+      status.base_source > RtkBaseSource::Ntrip ||
+      status.solution < RtkSolution::None ||
+      status.solution > RtkSolution::Ppp ||
+      status.confidence < RtkConfidence::Unavailable ||
+      status.confidence > RtkConfidence::High ||
+      status.confidence_score > 1000u) {
+    throw std::runtime_error("invalid RTK navigation enum or confidence");
+  }
+  if (status.solution_valid) {
+    const bool finite =
+        std::isfinite(status.latitude_deg) &&
+        std::isfinite(status.longitude_deg) &&
+        std::isfinite(status.ellipsoidal_height_m) &&
+        std::isfinite(status.east_std_m) &&
+        std::isfinite(status.north_std_m) &&
+        std::isfinite(status.up_std_m) &&
+        std::isfinite(status.differential_age_s) &&
+        std::isfinite(status.ambiguity_ratio) &&
+        (!status.position_jump_valid || std::isfinite(status.position_jump_m));
+    if (!finite || status.solution == RtkSolution::None ||
+        status.solution_epoch_us <= 0 || status.latitude_deg < -90.0 ||
+        status.latitude_deg > 90.0 || status.longitude_deg < -180.0 ||
+        status.longitude_deg > 180.0 || status.east_std_m < 0.0 ||
+        status.north_std_m < 0.0 || status.up_std_m < 0.0 ||
+        status.differential_age_s < 0.0 || status.ambiguity_ratio < 0.0) {
+      throw std::runtime_error("invalid RTK navigation solution values");
+    }
+  }
+  if (status.confidence_valid &&
+      status.confidence == RtkConfidence::Unavailable) {
+    throw std::runtime_error("RTK confidence validity is inconsistent");
+  }
+  return status;
+}
+
+RtkNavigationStatus queryRtkNavigationStatus(
+    prism_runtime::Client& client) {
+  return parseRtkNavigationStatus(
+      sendCommand(client, kNavigationStatusFrame, {}, 3000));
+}
+
 const char* rtkSolutionName(RtkSolution solution) {
   switch (solution) {
     case RtkSolution::None: return "none";
@@ -176,6 +284,16 @@ const char* rtkBaseSourceName(RtkBaseSource source) {
     case RtkBaseSource::HostCors: return "Host CORS";
     case RtkBaseSource::LocalSocket: return "local socket";
     case RtkBaseSource::Ntrip: return "Agent NTRIP";
+  }
+  return "unknown";
+}
+
+const char* rtkConfidenceName(RtkConfidence confidence) {
+  switch (confidence) {
+    case RtkConfidence::Unavailable: return "unavailable";
+    case RtkConfidence::Low: return "low";
+    case RtkConfidence::Medium: return "medium";
+    case RtkConfidence::High: return "high";
   }
   return "unknown";
 }

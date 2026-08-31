@@ -110,6 +110,42 @@ std::optional<uint64_t> decimalValue(const std::string& text) {
   }
 }
 
+std::vector<std::string> splitCsv(const std::string& line) {
+  std::vector<std::string> fields;
+  std::istringstream input(line);
+  for (std::string field; std::getline(input, field, ',');) {
+    fields.push_back(std::move(field));
+  }
+  if (!line.empty() && line.back() == ',') fields.emplace_back();
+  return fields;
+}
+
+bool signedDecimalValue(const std::string& text, int64_t* value) {
+  if (text.empty() || value == nullptr) return false;
+  size_t consumed = 0;
+  try {
+    const int64_t parsed = std::stoll(text, &consumed, 10);
+    if (consumed != text.size()) return false;
+    *value = parsed;
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
+bool finiteDecimalValue(const std::string& text, double* value) {
+  if (text.empty() || value == nullptr) return false;
+  size_t consumed = 0;
+  try {
+    const double parsed = std::stod(text, &consumed);
+    if (consumed != text.size() || !std::isfinite(parsed)) return false;
+    *value = parsed;
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
 void analyzeTimestamps(const std::string& file,
                        const std::vector<TimestampRow>& rows,
                        bool regular_cadence,
@@ -447,6 +483,24 @@ TumFileSummary summarizeTumFile(const std::filesystem::path& path) {
   return summary;
 }
 
+TumFileSummary summarizeGpsRtkFile(const std::filesystem::path& path) {
+  TumFileSummary summary;
+  std::ifstream input(path);
+  for (std::string line; std::getline(input, line);) {
+    if (line.empty() || line.front() == '#' ||
+        line.rfind("host_receive_unix_us,", 0u) == 0u) {
+      continue;
+    }
+    const size_t separator = line.find(',');
+    const auto timestamp = decimalValue(line.substr(0, separator));
+    if (!timestamp) continue;
+    if (summary.rows == 0u) summary.first_timestamp_us = *timestamp;
+    summary.last_timestamp_us = *timestamp;
+    ++summary.rows;
+  }
+  return summary;
+}
+
 DatasetValidationResult validatePrismDatasetImpl(
     const std::filesystem::path& root,
     const DatasetValidationProgressCallback& progress,
@@ -526,6 +580,18 @@ DatasetValidationResult validatePrismDatasetImpl(
           addIssue(&result, DatasetValidationSeverity::Error, "dataset.info",
                    0, name + " declares " + found->second +
                           " but the indexes contain " +
+                          std::to_string(actual));
+        }
+      };
+  const auto checkOptionalManifestCount =
+      [&manifest, &result](const std::string& name, uint64_t actual) {
+        const auto found = manifest.find(name);
+        if (found == manifest.end()) return;
+        const auto declared = decimalValue(found->second);
+        if (!declared || *declared != actual) {
+          addIssue(&result, DatasetValidationSeverity::Error, "dataset.info",
+                   0, name + " declares " + found->second +
+                          " but gps_rtk.csv contains " +
                           std::to_string(actual));
         }
       };
@@ -908,6 +974,138 @@ DatasetValidationResult validatePrismDatasetImpl(
     checkManifestCount("lidar_imu_samples", result.lidar_imu.rows);
   } else {
     checkManifestCount("lidar_imu_samples", 0u);
+  }
+
+  const std::filesystem::path gps_rtk_path = root / "gps_rtk.csv";
+  result.gps_rtk_present = std::filesystem::is_regular_file(gps_rtk_path);
+  const bool gps_manifest_present =
+      manifest.find("gps_rtk_storage") != manifest.end();
+  if (gps_manifest_present) {
+    if (field("gps_rtk_storage") != "csv-v1" ||
+        !result.gps_rtk_present) {
+      addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
+               "GPS/RTK file does not match the manifest declaration");
+    }
+  } else if (result.gps_rtk_present && strict_v6) {
+    addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
+             "v6 dataset with gps_rtk.csv is missing gps_rtk_storage");
+  }
+  if (result.gps_rtk_present) {
+    std::ifstream input(gps_rtk_path);
+    std::vector<TimestampRow> timestamps;
+    uint64_t line_number = 0;
+    bool header_seen = false;
+    for (std::string line; std::getline(input, line);) {
+      ++line_number;
+      if (line.empty() || line.front() == '#') continue;
+      if (!header_seen) {
+        header_seen = true;
+        if (line.rfind("host_receive_unix_us,navigation_valid,", 0u) != 0u) {
+          addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv",
+                   line_number, "unsupported GPS/RTK CSV header");
+        }
+        continue;
+      }
+      if (checkCancelled(cancelled, &result)) return result;
+      const std::vector<std::string> columns = splitCsv(line);
+      if (columns.size() != 41u) {
+        addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv",
+                 line_number, "GPS/RTK row must contain 41 columns");
+        continue;
+      }
+      std::array<std::optional<uint64_t>, 26> unsigned_values;
+      const std::array<size_t, 26> unsigned_columns = {
+          0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u, 16u, 19u, 21u, 22u, 23u,
+          26u, 27u, 28u, 29u, 30u, 31u, 32u, 33u, 34u, 35u, 36u, 37u,
+          38u};
+      bool numeric_ok = true;
+      for (size_t index = 0; index < unsigned_columns.size(); ++index) {
+        unsigned_values[index] = decimalValue(columns[unsigned_columns[index]]);
+        numeric_ok = numeric_ok && unsigned_values[index].has_value();
+      }
+      int64_t base_station_id = 0;
+      int64_t correction_error = 0;
+      int64_t navigation_error = 0;
+      numeric_ok = numeric_ok &&
+                   signedDecimalValue(columns[25], &base_station_id) &&
+                   signedDecimalValue(columns[39], &correction_error) &&
+                   signedDecimalValue(columns[40], &navigation_error);
+      std::array<double, 9> measurements{};
+      const std::array<size_t, 9> measurement_columns = {
+          10u, 11u, 12u, 13u, 14u, 15u, 17u, 18u, 20u};
+      for (size_t index = 0; index < measurement_columns.size(); ++index) {
+        numeric_ok = numeric_ok && finiteDecimalValue(
+            columns[measurement_columns[index]], &measurements[index]);
+      }
+      if (!numeric_ok) {
+        addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv",
+                 line_number, "GPS/RTK row contains an invalid number");
+        continue;
+      }
+      const uint64_t host_timestamp_us = *unsigned_values[0];
+      const uint64_t navigation_valid = *unsigned_values[1];
+      const uint64_t solution_epoch_us = *unsigned_values[2];
+      const uint64_t solution = *unsigned_values[3];
+      const uint64_t confidence_valid = *unsigned_values[4];
+      const uint64_t confidence = *unsigned_values[5];
+      const uint64_t confidence_score = *unsigned_values[6];
+      const uint64_t satellites = *unsigned_values[8];
+      const uint64_t position_jump_valid = *unsigned_values[9];
+      const uint64_t base_source = *unsigned_values[12];
+      const uint64_t base_position_valid = *unsigned_values[13];
+      const uint64_t host_active = *unsigned_values[14];
+      const uint64_t ntrip_connected = *unsigned_values[15];
+      if (host_timestamp_us < kMinimumRkClockRealtimeUs ||
+          navigation_valid > 1u || confidence_valid > 1u ||
+          position_jump_valid > 1u || base_position_valid > 1u ||
+          host_active > 1u || ntrip_connected > 1u || solution > 5u ||
+          confidence > 3u || confidence_score > 1000u ||
+          satellites > std::numeric_limits<uint16_t>::max() ||
+          base_source > 3u || columns[4].empty() || columns[7].empty() ||
+          columns[24].empty()) {
+        addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv",
+                 line_number, "GPS/RTK enum, flag, or timestamp is invalid");
+        continue;
+      }
+      if (navigation_valid != 0u &&
+          (solution_epoch_us < kMinimumRkClockRealtimeUs || solution == 0u ||
+           measurements[0] < -90.0 || measurements[0] > 90.0 ||
+           measurements[1] < -180.0 || measurements[1] > 180.0 ||
+           measurements[3] < 0.0 || measurements[4] < 0.0 ||
+           measurements[5] < 0.0 || measurements[6] < 0.0 ||
+           measurements[7] < 0.0 ||
+           (position_jump_valid != 0u && measurements[8] < 0.0))) {
+        addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv",
+                 line_number, "GPS/RTK navigation solution is invalid");
+        continue;
+      }
+      if ((confidence_valid != 0u && confidence == 0u) ||
+          (navigation_valid == 0u &&
+           (confidence_valid != 0u || position_jump_valid != 0u))) {
+        addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv",
+                 line_number, "GPS/RTK validity flags are inconsistent");
+        continue;
+      }
+      timestamps.push_back({host_timestamp_us, line_number});
+      if (navigation_valid != 0u) ++result.gps_rtk_navigation_samples;
+      ++result.checked_records;
+    }
+    if (!input.eof()) {
+      addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv", 0,
+               "failed while reading GPS/RTK CSV");
+    }
+    if (!header_seen) {
+      addIssue(&result, DatasetValidationSeverity::Error, "gps_rtk.csv", 0,
+               "GPS/RTK CSV header is missing");
+    }
+    analyzeTimestamps("gps_rtk.csv", timestamps, false, &result.gps_rtk,
+                      &result);
+    checkOptionalManifestCount("gps_rtk_samples", result.gps_rtk.rows);
+    checkOptionalManifestCount("gps_rtk_navigation_samples",
+                               result.gps_rtk_navigation_samples);
+  } else {
+    checkOptionalManifestCount("gps_rtk_samples", 0u);
+    checkOptionalManifestCount("gps_rtk_navigation_samples", 0u);
   }
 
   checkOverlappingRanges(&ranges, &result);

@@ -176,6 +176,7 @@ using prism_viewer::dataset::loadDatasetPlaybackData;
 using prism_viewer::dataset::loadDatasetImage;
 using prism_viewer::dataset::loadDatasetImageIndex;
 using prism_viewer::dataset::summarizeTumFile;
+using prism_viewer::dataset::summarizeGpsRtkFile;
 using prism_viewer::imu_units::AccelerationUnit;
 using prism_viewer::imu_units::AngularVelocityUnit;
 using prism_viewer::imu_units::TemperatureUnit;
@@ -380,6 +381,8 @@ struct DatasetRecordingSummary {
   uint64_t dropped_lidar_batches = 0;
   uint64_t dropped_lidar_points = 0;
   uint64_t lidar_imu_sample_count = 0;
+  uint64_t gps_rtk_sample_count = 0;
+  uint64_t gps_rtk_navigation_sample_count = 0;
   std::array<uint64_t, 2> unsynced_imu_samples_dropped{};
   uint64_t unsynced_camera_frame_sets_dropped = 0;
   uint64_t unsynced_lidar_batches_dropped = 0;
@@ -420,10 +423,11 @@ class DatasetRecorder {
         return false;
       }
       root_ = root;
-      const std::array<std::filesystem::path, 9> known_outputs = {
+      const std::array<std::filesystem::path, 10> known_outputs = {
           root_ / "imu0.tum", root_ / "imu1.tum", root_ / "cam0.tum",
           root_ / "cam1.tum", root_ / "cam2.tum", root_ / "cam3.tum",
           root_ / "lidar.tum", root_ / "lidar_imu.tum",
+          root_ / "gps_rtk.csv",
           root_ / "dataset.info"};
       bool existing_dataset = false;
       for (const auto& path : known_outputs) {
@@ -512,6 +516,8 @@ class DatasetRecorder {
       dropped_lidar_batches_ = 0;
       dropped_lidar_points_ = 0;
       lidar_imu_sample_count_ = 0;
+      gps_rtk_sample_count_ = 0;
+      gps_rtk_navigation_sample_count_ = 0;
       unsynced_imu_samples_dropped_.fill(0);
       unsynced_camera_frame_sets_dropped_ = 0;
       unsynced_lidar_batches_dropped_ = 0;
@@ -603,6 +609,32 @@ class DatasetRecorder {
                "time_type sample_id timestamp_raw timestamp_synced "
                "tai_offset_applied\n";
       }
+
+      gps_rtk_file_.open(root_ / "gps_rtk.csv",
+                         std::ios::out | std::ios::trunc);
+      gps_rtk_file_.imbue(std::locale::classic());
+      if (!gps_rtk_file_.is_open()) {
+        closeFiles();
+        if (error != nullptr) *error = "cannot open GPS/RTK output file";
+        return false;
+      }
+      gps_rtk_file_
+          << "# Prism GPS/RTK solution and correction-status snapshots\n"
+          << "# confidence_score range is 0..1000; confidence_reasons is "
+             "an Agent-defined bit mask\n"
+          << "host_receive_unix_us,navigation_valid,solution_epoch_us,"
+             "solution,solution_name,confidence_valid,confidence,"
+             "confidence_name,confidence_score,confidence_reasons,"
+             "latitude_deg,longitude_deg,ellipsoidal_height_m,east_std_m,"
+             "north_std_m,up_std_m,satellites,differential_age_s,"
+             "ambiguity_ratio,position_jump_valid,position_jump_m,"
+             "consecutive_fix_epochs,consecutive_float_epochs,base_source,"
+             "base_source_name,base_station_id,base_position_valid,"
+             "host_active,ntrip_connected,host_correction_bytes,"
+             "rover_bytes,base_bytes,base_rtcm_messages,"
+             "rover_observation_epochs,base_observation_epochs,"
+             "solution_count,fix_count,float_count,decoder_errors,"
+             "correction_error_code,navigation_error_code\n";
 
       writeManifest(false);
       if (write_failed_) {
@@ -890,6 +922,126 @@ class DatasetRecorder {
     }
   }
 
+  void appendGpsRtk(
+      const prism_viewer::communication::RtkCorrectionStatus& correction,
+      const std::optional<
+          prism_viewer::communication::RtkNavigationStatus>& navigation) {
+    try {
+      if (!active_.load(std::memory_order_acquire)) return;
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_ || !gps_rtk_file_.is_open()) {
+        return;
+      }
+
+      const bool navigation_valid =
+          navigation.has_value() && navigation->solution_valid;
+      const auto solution = navigation_valid ? navigation->solution
+                                             : correction.solution;
+      const auto base_source = navigation_valid ? navigation->base_source
+                                                : correction.base_source;
+      const auto confidence =
+          navigation_valid ? navigation->confidence
+                           : prism_viewer::communication::RtkConfidence::Unavailable;
+      const bool confidence_valid =
+          navigation_valid && navigation->confidence_valid;
+      const bool position_jump_valid =
+          navigation_valid && navigation->position_jump_valid;
+      const uint64_t solution_count =
+          navigation_valid ? navigation->solution_count
+                           : correction.solution_count;
+      const uint64_t fix_count =
+          navigation_valid ? navigation->fix_count : correction.fix_count;
+      const uint64_t float_count =
+          navigation_valid ? navigation->float_count : correction.float_count;
+      const uint64_t decoder_errors =
+          navigation_valid ? navigation->decoder_errors
+                           : correction.decoder_errors;
+
+      gps_rtk_file_ << wallClockUs() << ',' << (navigation_valid ? 1 : 0)
+                    << ','
+                    << (navigation_valid ? navigation->solution_epoch_us : 0)
+                    << ',' << static_cast<uint16_t>(solution) << ','
+                    << prism_viewer::communication::rtkSolutionName(solution)
+                    << ',' << (confidence_valid ? 1 : 0) << ','
+                    << static_cast<uint16_t>(confidence) << ','
+                    << prism_viewer::communication::rtkConfidenceName(confidence)
+                    << ','
+                    << (navigation_valid ? navigation->confidence_score : 0)
+                    << ','
+                    << (navigation_valid ? navigation->confidence_reasons : 0)
+                    << std::fixed << std::setprecision(12) << ','
+                    << (navigation_valid ? navigation->latitude_deg : 0.0)
+                    << ','
+                    << (navigation_valid ? navigation->longitude_deg : 0.0)
+                    << ','
+                    << (navigation_valid
+                            ? navigation->ellipsoidal_height_m
+                            : 0.0)
+                    << ','
+                    << (navigation_valid ? navigation->east_std_m : 0.0)
+                    << ','
+                    << (navigation_valid ? navigation->north_std_m : 0.0)
+                    << ','
+                    << (navigation_valid ? navigation->up_std_m : 0.0)
+                    << ','
+                    << (navigation_valid ? navigation->satellites : 0)
+                    << ','
+                    << (navigation_valid ? navigation->differential_age_s
+                                         : 0.0)
+                    << ','
+                    << (navigation_valid ? navigation->ambiguity_ratio : 0.0)
+                    << ',' << (position_jump_valid ? 1 : 0) << ','
+                    << (position_jump_valid ? navigation->position_jump_m
+                                            : 0.0)
+                    << ','
+                    << (navigation_valid
+                            ? navigation->consecutive_fix_epochs
+                            : 0)
+                    << ','
+                    << (navigation_valid
+                            ? navigation->consecutive_float_epochs
+                            : 0)
+                    << ',' << static_cast<uint16_t>(base_source) << ','
+                    << prism_viewer::communication::rtkBaseSourceName(
+                           base_source)
+                    << ','
+                    << (navigation_valid ? navigation->base_station_id : 0)
+                    << ','
+                    << ((navigation_valid
+                             ? navigation->base_position_valid
+                             : correction.base_position_valid)
+                            ? 1
+                            : 0)
+                    << ',' << (correction.host_active ? 1 : 0) << ','
+                    << (correction.ntrip_connected ? 1 : 0) << ','
+                    << correction.host_correction_bytes << ','
+                    << correction.rover_bytes << ',' << correction.base_bytes
+                    << ',' << correction.base_rtcm_messages << ','
+                    << (navigation_valid
+                            ? navigation->rover_observation_epochs
+                            : 0)
+                    << ','
+                    << (navigation_valid
+                            ? navigation->base_observation_epochs
+                            : correction.base_observation_epochs)
+                    << ',' << solution_count << ',' << fix_count << ','
+                    << float_count << ',' << decoder_errors << ','
+                    << correction.error_code << ','
+                    << (navigation.has_value() ? navigation->error_code : 0)
+                    << '\n';
+      if (!gps_rtk_file_.good()) {
+        write_failed_ = true;
+        write_error_ = "GPS/RTK dataset write failed";
+        return;
+      }
+      ++gps_rtk_sample_count_;
+      if (navigation_valid) ++gps_rtk_navigation_sample_count_;
+    } catch (...) {
+      markWriteFailedNoThrow("GPS/RTK dataset write failed");
+    }
+  }
+
   DatasetRecordingSummary stop() {
     active_.store(false, std::memory_order_release);
     {
@@ -911,6 +1063,9 @@ class DatasetRecorder {
     summary.dropped_lidar_batches = dropped_lidar_batches_;
     summary.dropped_lidar_points = dropped_lidar_points_;
     summary.lidar_imu_sample_count = lidar_imu_sample_count_;
+    summary.gps_rtk_sample_count = gps_rtk_sample_count_;
+    summary.gps_rtk_navigation_sample_count =
+        gps_rtk_navigation_sample_count_;
     summary.unsynced_imu_samples_dropped =
         unsynced_imu_samples_dropped_;
     summary.unsynced_camera_frame_sets_dropped =
@@ -1247,6 +1402,7 @@ class DatasetRecorder {
              << "lidar_imu_storage="
              << (has_lidar_streams ? "tum-si-v2-with-time-source" : "none")
              << "\n"
+             << "gps_rtk_storage=csv-v1\n"
              << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
              << "start_unix_us=" << start_unix_us_ << "\n"
              << "end_unix_us=" << recording_host_end_unix_us << "\n"
@@ -1271,6 +1427,9 @@ class DatasetRecorder {
              << "unsynced_lidar_points_dropped="
              << unsynced_lidar_points_dropped_ << "\n"
              << "lidar_imu_samples=" << lidar_imu_sample_count_ << "\n"
+             << "gps_rtk_samples=" << gps_rtk_sample_count_ << "\n"
+             << "gps_rtk_navigation_samples="
+             << gps_rtk_navigation_sample_count_ << "\n"
              << "unsynced_lidar_imu_samples_dropped="
              << unsynced_lidar_imu_samples_dropped_ << "\n";
     for (size_t camera = 0; camera < image_counts_.size(); ++camera) {
@@ -1333,6 +1492,11 @@ class DatasetRecorder {
       if (!lidar_imu_file_.good()) write_failed_ = true;
       lidar_imu_file_.close();
     }
+    if (gps_rtk_file_.is_open()) {
+      gps_rtk_file_.flush();
+      if (!gps_rtk_file_.good()) write_failed_ = true;
+      gps_rtk_file_.close();
+    }
   }
 
   static constexpr uint64_t kCameraChunkTargetBytes =
@@ -1350,6 +1514,7 @@ class DatasetRecorder {
   std::ofstream lidar_index_file_;
   std::ofstream lidar_chunk_file_;
   std::ofstream lidar_imu_file_;
+  std::ofstream gps_rtk_file_;
   std::filesystem::path root_;
   std::string camera_chunk_name_;
   uint64_t camera_chunk_size_ = 0;
@@ -1364,6 +1529,8 @@ class DatasetRecorder {
   uint64_t dropped_lidar_batches_ = 0;
   uint64_t dropped_lidar_points_ = 0;
   uint64_t lidar_imu_sample_count_ = 0;
+  uint64_t gps_rtk_sample_count_ = 0;
+  uint64_t gps_rtk_navigation_sample_count_ = 0;
   std::array<uint64_t, 2> unsynced_imu_samples_dropped_{};
   uint64_t unsynced_camera_frame_sets_dropped_ = 0;
   uint64_t unsynced_lidar_batches_dropped_ = 0;
@@ -3429,6 +3596,31 @@ class MainWindow : public QMainWindow {
     }
   }
 
+  void recordRtkDatasetSnapshot(
+      const prism_viewer::communication::RtkCorrectionStatus& correction) {
+    if (!dataset_recorder_.isActive()) return;
+    std::optional<prism_viewer::communication::RtkNavigationStatus>
+        navigation;
+    if (rtk_navigation_query_supported_.load(std::memory_order_acquire)) {
+      try {
+        navigation =
+            prism_viewer::communication::queryRtkNavigationStatus(client_);
+      } catch (const std::exception& error) {
+        if (rtk_navigation_query_supported_.exchange(
+                false, std::memory_order_acq_rel)) {
+          const QString message = QString::fromUtf8(error.what());
+          post([this, message]() {
+            appendLog(QStringLiteral(
+                          "Agent does not provide the complete RTK navigation "
+                          "snapshot yet; recording correction status only: %1")
+                          .arg(message));
+          });
+        }
+      }
+    }
+    dataset_recorder_.appendGpsRtk(correction, navigation);
+  }
+
   void startCorsSession(
       const prism_viewer::cors::CorsConfiguration& configuration) {
     if (!client_.isOpen()) {
@@ -3449,18 +3641,26 @@ class MainWindow : public QMainWindow {
     prism_viewer::cors::CorsCorrectionTransport transport;
     transport.begin = [this]() {
       return runCorsUsbCommand([this]() {
-        return prism_viewer::communication::beginRtkCorrections(client_);
+        const auto status =
+            prism_viewer::communication::beginRtkCorrections(client_);
+        recordRtkDatasetSnapshot(status);
+        return status;
       });
     };
     transport.send = [this](const uint8_t* data, size_t size) {
       return runCorsUsbCommand([this, data, size]() {
-        return prism_viewer::communication::sendRtkCorrections(
+        const auto status = prism_viewer::communication::sendRtkCorrections(
             client_, data, size, 3000);
+        recordRtkDatasetSnapshot(status);
+        return status;
       });
     };
     transport.end = [this]() {
       return runCorsUsbCommand([this]() {
-        return prism_viewer::communication::endRtkCorrections(client_);
+        const auto status =
+            prism_viewer::communication::endRtkCorrections(client_);
+        recordRtkDatasetSnapshot(status);
+        return status;
       });
     };
 
@@ -3979,6 +4179,7 @@ class MainWindow : public QMainWindow {
     }
 
     setStatusAppearance(false);
+    rtk_navigation_query_supported_.store(true, std::memory_order_release);
     status_label_->setText(uiText("Opening USB device", "正在打开 USB 设备"));
     appendLog(QStringLiteral("Opening USB device through prism_usb_sdk"));
     try {
@@ -4451,6 +4652,8 @@ class MainWindow : public QMainWindow {
         QFileInfo::exists(
             output_directory.filePath(QStringLiteral("lidar_imu.tum"))) ||
         QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("gps_rtk.csv"))) ||
+        QFileInfo::exists(
             output_directory.filePath(QStringLiteral("dataset.info"))) ||
         !output_directory.entryList(
              {QStringLiteral("camera-data-*.bin"),
@@ -4473,18 +4676,19 @@ class MainWindow : public QMainWindow {
               ? uiText(
                     "This directory already contains a Prism dataset. "
                     "Replace it with an IMU-only recording? Existing camera "
-                    "and LiDAR point/IMU data in this directory will be "
+                    "LiDAR point/IMU, and GPS/RTK data in this directory will be "
                     "removed.\n%1",
                     "该目录已经包含 Prism 数据集。是否替换为仅 IMU 录制？"
-                    "目录中已有的相机、雷达点云和雷达 IMU 数据将被删除。\n%1")
+                    "目录中已有的相机、雷达点云、雷达 IMU 和 GPS/RTK 数据将被"
+                    "删除。\n%1")
                     .arg(selected_directory)
               : uiText(
                     "This directory already contains a Prism dataset. Replace "
                     "onboard IMU, camera, LiDAR point, and LiDAR IMU data "
-                    "and indexes?\n%1",
+                    "plus GPS/RTK data and indexes?\n%1",
                     "该目录已经包含 Prism 数据集。是否替换 imu0.tum、"
-                    "imu1.tum、cam0...cam3 图像、雷达点云、雷达 IMU 数据"
-                    "及索引？\n%1")
+                    "imu1.tum、cam0...cam3 图像、雷达点云、雷达 IMU、"
+                    "GPS/RTK 数据及索引？\n%1")
                     .arg(selected_directory);
       const auto answer = QMessageBox::question(
           this, uiText("Overwrite dataset?", "覆盖数据集？"),
@@ -4512,18 +4716,19 @@ class MainWindow : public QMainWindow {
     if (mode == DatasetRecordingMode::ImuOnly) {
       imu_record_status_label_->setText(
           record_lidar_streams
-              ? uiText("Recording onboard IMU0/IMU1 + LiDAR IMU only",
-                       "正在仅录制板载 IMU0/IMU1 + 雷达 IMU")
-              : uiText("Recording onboard IMU0/IMU1 only",
-                       "正在仅录制板载 IMU0/IMU1"));
+              ? uiText("Recording onboard IMU0/IMU1 + LiDAR IMU + GPS/RTK",
+                       "正在录制板载 IMU0/IMU1 + 雷达 IMU + GPS/RTK")
+              : uiText("Recording onboard IMU0/IMU1 + GPS/RTK",
+                       "正在录制板载 IMU0/IMU1 + GPS/RTK"));
     } else {
       imu_record_status_label_->setText(
           record_lidar_streams
               ? uiText("Recording 4 cameras + onboard IMU0/IMU1 + "
-                       "LiDAR points + LiDAR IMU",
-                       "正在录制四路相机 + 板载 IMU0/IMU1 + 雷达点云 + 雷达 IMU")
-              : uiText("Recording 4 cameras + onboard IMU0/IMU1",
-                       "正在录制四路相机 + 板载 IMU0/IMU1"));
+                       "LiDAR points + LiDAR IMU + GPS/RTK",
+                       "正在录制四路相机 + 板载 IMU0/IMU1 + 雷达点云 + "
+                       "雷达 IMU + GPS/RTK")
+              : uiText("Recording 4 cameras + onboard IMU0/IMU1 + GPS/RTK",
+                       "正在录制四路相机 + 板载 IMU0/IMU1 + GPS/RTK"));
     }
     imu_record_status_label_->setToolTip(selected_directory);
     imu_record_status_label_->setStyleSheet(QStringLiteral(
@@ -4547,26 +4752,31 @@ class MainWindow : public QMainWindow {
       if (summary.mode == DatasetRecordingMode::ImuOnly) {
         imu_record_status_label_->setText(
             uiText("Saved IMU only: onboard %1/%2, LiDAR %3 samples, "
-                   "unsynced dropped %4",
-                   "仅 IMU 已保存：板载 %1/%2，雷达 %3 个样本，"
-                   "未同步丢弃 %4")
+                   "GPS/RTK %4 snapshots (%5 navigation), unsynced dropped %6",
+                   "仅 IMU 已保存：板载 %1/%2，雷达 %3 个样本，GPS/RTK %4 "
+                   "个快照（%5 个导航解），未同步丢弃 %6")
                 .arg(summary.sample_count[0])
                 .arg(summary.sample_count[1])
                 .arg(summary.lidar_imu_sample_count)
+                .arg(summary.gps_rtk_sample_count)
+                .arg(summary.gps_rtk_navigation_sample_count)
                 .arg(summary.unsyncedDropCount()));
       } else {
         imu_record_status_label_->setText(
             uiText("Saved: onboard IMU %1/%2, images %3x4, LiDAR %4 "
-                   "batches + %5 IMU samples, dropped sets %6, "
-                   "unsynced dropped %7",
+                   "batches + %5 IMU samples, GPS/RTK %6 snapshots "
+                   "(%7 navigation), dropped sets %8, unsynced dropped %9",
                    "已保存：板载 IMU %1/%2，图像 %3×4，雷达 %4 批点云 + "
-                   "%5 个 IMU 样本，丢弃帧集 %6，未同步丢弃 %7")
+                   "%5 个 IMU 样本，GPS/RTK %6 个快照（%7 个导航解），"
+                   "丢弃帧集 %8，未同步丢弃 %9")
                 .arg(summary.sample_count[0])
                 .arg(summary.sample_count[1])
                 .arg(*std::min_element(summary.image_count.begin(),
                                        summary.image_count.end()))
                 .arg(summary.lidar_batch_count)
                 .arg(summary.lidar_imu_sample_count)
+                .arg(summary.gps_rtk_sample_count)
+                .arg(summary.gps_rtk_navigation_sample_count)
                 .arg(summary.dropped_frame_sets)
                 .arg(summary.unsyncedDropCount()));
       }
@@ -4580,7 +4790,7 @@ class MainWindow : public QMainWindow {
                     "dropped_lidar_batches=%12 dropped_lidar_points=%13 "
                     "lidar_imu_samples=%14 unsynced_drops="
                     "imu0:%15/imu1:%16 camera:%17 lidar:%18/%19 "
-                    "lidar_imu:%20")
+                    "lidar_imu:%20 gps_rtk=%21 navigation=%22")
                     .arg(summary.mode == DatasetRecordingMode::ImuOnly
                              ? QStringLiteral("imu-only")
                              : QStringLiteral("full"))
@@ -4602,7 +4812,9 @@ class MainWindow : public QMainWindow {
                     .arg(summary.unsynced_camera_frame_sets_dropped)
                     .arg(summary.unsynced_lidar_batches_dropped)
                     .arg(summary.unsynced_lidar_points_dropped)
-                    .arg(summary.unsynced_lidar_imu_samples_dropped));
+                    .arg(summary.unsynced_lidar_imu_samples_dropped)
+                    .arg(summary.gps_rtk_sample_count)
+                    .arg(summary.gps_rtk_navigation_sample_count));
       loadRecordedDataset(recorded_dataset_root_, false);
     } else {
       imu_record_status_label_->setText(
@@ -5972,9 +6184,13 @@ class MainWindow : public QMainWindow {
                     .arg(describeTimestampValidation(
                         validation.onboard_imus[imu]));
     }
-    report += QStringLiteral("LiDAR: %1\nLiDAR IMU: %2\n")
+    report += QStringLiteral(
+                  "LiDAR: %1\nLiDAR IMU: %2\nGPS/RTK: %3 "
+                  "(navigation snapshots %4)\n")
                   .arg(describeTimestampValidation(validation.lidar),
-                       describeTimestampValidation(validation.lidar_imu));
+                       describeTimestampValidation(validation.lidar_imu),
+                       describeTimestampValidation(validation.gps_rtk))
+                  .arg(validation.gps_rtk_navigation_samples);
     if (!validation.issues.empty()) report += QLatin1Char('\n');
     for (const auto& issue : validation.issues) {
       const QString severity =
@@ -6208,6 +6424,7 @@ class MainWindow : public QMainWindow {
     const TumFileSummary imu1 = summarizeTumFile(root / "imu1.tum");
     const TumFileSummary lidar = summarizeTumFile(root / "lidar.tum");
     const TumFileSummary lidar_imu = summarizeTumFile(root / "lidar_imu.tum");
+    const TumFileSummary gps_rtk = summarizeGpsRtkFile(root / "gps_rtk.csv");
 
     size_t camera_index_count = 0;
     std::string camera_index_error;
@@ -6300,33 +6517,39 @@ class MainWindow : public QMainWindow {
       dataset_summary_label_->setText(
           uiText("Loaded %1 complete four-camera frame sets | onboard "
                  "IMU0 %2 | onboard IMU1 %3 | LiDAR %4 batches | "
-                 "LiDAR IMU %5",
+                 "LiDAR IMU %5 | GPS/RTK %6",
                  "已加载 %1 个完整四路帧集 | 板载 IMU0 %2 个样本 | "
-                 "板载 IMU1 %3 个样本 | 雷达点云 %4 批 | 雷达 IMU %5 个样本")
+                 "板载 IMU1 %3 个样本 | 雷达点云 %4 批 | 雷达 IMU %5 个样本 | "
+                 "GPS/RTK %6 个快照")
               .arg(dataset_frame_count_)
               .arg(imu0.rows)
               .arg(imu1.rows)
               .arg(lidar.rows)
-              .arg(lidar_imu.rows));
+              .arg(lidar_imu.rows)
+              .arg(gps_rtk.rows));
     } else if (lidar.rows == 0) {
       dataset_summary_label_->setText(
           uiText("Loaded IMU-only dataset | onboard IMU0 %1 | onboard "
-                 "IMU1 %2 | LiDAR IMU %3",
+                 "IMU1 %2 | LiDAR IMU %3 | GPS/RTK %4",
                  "已加载仅 IMU 数据集 | 板载 IMU0 %1 个样本 | "
-                 "板载 IMU1 %2 个样本 | 雷达 IMU %3 个样本")
+                 "板载 IMU1 %2 个样本 | 雷达 IMU %3 个样本 | GPS/RTK %4 个快照")
               .arg(imu0.rows)
               .arg(imu1.rows)
-              .arg(lidar_imu.rows));
+              .arg(lidar_imu.rows)
+              .arg(gps_rtk.rows));
     } else {
       dataset_summary_label_->setText(
           uiText("Loaded dataset without cameras | onboard IMU0 %1 | "
-                 "onboard IMU1 %2 | LiDAR %3 batches | LiDAR IMU %4",
+                 "onboard IMU1 %2 | LiDAR %3 batches | LiDAR IMU %4 | "
+                 "GPS/RTK %5",
                  "已加载无相机数据集 | 板载 IMU0 %1 个样本 | "
-                 "板载 IMU1 %2 个样本 | 雷达点云 %3 批 | 雷达 IMU %4 个样本")
+                 "板载 IMU1 %2 个样本 | 雷达点云 %3 批 | 雷达 IMU %4 个样本 | "
+                 "GPS/RTK %5 个快照")
               .arg(imu0.rows)
               .arg(imu1.rows)
               .arg(lidar.rows)
-              .arg(lidar_imu.rows));
+              .arg(lidar_imu.rows)
+              .arg(gps_rtk.rows));
     }
     dataset_summary_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
@@ -6356,6 +6579,10 @@ class MainWindow : public QMainWindow {
                    .arg(lidar_imu.rows)
                    .arg(lidar_imu.first_timestamp_us)
                    .arg(lidar_imu.last_timestamp_us);
+    details += QStringLiteral("\ngps/rtk: snapshots=%1 first_host=%2 last_host=%3")
+                   .arg(gps_rtk.rows)
+                   .arg(gps_rtk.first_timestamp_us)
+                   .arg(gps_rtk.last_timestamp_us);
     details += QStringLiteral("\nplayback timeline: events=%1")
                    .arg(dataset_playback_data_.timeline.size());
     dataset_details_->setPlainText(details);
@@ -7839,6 +8066,7 @@ class MainWindow : public QMainWindow {
   TimeSyncProvider latest_time_sync_provider_ =
       TimeSyncProvider::Unsynced;
   prism_viewer::cors::CorsSessionStatus latest_cors_status_;
+  std::atomic<bool> rtk_navigation_query_supported_{true};
   prism::DeviceVersions latest_device_versions_;
   uint64_t latest_rk_heartbeat_time_us_ = 0;
   bool latest_device_info_valid_ = false;
@@ -8023,6 +8251,51 @@ int runViewerApplication(int argc, char** argv) {
     unsynced_lidar_imu.timestamp_utc_us = 0;
     recorder.appendLidarImu(unsynced_lidar_imu);
     recorder.appendLidarImu(lidar_imu);
+    prism_viewer::communication::RtkCorrectionStatus rtk_correction;
+    rtk_correction.running = true;
+    rtk_correction.host_active = true;
+    rtk_correction.base_position_valid = true;
+    rtk_correction.base_source =
+        prism_viewer::communication::RtkBaseSource::HostCors;
+    rtk_correction.solution = prism_viewer::communication::RtkSolution::Fix;
+    rtk_correction.host_correction_bytes = 4096u;
+    rtk_correction.rover_bytes = 8192u;
+    rtk_correction.base_bytes = 4096u;
+    rtk_correction.base_rtcm_messages = 12u;
+    rtk_correction.base_observation_epochs = 8u;
+    rtk_correction.solution_count = 7u;
+    rtk_correction.fix_count = 6u;
+    rtk_correction.float_count = 1u;
+    prism_viewer::communication::RtkNavigationStatus rtk_navigation;
+    rtk_navigation.solution_valid = true;
+    rtk_navigation.base_position_valid = true;
+    rtk_navigation.confidence_valid = true;
+    rtk_navigation.position_jump_valid = true;
+    rtk_navigation.base_source =
+        prism_viewer::communication::RtkBaseSource::HostCors;
+    rtk_navigation.solution = prism_viewer::communication::RtkSolution::Fix;
+    rtk_navigation.confidence =
+        prism_viewer::communication::RtkConfidence::High;
+    rtk_navigation.satellites = 17u;
+    rtk_navigation.confidence_score = 932u;
+    rtk_navigation.solution_epoch_us = 1780000000000900LL;
+    rtk_navigation.latitude_deg = 31.2304;
+    rtk_navigation.longitude_deg = 121.4737;
+    rtk_navigation.ellipsoidal_height_m = 12.5;
+    rtk_navigation.east_std_m = 0.021;
+    rtk_navigation.north_std_m = 0.013;
+    rtk_navigation.up_std_m = 0.025;
+    rtk_navigation.differential_age_s = 0.4;
+    rtk_navigation.ambiguity_ratio = 4.018;
+    rtk_navigation.position_jump_m = 0.006;
+    rtk_navigation.base_station_id = 42;
+    rtk_navigation.consecutive_fix_epochs = 6u;
+    rtk_navigation.rover_observation_epochs = 9u;
+    rtk_navigation.base_observation_epochs = 8u;
+    rtk_navigation.solution_count = 7u;
+    rtk_navigation.fix_count = 6u;
+    rtk_navigation.float_count = 1u;
+    recorder.appendGpsRtk(rtk_correction, rtk_navigation);
     const DatasetRecordingSummary summary = recorder.stop();
     std::array<std::vector<DatasetImageEntry>, 4> loaded_images;
     bool browser_load_ok = true;
@@ -8047,6 +8320,8 @@ int runViewerApplication(int argc, char** argv) {
         summarizeTumFile(test_root / "lidar.tum");
     const TumFileSummary loaded_lidar_imu =
         summarizeTumFile(test_root / "lidar_imu.tum");
+    const TumFileSummary loaded_gps_rtk =
+        summarizeGpsRtkFile(test_root / "gps_rtk.csv");
     const auto firstDataLine = [](const std::filesystem::path& path) {
       std::ifstream input(path);
       for (std::string line; std::getline(input, line);) {
@@ -8114,7 +8389,9 @@ int runViewerApplication(int argc, char** argv) {
         loaded_imu1.rows == 1 &&
         loaded_imu1.first_timestamp_us == 1780000000000100ULL &&
         loaded_lidar_imu.rows == 1 &&
-        loaded_lidar_imu.first_timestamp_us == 1780000000000800ULL;
+        loaded_lidar_imu.first_timestamp_us == 1780000000000800ULL &&
+        loaded_gps_rtk.rows == 1 && summary.gps_rtk_sample_count == 1 &&
+        summary.gps_rtk_navigation_sample_count == 1;
     bool auxiliary_streams_ok = true;
     if (test_imu_only) {
       auxiliary_streams_ok = loaded_lidar.rows == 0 &&
@@ -8151,6 +8428,7 @@ int runViewerApplication(int argc, char** argv) {
     bool manifest_time_domain_ok = false;
     bool manifest_epoch_ok = false;
     bool manifest_alignment_ok = false;
+    bool manifest_gps_rtk_ok = false;
     std::array<bool, 6> manifest_unsynced_drop_fields{};
     const std::array<std::string, 6> expected_unsynced_drop_fields = {
         "unsynced_imu0_samples_dropped=1",
@@ -8174,6 +8452,8 @@ int runViewerApplication(int argc, char** argv) {
           manifest_epoch_ok || line == "timestamp_epoch=unix";
       manifest_alignment_ok = manifest_alignment_ok ||
                               line == "alignment=common-device-time-domain";
+      manifest_gps_rtk_ok =
+          manifest_gps_rtk_ok || line == "gps_rtk_storage=csv-v1";
       for (size_t field = 0; field < expected_unsynced_drop_fields.size();
            ++field) {
         manifest_unsynced_drop_fields[field] =
@@ -8191,6 +8471,10 @@ int runViewerApplication(int argc, char** argv) {
         validatePrismDataset(test_root);
     const bool recorded_validation_ok =
         recorded_validation.valid && recorded_validation.errorCount() == 0u;
+    const bool recorded_gps_rtk_ok =
+        recorded_validation.gps_rtk_present &&
+        recorded_validation.gps_rtk.rows == 1u &&
+        recorded_validation.gps_rtk_navigation_samples == 1u;
 
     // Exercise the complementary file set as well. A capture started without
     // LiDAR must not leave an empty point index, LiDAR IMU stream, or manifest
@@ -8322,7 +8606,7 @@ int runViewerApplication(int argc, char** argv) {
     const bool success = summary.success && mode_ok && manifest_mode_ok &&
                          manifest_complete_ok &&
                          manifest_time_domain_ok && manifest_epoch_ok &&
-                         manifest_alignment_ok &&
+                         manifest_alignment_ok && manifest_gps_rtk_ok &&
                          manifest_unsynced_drops_ok &&
                          strict_time_drop_counts_ok && lidar_v6_source_ok &&
                          lidar_imu_v6_source_ok && writer_queue_order_ok &&
@@ -8331,7 +8615,7 @@ int runViewerApplication(int argc, char** argv) {
                          summary.sample_count[0] == 1 &&
                          summary.sample_count[1] == 1 && browser_load_ok &&
                          auxiliary_streams_ok && no_lidar_ok &&
-                         recorded_validation_ok;
+                         recorded_validation_ok && recorded_gps_rtk_ok;
     std::cout << (test_imu_only ? "imu_only_recorder_self_test="
                                 : "dataset_recorder_self_test=")
               << (success ? "PASS" : "FAIL")
@@ -8350,6 +8634,8 @@ int runViewerApplication(int argc, char** argv) {
               << " unix_epoch=" << (manifest_epoch_ok ? "PASS" : "FAIL")
               << " alignment="
               << (manifest_alignment_ok ? "PASS" : "FAIL")
+              << " gps_rtk="
+              << (recorded_gps_rtk_ok ? "PASS" : "FAIL")
               << " unsynced_drops="
               << (strict_time_drop_counts_ok ? "PASS" : "FAIL")
               << " lidar_v6_source="
