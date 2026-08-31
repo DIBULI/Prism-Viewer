@@ -273,6 +273,169 @@ void loadLidarImu(
   if (!input.eof()) throw std::runtime_error("cannot read lidar_imu.tum");
 }
 
+std::vector<std::string> splitCsv(const std::string& line) {
+  std::vector<std::string> columns;
+  size_t begin = 0u;
+  for (;;) {
+    const size_t separator = line.find(',', begin);
+    columns.push_back(line.substr(
+        begin, separator == std::string::npos ? separator
+                                               : separator - begin));
+    if (separator == std::string::npos) break;
+    begin = separator + 1u;
+  }
+  return columns;
+}
+
+uint64_t parseUnsigned(const std::string& value, const char* field) {
+  if (value.empty() || value.front() == '-') {
+    throw std::runtime_error(std::string("invalid ") + field);
+  }
+  size_t parsed = 0u;
+  const uint64_t result = std::stoull(value, &parsed, 10);
+  if (parsed != value.size()) {
+    throw std::runtime_error(std::string("invalid ") + field);
+  }
+  return result;
+}
+
+int64_t parseSigned(const std::string& value, const char* field) {
+  if (value.empty()) {
+    throw std::runtime_error(std::string("invalid ") + field);
+  }
+  size_t parsed = 0u;
+  const int64_t result = std::stoll(value, &parsed, 10);
+  if (parsed != value.size()) {
+    throw std::runtime_error(std::string("invalid ") + field);
+  }
+  return result;
+}
+
+double parseFinite(const std::string& value, const char* field) {
+  size_t parsed = 0u;
+  const double result = std::stod(value, &parsed);
+  if (parsed != value.size() || !std::isfinite(result)) {
+    throw std::runtime_error(std::string("invalid ") + field);
+  }
+  return result;
+}
+
+bool parseFlag(const std::string& value, const char* field) {
+  const uint64_t parsed = parseUnsigned(value, field);
+  if (parsed > 1u) {
+    throw std::runtime_error(std::string("invalid ") + field);
+  }
+  return parsed != 0u;
+}
+
+void loadGpsRtk(const std::filesystem::path& root,
+                std::vector<DatasetPlaybackGpsRtkSample>* samples) {
+  constexpr const char* kFilename = "gps_rtk.csv";
+  const std::filesystem::path path = root / kFilename;
+  if (!std::filesystem::is_regular_file(path)) return;
+
+  std::ifstream input(path);
+  if (!input.is_open()) throw std::runtime_error("cannot open gps_rtk.csv");
+  uint64_t line_number = 0u;
+  uint64_t previous_timestamp_us = 0u;
+  bool header_seen = false;
+  for (std::string line; std::getline(input, line);) {
+    ++line_number;
+    if (line.empty() || line.front() == '#') continue;
+    if (!header_seen) {
+      header_seen = true;
+      if (line.rfind("host_receive_unix_us,navigation_valid,", 0u) != 0u) {
+        throw std::runtime_error("unsupported gps_rtk.csv header");
+      }
+      continue;
+    }
+    const std::vector<std::string> columns = splitCsv(line);
+    if (columns.size() != 41u) {
+      throw std::runtime_error("gps_rtk.csv line " +
+                               std::to_string(line_number) +
+                               " must contain 41 columns");
+    }
+    if (!parseFlag(columns[1], "navigation_valid")) continue;
+
+    DatasetPlaybackGpsRtkSample sample;
+    sample.timestamp_us = parseUnsigned(columns[2], "solution_epoch_us");
+    const uint64_t solution = parseUnsigned(columns[3], "solution");
+    sample.confidence_valid = parseFlag(columns[5], "confidence_valid");
+    const uint64_t confidence = parseUnsigned(columns[6], "confidence");
+    const uint64_t confidence_score =
+        parseUnsigned(columns[8], "confidence_score");
+    const uint64_t confidence_reasons =
+        parseUnsigned(columns[9], "confidence_reasons");
+    sample.latitude_deg = parseFinite(columns[10], "latitude_deg");
+    sample.longitude_deg = parseFinite(columns[11], "longitude_deg");
+    sample.ellipsoidal_height_m =
+        parseFinite(columns[12], "ellipsoidal_height_m");
+    sample.east_std_m = parseFinite(columns[13], "east_std_m");
+    sample.north_std_m = parseFinite(columns[14], "north_std_m");
+    sample.up_std_m = parseFinite(columns[15], "up_std_m");
+    const uint64_t satellites = parseUnsigned(columns[16], "satellites");
+    sample.differential_age_s =
+        parseFinite(columns[17], "differential_age_s");
+    sample.ambiguity_ratio = parseFinite(columns[18], "ambiguity_ratio");
+    sample.position_jump_valid =
+        parseFlag(columns[19], "position_jump_valid");
+    sample.position_jump_m = parseFinite(columns[20], "position_jump_m");
+    const uint64_t fix_epochs =
+        parseUnsigned(columns[21], "consecutive_fix_epochs");
+    const uint64_t float_epochs =
+        parseUnsigned(columns[22], "consecutive_float_epochs");
+    const uint64_t base_source = parseUnsigned(columns[23], "base_source");
+    const int64_t base_station_id =
+        parseSigned(columns[25], "base_station_id");
+    sample.base_position_valid =
+        parseFlag(columns[26], "base_position_valid");
+    sample.rover_observation_epochs =
+        parseUnsigned(columns[33], "rover_observation_epochs");
+    sample.base_observation_epochs =
+        parseUnsigned(columns[34], "base_observation_epochs");
+    sample.solution_count = parseUnsigned(columns[35], "solution_count");
+    sample.fix_count = parseUnsigned(columns[36], "fix_count");
+    sample.float_count = parseUnsigned(columns[37], "float_count");
+    sample.decoder_errors = parseUnsigned(columns[38], "decoder_errors");
+
+    if (sample.timestamp_us == 0u || solution == 0u || solution > 5u ||
+        confidence > 3u || (sample.confidence_valid && confidence == 0u) ||
+        confidence_score > 1000u ||
+        confidence_reasons > std::numeric_limits<uint32_t>::max() ||
+        satellites > std::numeric_limits<uint16_t>::max() ||
+        fix_epochs > std::numeric_limits<uint32_t>::max() ||
+        float_epochs > std::numeric_limits<uint32_t>::max() ||
+        base_source > 3u ||
+        base_station_id < std::numeric_limits<int32_t>::min() ||
+        base_station_id > std::numeric_limits<int32_t>::max() ||
+        sample.latitude_deg < -90.0 || sample.latitude_deg > 90.0 ||
+        sample.longitude_deg < -180.0 || sample.longitude_deg > 180.0 ||
+        sample.east_std_m < 0.0 || sample.north_std_m < 0.0 ||
+        sample.up_std_m < 0.0 || sample.differential_age_s < 0.0 ||
+        sample.ambiguity_ratio < 0.0 ||
+        (sample.position_jump_valid && sample.position_jump_m < 0.0)) {
+      throw std::runtime_error("invalid gps_rtk.csv navigation at line " +
+                               std::to_string(line_number));
+    }
+    requireMonotonic(sample.timestamp_us, previous_timestamp_us,
+                     samples->size(), kFilename);
+    previous_timestamp_us = sample.timestamp_us;
+    sample.solution = static_cast<uint16_t>(solution);
+    sample.confidence = static_cast<uint16_t>(confidence);
+    sample.satellites = static_cast<uint16_t>(satellites);
+    sample.confidence_score = static_cast<uint16_t>(confidence_score);
+    sample.confidence_reasons =
+        static_cast<uint32_t>(confidence_reasons);
+    sample.base_source = static_cast<uint16_t>(base_source);
+    sample.base_station_id = static_cast<int32_t>(base_station_id);
+    sample.consecutive_fix_epochs = static_cast<uint32_t>(fix_epochs);
+    sample.consecutive_float_epochs = static_cast<uint32_t>(float_epochs);
+    samples->push_back(sample);
+  }
+  if (!input.eof()) throw std::runtime_error("cannot read gps_rtk.csv");
+  if (!header_seen) throw std::runtime_error("gps_rtk.csv header is missing");
+}
+
 int eventPriority(DatasetPlaybackEventType type) {
   switch (type) {
     case DatasetPlaybackEventType::OnboardImu0:
@@ -285,6 +448,8 @@ int eventPriority(DatasetPlaybackEventType type) {
       return 3;
     case DatasetPlaybackEventType::LidarImu:
       return 4;
+    case DatasetPlaybackEventType::GpsRtk:
+      return 5;
   }
   return 5;
 }
@@ -322,11 +487,12 @@ bool loadDatasetPlaybackData(
     }
     loadLidarIndex(root, &data->lidar_batches);
     loadLidarImu(root, &data->lidar_imu_samples);
+    loadGpsRtk(root, &data->gps_rtk_samples);
 
     data->timeline.reserve(
         camera_frame_timestamps_us.size() + data->onboard_imus[0].size() +
         data->onboard_imus[1].size() + data->lidar_batches.size() +
-        data->lidar_imu_samples.size());
+        data->lidar_imu_samples.size() + data->gps_rtk_samples.size());
     for (size_t index = 0; index < camera_frame_timestamps_us.size(); ++index) {
       data->timeline.push_back({camera_frame_timestamps_us[index],
                                 DatasetPlaybackEventType::CameraFrame, index});
@@ -348,6 +514,10 @@ bool loadDatasetPlaybackData(
     for (size_t index = 0; index < data->lidar_imu_samples.size(); ++index) {
       data->timeline.push_back({data->lidar_imu_samples[index].timestamp_us,
                                 DatasetPlaybackEventType::LidarImu, index});
+    }
+    for (size_t index = 0; index < data->gps_rtk_samples.size(); ++index) {
+      data->timeline.push_back({data->gps_rtk_samples[index].timestamp_us,
+                                DatasetPlaybackEventType::GpsRtk, index});
     }
     std::stable_sort(
         data->timeline.begin(), data->timeline.end(),

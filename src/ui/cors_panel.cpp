@@ -3,6 +3,7 @@
 #include "common/ui_text.hpp"
 
 #include <QtCore/QSettings>
+#include <QtCore/QDateTime>
 #include <QtGui/QDoubleValidator>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -152,6 +153,18 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   forwarded_value_ = new QLabel(QStringLiteral("-"), status_group);
   source_value_ = new QLabel(QStringLiteral("-"), status_group);
   solution_value_ = new QLabel(QStringLiteral("-"), status_group);
+  update_rate_value_ = new QLabel(QStringLiteral("-"), status_group);
+  update_rate_value_->setObjectName(QStringLiteral("rtkUpdateRate"));
+  epoch_value_ = new QLabel(QStringLiteral("-"), status_group);
+  epoch_value_->setObjectName(QStringLiteral("rtkSolutionEpoch"));
+  position_value_ = new QLabel(QStringLiteral("-"), status_group);
+  position_value_->setObjectName(QStringLiteral("rtkPosition"));
+  precision_value_ = new QLabel(QStringLiteral("-"), status_group);
+  precision_value_->setObjectName(QStringLiteral("rtkPrecision"));
+  confidence_value_ = new QLabel(QStringLiteral("-"), status_group);
+  confidence_value_->setObjectName(QStringLiteral("rtkConfidence"));
+  differential_value_ = new QLabel(QStringLiteral("-"), status_group);
+  differential_value_->setObjectName(QStringLiteral("rtkDifferential"));
   agent_value_ = new QLabel(QStringLiteral("-"), status_group);
   endpoint_value_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   status_form->addRow(uiText("Active endpoint:", "当前地址："),
@@ -164,6 +177,17 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
                       source_value_);
   status_form->addRow(uiText("RTK solution:", "RTK 解状态："),
                       solution_value_);
+  status_form->addRow(uiText("Navigation rate:", "导航更新率："),
+                      update_rate_value_);
+  status_form->addRow(uiText("Solution epoch (UTC):", "解算历元（UTC）："),
+                      epoch_value_);
+  status_form->addRow(uiText("Position:", "位置："), position_value_);
+  status_form->addRow(uiText("Estimated precision:", "估计精度："),
+                      precision_value_);
+  status_form->addRow(uiText("Credibility:", "可信度："),
+                      confidence_value_);
+  status_form->addRow(uiText("Differential:", "差分状态："),
+                      differential_value_);
   status_form->addRow(uiText("Agent counters:", "Agent 计数："),
                       agent_value_);
   status_layout->addLayout(status_form);
@@ -386,11 +410,46 @@ cors::CorsConfiguration CorsPanel::configuration(QString* error) const {
 
 void CorsPanel::setDeviceOpen(bool open) {
   device_open_ = open;
+  if (!open) setNavigationUnavailable();
   refreshView();
 }
 
 void CorsPanel::setSessionStatus(const cors::CorsSessionStatus& status) {
   status_ = status;
+  refreshView();
+}
+
+void CorsPanel::setNavigationStatus(
+    const communication::RtkNavigationStatus& status,
+    bool from_dataset) {
+  if (status.solution_epoch_us > previous_navigation_epoch_us_ &&
+      status.solution_count > previous_navigation_solution_count_) {
+    const int64_t elapsed_us =
+        status.solution_epoch_us - previous_navigation_epoch_us_;
+    const uint64_t elapsed_solutions =
+        status.solution_count - previous_navigation_solution_count_;
+    if (previous_navigation_epoch_us_ > 0 && elapsed_us > 0) {
+      navigation_rate_hz_ =
+          static_cast<double>(elapsed_solutions) * 1000000.0 /
+          static_cast<double>(elapsed_us);
+    }
+  }
+  previous_navigation_epoch_us_ = status.solution_epoch_us;
+  previous_navigation_solution_count_ = status.solution_count;
+  navigation_status_ = status;
+  navigation_status_valid_ = true;
+  navigation_from_dataset_ = from_dataset;
+  navigation_unavailable_reason_.clear();
+  refreshView();
+}
+
+void CorsPanel::setNavigationUnavailable(const QString& reason) {
+  navigation_status_valid_ = false;
+  navigation_from_dataset_ = false;
+  navigation_unavailable_reason_ = reason;
+  previous_navigation_epoch_us_ = 0;
+  previous_navigation_solution_count_ = 0;
+  navigation_rate_hz_ = 0.0;
   refreshView();
 }
 
@@ -413,7 +472,12 @@ void CorsPanel::refreshView() {
       status_.endpoint.isEmpty() ? QStringLiteral("-") : status_.endpoint);
   received_value_->setText(byteCount(status_.received_bytes));
   forwarded_value_->setText(byteCount(status_.forwarded_bytes));
-  if (status_.rtk_status_valid) {
+  if (navigation_status_valid_) {
+    source_value_->setText(QString::fromLatin1(
+        communication::rtkBaseSourceName(navigation_status_.base_source)));
+    solution_value_->setText(QString::fromLatin1(
+        communication::rtkSolutionName(navigation_status_.solution)));
+  } else if (status_.rtk_status_valid) {
     source_value_->setText(QString::fromLatin1(
         communication::rtkBaseSourceName(status_.rtk_status.base_source)));
     solution_value_->setText(QString::fromLatin1(
@@ -431,10 +495,79 @@ void CorsPanel::refreshView() {
     agent_value_->setText(QStringLiteral("-"));
   }
 
+  if (navigation_status_valid_) {
+    update_rate_value_->setText(
+        navigation_rate_hz_ > 0.0
+            ? QStringLiteral("%1 Hz (solution epoch driven)")
+                  .arg(navigation_rate_hz_, 0, 'f', 2)
+            : uiText("waiting for the next epoch", "等待下一解算历元"));
+    const qint64 epoch_ms = navigation_status_.solution_epoch_us / 1000;
+    epoch_value_->setText(
+        navigation_status_.solution_valid && epoch_ms > 0
+            ? QDateTime::fromMSecsSinceEpoch(epoch_ms, Qt::UTC)
+                  .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"))
+            : QStringLiteral("-"));
+    position_value_->setText(
+        navigation_status_.solution_valid
+            ? QStringLiteral("%1°, %2°, h=%3 m | satellites=%4")
+                  .arg(navigation_status_.latitude_deg, 0, 'f', 9)
+                  .arg(navigation_status_.longitude_deg, 0, 'f', 9)
+                  .arg(navigation_status_.ellipsoidal_height_m, 0, 'f', 3)
+                  .arg(navigation_status_.satellites)
+            : uiText("No valid navigation solution", "尚无有效导航解"));
+    precision_value_->setText(
+        navigation_status_.solution_valid
+            ? QStringLiteral("E=%1 m N=%2 m U=%3 m")
+                  .arg(navigation_status_.east_std_m, 0, 'f', 3)
+                  .arg(navigation_status_.north_std_m, 0, 'f', 3)
+                  .arg(navigation_status_.up_std_m, 0, 'f', 3)
+            : QStringLiteral("-"));
+    confidence_value_->setText(
+        navigation_status_.confidence_valid
+            ? QStringLiteral("%1 (%2/1000, reasons=0x%3)")
+                  .arg(QString::fromLatin1(communication::rtkConfidenceName(
+                           navigation_status_.confidence)))
+                  .arg(navigation_status_.confidence_score)
+                  .arg(navigation_status_.confidence_reasons, 0, 16)
+            : uiText("unavailable", "不可用"));
+    differential_value_->setText(
+        QStringLiteral("age=%1 s ratio=%2 station=%3 jump=%4")
+            .arg(navigation_status_.differential_age_s, 0, 'f', 2)
+            .arg(navigation_status_.ambiguity_ratio, 0, 'f', 2)
+            .arg(navigation_status_.base_station_id)
+            .arg(navigation_status_.position_jump_valid
+                     ? QStringLiteral("%1 m")
+                           .arg(navigation_status_.position_jump_m, 0, 'f', 3)
+                     : QStringLiteral("-")));
+    agent_value_->setText(
+        QStringLiteral("rover epochs=%1 base epochs=%2 solutions=%3 "
+                       "fix=%4 float=%5 errors=%6")
+            .arg(navigation_status_.rover_observation_epochs)
+            .arg(navigation_status_.base_observation_epochs)
+            .arg(navigation_status_.solution_count)
+            .arg(navigation_status_.fix_count)
+            .arg(navigation_status_.float_count)
+            .arg(navigation_status_.decoder_errors));
+  } else {
+    update_rate_value_->setText(QStringLiteral("-"));
+    epoch_value_->setText(QStringLiteral("-"));
+    position_value_->setText(
+        navigation_unavailable_reason_.isEmpty()
+            ? QStringLiteral("-")
+            : navigation_unavailable_reason_);
+    precision_value_->setText(QStringLiteral("-"));
+    confidence_value_->setText(QStringLiteral("-"));
+    differential_value_->setText(QStringLiteral("-"));
+  }
+
   QString message;
   bool error = false;
   bool warning = false;
-  if (!device_open_) {
+  if (navigation_from_dataset_) {
+    message = uiText(
+        "Playing GPS/RTK from the loaded dataset at recorded epochs",
+        "正在按录制历元回放数据集 GPS/RTK");
+  } else if (!device_open_) {
     message = uiText("Open a device before connecting CORS",
                      "请先打开设备，再连接 CORS");
     warning = true;

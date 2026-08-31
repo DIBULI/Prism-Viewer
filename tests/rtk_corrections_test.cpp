@@ -120,6 +120,15 @@ int main() {
                     navigation_status.solution_count == 20u,
                 "RTK navigation fields were not parsed");
 
+  navigation.type = static_cast<prism::FrameType>(0x97);
+  const auto navigation_event = parseRtkNavigationStatus(navigation);
+  ok &= require(isRtkNavigationFrame(navigation) &&
+                    navigation_event.solution_epoch_us ==
+                        navigation_status.solution_epoch_us &&
+                    navigation_event.solution_count ==
+                        navigation_status.solution_count,
+                "RTK navigation event was not accepted");
+
   navigation.payload.at(20) = 0xe9u;
   navigation.payload.at(21) = 0x03u;
   rejected = false;

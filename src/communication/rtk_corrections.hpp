@@ -101,6 +101,7 @@ RtkCorrectionStatus endRtkCorrections(prism_runtime::Client& client);
 RtkCorrectionStatus queryRtkCorrectionStatus(
     prism_runtime::Client& client);
 RtkNavigationStatus parseRtkNavigationStatus(const prism::Frame& frame);
+bool isRtkNavigationFrame(const prism::Frame& frame) noexcept;
 RtkNavigationStatus queryRtkNavigationStatus(
     prism_runtime::Client& client);
 

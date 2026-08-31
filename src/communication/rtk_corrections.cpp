@@ -26,6 +26,7 @@ constexpr auto kStatusResponseFrame =
 constexpr auto kNavigationStatusFrame = static_cast<prism::FrameType>(0x1b);
 constexpr auto kNavigationStatusResponseFrame =
     static_cast<prism::FrameType>(0x96);
+constexpr auto kNavigationEventFrame = static_cast<prism::FrameType>(0x97);
 
 uint16_t readLe16(const std::vector<uint8_t>& bytes, size_t offset) {
   return static_cast<uint16_t>(bytes.at(offset)) |
@@ -175,11 +176,11 @@ RtkCorrectionStatus queryRtkCorrectionStatus(
 }
 
 RtkNavigationStatus parseRtkNavigationStatus(const prism::Frame& frame) {
-  if (frame.type != kNavigationStatusResponseFrame ||
+  if (!isRtkNavigationFrame(frame) ||
       frame.payload.size() != kNavigationStatusPayloadSize ||
       readLe16(frame.payload, 0) != kProtocolVersion ||
       readLe16(frame.payload, 2) != kNavigationStatusPayloadSize) {
-    throw std::runtime_error("not an RTK navigation status response");
+    throw std::runtime_error("not an RTK navigation response or event");
   }
 
   RtkNavigationStatus status;
@@ -258,6 +259,11 @@ RtkNavigationStatus parseRtkNavigationStatus(const prism::Frame& frame) {
     throw std::runtime_error("RTK confidence validity is inconsistent");
   }
   return status;
+}
+
+bool isRtkNavigationFrame(const prism::Frame& frame) noexcept {
+  return frame.type == kNavigationStatusResponseFrame ||
+         frame.type == kNavigationEventFrame;
 }
 
 RtkNavigationStatus queryRtkNavigationStatus(

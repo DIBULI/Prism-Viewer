@@ -5,6 +5,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QLabel>
 
 #include <iostream>
 
@@ -79,5 +80,46 @@ int main(int argc, char** argv) {
     ok &= require(manual.mountpoint == QStringLiteral("CUSTOM_RTCM"),
                   "Panel did not use the URL mountpoint");
   }
+
+
+  prism_viewer::communication::RtkNavigationStatus navigation;
+  navigation.solution_valid = true;
+  navigation.confidence_valid = true;
+  navigation.position_jump_valid = true;
+  navigation.base_source =
+      prism_viewer::communication::RtkBaseSource::HostCors;
+  navigation.solution = prism_viewer::communication::RtkSolution::Fix;
+  navigation.confidence =
+      prism_viewer::communication::RtkConfidence::High;
+  navigation.solution_epoch_us = 1780000000000000LL;
+  navigation.solution_count = 100u;
+  navigation.latitude_deg = 31.2304;
+  navigation.longitude_deg = 121.4737;
+  navigation.ellipsoidal_height_m = 12.5;
+  navigation.east_std_m = 0.01;
+  navigation.north_std_m = 0.02;
+  navigation.up_std_m = 0.03;
+  navigation.satellites = 18u;
+  navigation.confidence_score = 950u;
+  navigation.differential_age_s = 0.3;
+  navigation.ambiguity_ratio = 4.2;
+  navigation.position_jump_m = 0.004;
+  panel.setNavigationStatus(navigation);
+  navigation.solution_epoch_us += 100000LL;
+  ++navigation.solution_count;
+  panel.setNavigationStatus(navigation);
+  auto labelText = [&](const char* object_name) {
+    auto* label =
+        panel.findChild<QLabel*>(QString::fromLatin1(object_name));
+    ok &= require(label != nullptr, object_name);
+    return label == nullptr ? QString() : label->text();
+  };
+  ok &= require(labelText("rtkUpdateRate").contains(QStringLiteral("10.00 Hz")),
+                "Panel did not report the solution-epoch navigation rate");
+  ok &= require(labelText("rtkPosition").contains(QStringLiteral("31.230400000")) &&
+                    labelText("rtkPosition").contains(QStringLiteral("satellites=18")),
+                "Panel did not display GPS/RTK position and satellites");
+  ok &= require(labelText("rtkConfidence").contains(QStringLiteral("950/1000")),
+                "Panel did not display RTK credibility");
   return ok ? 0 : 1;
 }

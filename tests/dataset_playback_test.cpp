@@ -82,6 +82,24 @@ int main() {
     writeText(root / "lidar_imu.tum",
               "1780000000.000800 1.25 -2.5 9.80665 0.125 -0.25 0.5 "
               "2 35 1 10 1780000037000800000 1 1\n");
+    const std::string gps_header =
+        "host_receive_unix_us,navigation_valid,solution_epoch_us,solution,"
+        "solution_name,confidence_valid,confidence,confidence_name,"
+        "confidence_score,confidence_reasons,latitude_deg,longitude_deg,"
+        "ellipsoidal_height_m,east_std_m,north_std_m,up_std_m,satellites,"
+        "differential_age_s,ambiguity_ratio,position_jump_valid,"
+        "position_jump_m,consecutive_fix_epochs,consecutive_float_epochs,"
+        "base_source,base_source_name,base_station_id,base_position_valid,"
+        "host_active,ntrip_connected,host_correction_bytes,rover_bytes,"
+        "base_bytes,base_rtcm_messages,rover_observation_epochs,"
+        "base_observation_epochs,solution_count,fix_count,float_count,"
+        "decoder_errors,correction_error_code,navigation_error_code\n";
+    const std::string gps_row =
+        "1780000000000650,1,1780000000000650,4,fix,1,3,high,932,18,"
+        "31.2304,121.4737,12.5,0.021,0.013,0.025,17,0.4,4.018,1,"
+        "0.006,7,0,1,Host CORS,42,1,1,0,1234,5678,4321,42,25,24,"
+        "20,18,2,1,0,0\n";
+    writeText(root / "gps_rtk.csv", gps_header + gps_row);
 
     DatasetPlaybackData data;
     std::string error;
@@ -94,17 +112,31 @@ int main() {
     require(data.lidar_batches.size() == 1u &&
                 data.lidar_imu_samples.size() == 1u,
             "LiDAR streams were not loaded");
-    require(data.timeline.size() == 6u, "timeline event count is wrong");
+    require(data.gps_rtk_samples.size() == 1u &&
+                data.gps_rtk_samples[0].solution == 4u &&
+                data.gps_rtk_samples[0].confidence_score == 932u &&
+                data.gps_rtk_samples[0].satellites == 17u &&
+                data.gps_rtk_samples[0].latitude_deg == 31.2304,
+            "GPS/RTK stream was not loaded");
+    require(data.timeline.size() == 7u, "timeline event count is wrong");
     require(data.timeline[0].type == DatasetPlaybackEventType::OnboardImu0 &&
                 data.timeline[1].type ==
                     DatasetPlaybackEventType::OnboardImu1 &&
                 data.timeline[2].type == DatasetPlaybackEventType::CameraFrame &&
-                data.timeline[3].type == DatasetPlaybackEventType::LidarPoints &&
-                data.timeline[4].type == DatasetPlaybackEventType::LidarImu &&
-                data.timeline[5].type == DatasetPlaybackEventType::OnboardImu0,
+                data.timeline[3].type == DatasetPlaybackEventType::GpsRtk &&
+                data.timeline[4].type == DatasetPlaybackEventType::LidarPoints &&
+                data.timeline[5].type == DatasetPlaybackEventType::LidarImu &&
+                data.timeline[6].type == DatasetPlaybackEventType::OnboardImu0,
             "timeline is not timestamp ordered");
-    require(firstDatasetPlaybackEventAfter(data, 1780000000000700u) == 4u,
+    require(firstDatasetPlaybackEventAfter(data, 1780000000000700u) == 5u,
             "timeline upper-bound seek is wrong");
+
+    writeText(root / "gps_rtk.csv", gps_header + gps_row + gps_row);
+    DatasetPlaybackData duplicate_gps;
+    require(!loadDatasetPlaybackData(root, {}, &duplicate_gps, &error) &&
+                error.find("gps_rtk.csv timestamps") != std::string::npos,
+            "duplicate GPS/RTK solution epoch was accepted");
+    writeText(root / "gps_rtk.csv", gps_header + gps_row);
 
     DatasetPlaybackData duplicate_camera;
     require(!loadDatasetPlaybackData(
