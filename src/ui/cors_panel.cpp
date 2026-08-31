@@ -54,6 +54,15 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   provider_selector_->setObjectName(QStringLiteral("corsServiceProvider"));
   endpoint_selector_ = new QComboBox(config_group);
   endpoint_selector_->setObjectName(QStringLiteral("corsEndpointPolicy"));
+  endpoint_selector_->setEditable(true);
+  endpoint_selector_->setInsertPolicy(QComboBox::NoInsert);
+  endpoint_selector_->lineEdit()->setPlaceholderText(
+      uiText("IP, hostname or URL", "IP、域名或 URL"));
+  endpoint_selector_->setToolTip(
+      uiText("Select a preset or type an IP address, hostname, host:port, "
+             "or http[s]/ntrip[s] URL. A URL path overrides the mountpoint.",
+             "可选择预设，或输入 IP、域名、主机:端口、http[s]/ntrip[s] URL。"
+             "URL 路径会覆盖挂载点。"));
   coordinate_system_selector_ = new QComboBox(config_group);
   coordinate_system_selector_->setObjectName(
       QStringLiteral("corsCoordinateSystem"));
@@ -232,10 +241,21 @@ void CorsPanel::loadSettings() {
   int index = provider_selector_->findData(provider);
   if (index >= 0) provider_selector_->setCurrentIndex(index);
   populateProviderOptions();
-  index = endpoint_selector_->findData(
+  const QString endpoint_policy =
       settings.value(QStringLiteral("endpointPolicy"),
-                     QStringLiteral("automatic")));
-  if (index >= 0) endpoint_selector_->setCurrentIndex(index);
+                     QStringLiteral("automatic"))
+          .toString();
+  if (endpoint_policy == QStringLiteral("custom")) {
+    const QString custom_address =
+        settings.value(QStringLiteral("endpointAddress")).toString();
+    if (!custom_address.isEmpty()) {
+      endpoint_selector_->setCurrentIndex(-1);
+      endpoint_selector_->setEditText(custom_address);
+    }
+  } else {
+    index = endpoint_selector_->findData(endpoint_policy);
+    if (index >= 0) endpoint_selector_->setCurrentIndex(index);
+  }
   index = coordinate_system_selector_->findData(
       settings.value(QStringLiteral("port"), 8002));
   if (index >= 0) coordinate_system_selector_->setCurrentIndex(index);
@@ -267,8 +287,20 @@ void CorsPanel::saveSettings() {
   settings.beginGroup(QStringLiteral("cors"));
   settings.setValue(QStringLiteral("serviceProvider"),
                     provider_selector_->currentData());
-  settings.setValue(QStringLiteral("endpointPolicy"),
-                    endpoint_selector_->currentData());
+  const int endpoint_index = endpoint_selector_->currentIndex();
+  const bool preset =
+      endpoint_index >= 0 &&
+      endpoint_selector_->currentText() ==
+          endpoint_selector_->itemText(endpoint_index);
+  settings.setValue(
+      QStringLiteral("endpointPolicy"),
+      preset ? endpoint_selector_->currentData() : QStringLiteral("custom"));
+  if (preset) {
+    settings.remove(QStringLiteral("endpointAddress"));
+  } else {
+    settings.setValue(QStringLiteral("endpointAddress"),
+                      endpoint_selector_->currentText().trimmed());
+  }
   settings.setValue(QStringLiteral("port"),
                     coordinate_system_selector_->currentData());
   settings.setValue(QStringLiteral("mountpoint"),
@@ -292,10 +324,30 @@ cors::CorsConfiguration CorsPanel::configuration(QString* error) const {
   result.service_provider = provider_selector_->currentData().toString();
   const auto* provider =
       cors::findCorsServiceProvider(result.service_provider);
+  result.mountpoint = mountpoint_selector_->currentData().toString();
+  QString validation;
   if (provider != nullptr) {
+    const int endpoint_index = endpoint_selector_->currentIndex();
+    const bool preset =
+        endpoint_index >= 0 &&
+        endpoint_selector_->currentText() ==
+            endpoint_selector_->itemText(endpoint_index);
     const QString endpoint_policy =
-        endpoint_selector_->currentData().toString();
-    if (endpoint_policy == QStringLiteral("primary")) {
+        preset ? endpoint_selector_->currentData().toString() : QString();
+    if (!preset) {
+      const auto parsed = cors::parseCorsEndpointAddress(
+          endpoint_selector_->currentText(),
+          static_cast<quint16>(
+              coordinate_system_selector_->currentData().toUInt()));
+      if (!parsed.valid()) {
+        validation = parsed.error;
+      } else {
+        result.endpoints.push_back(parsed.endpoint);
+        if (!parsed.mountpoint.isEmpty()) {
+          result.mountpoint = parsed.mountpoint;
+        }
+      }
+    } else if (endpoint_policy == QStringLiteral("primary")) {
       if (!provider->endpoints.isEmpty()) {
         result.endpoints.push_back(provider->endpoints.front());
       }
@@ -308,9 +360,10 @@ cors::CorsConfiguration CorsPanel::configuration(QString* error) const {
     }
     const quint16 port = static_cast<quint16>(
         coordinate_system_selector_->currentData().toUInt());
-    for (auto& endpoint : result.endpoints) endpoint.port = port;
+    if (preset) {
+      for (auto& endpoint : result.endpoints) endpoint.port = port;
+    }
   }
-  result.mountpoint = mountpoint_selector_->currentData().toString();
   result.username = username_edit_->text();
   result.password = password_edit_->text();
   bool latitude_ok = false;
@@ -319,12 +372,12 @@ cors::CorsConfiguration CorsPanel::configuration(QString* error) const {
   result.latitude_degrees = latitude_edit_->text().toDouble(&latitude_ok);
   result.longitude_degrees = longitude_edit_->text().toDouble(&longitude_ok);
   result.altitude_meters = altitude_edit_->text().toDouble(&altitude_ok);
-  QString validation;
-  if (!latitude_ok || !longitude_ok || !altitude_ok) {
+  if (validation.isEmpty() &&
+      (!latitude_ok || !longitude_ok || !altitude_ok)) {
     validation = uiText(
         "Enter valid rover latitude, longitude and altitude values",
         "请输入有效的流动站纬度、经度和高程");
-  } else {
+  } else if (validation.isEmpty()) {
     validation = cors::validateCorsConfiguration(result);
   }
   if (error != nullptr) *error = validation;

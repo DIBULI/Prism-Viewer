@@ -3,7 +3,7 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QElapsedTimer>
 #include <QtNetwork/QAbstractSocket>
-#include <QtNetwork/QTcpSocket>
+#include <QtNetwork/QSslSocket>
 
 #include <algorithm>
 #include <chrono>
@@ -59,8 +59,11 @@ void writeAll(QTcpSocket* socket, const QByteArray& bytes,
 }
 
 QString endpointLabel(const CorsEndpoint& endpoint) {
-  return QStringLiteral("%1 (%2:%3)")
-      .arg(endpoint.name, endpoint.host)
+  return QStringLiteral("%1 (%2://%3:%4)")
+      .arg(endpoint.name,
+           endpoint.tls ? QStringLiteral("https")
+                        : QStringLiteral("ntrip"),
+           endpoint.host)
       .arg(endpoint.port);
 }
 
@@ -130,17 +133,35 @@ void CorsSession::workerMain(CorsConfiguration configuration,
               : CorsSessionPhase::Reconnecting;
       publish();
 
-      QTcpSocket socket;
-      socket.connectToHost(endpoint.host, endpoint.port);
+      QSslSocket socket;
+      if (endpoint.tls) {
+        socket.connectToHostEncrypted(endpoint.host, endpoint.port);
+      } else {
+        socket.connectToHost(endpoint.host, endpoint.port);
+      }
       QElapsedTimer connect_timer;
       connect_timer.start();
       while (!stop_requested_.load(std::memory_order_acquire) &&
-             socket.state() == QAbstractSocket::ConnectingState &&
              connect_timer.elapsed() < kConnectTimeoutMs) {
-        socket.waitForConnected(kSocketPollMs);
+        if (endpoint.tls) {
+          if (socket.isEncrypted() ||
+              socket.state() == QAbstractSocket::UnconnectedState) {
+            break;
+          }
+          socket.waitForEncrypted(kSocketPollMs);
+        } else {
+          if (socket.state() == QAbstractSocket::ConnectedState ||
+              socket.state() == QAbstractSocket::UnconnectedState) {
+            break;
+          }
+          socket.waitForConnected(kSocketPollMs);
+        }
       }
       if (stop_requested_.load(std::memory_order_acquire)) break;
-      if (socket.state() != QAbstractSocket::ConnectedState) {
+      const bool connected =
+          socket.state() == QAbstractSocket::ConnectedState &&
+          (!endpoint.tls || socket.isEncrypted());
+      if (!connected) {
         status.error = socket.errorString();
         status.phase = CorsSessionPhase::Reconnecting;
         publish();

@@ -60,5 +60,24 @@ int main(int argc, char** argv) {
   ok &= require(configuration.mountpoint ==
                     QStringLiteral("RTCM33_GRCEJ"),
                 "Default China Mobile mountpoint is incorrect");
+
+  auto* endpoint =
+      panel.findChild<QComboBox*>(QStringLiteral("corsEndpointPolicy"));
+  ok &= require(endpoint != nullptr, "Editable caster endpoint is missing");
+  if (endpoint != nullptr) {
+    endpoint->setCurrentIndex(-1);
+    endpoint->setEditText(
+        QStringLiteral("https://cors.example.com:443/CUSTOM_RTCM"));
+    const auto manual = panel.configuration(&error);
+    ok &= require(error.isEmpty(), "Panel rejected a manual caster URL");
+    ok &= require(manual.endpoints.size() == 1 &&
+                      manual.endpoints.front().host ==
+                          QStringLiteral("cors.example.com") &&
+                      manual.endpoints.front().port == 443 &&
+                      manual.endpoints.front().tls,
+                  "Panel did not emit the manual TLS endpoint");
+    ok &= require(manual.mountpoint == QStringLiteral("CUSTOM_RTCM"),
+                  "Panel did not use the URL mountpoint");
+  }
   return ok ? 0 : 1;
 }

@@ -1,6 +1,7 @@
 #include "cors/cors_config.hpp"
 
 #include <QtCore/QLocale>
+#include <QtCore/QUrl>
 
 #include <cmath>
 
@@ -58,6 +59,83 @@ const CorsServiceProvider* findCorsServiceProvider(const QString& id) {
     if (provider.id == id) return &provider;
   }
   return nullptr;
+}
+
+CorsEndpointAddress parseCorsEndpointAddress(
+    const QString& address, quint16 default_port) {
+  CorsEndpointAddress result;
+  const QString trimmed = address.trimmed();
+  if (trimmed.isEmpty()) {
+    result.error = QStringLiteral("Caster address is required");
+    return result;
+  }
+
+  const bool explicit_scheme = trimmed.contains(QStringLiteral("://"));
+  QString normalized = trimmed;
+  if (!explicit_scheme) {
+    // A bare IPv6 literal needs brackets before QUrl can distinguish it from
+    // a host:port pair. Bracketed IPv6 and ordinary hostnames pass through.
+    if (trimmed.count(QLatin1Char(':')) >= 2 &&
+        !trimmed.startsWith(QLatin1Char('['))) {
+      normalized = QStringLiteral("ntrip://[%1]").arg(trimmed);
+    } else {
+      normalized = QStringLiteral("ntrip://") + trimmed;
+    }
+  }
+
+  const QUrl url(normalized, QUrl::StrictMode);
+  const QString scheme = url.scheme().toLower();
+  if (!url.isValid() || url.host().isEmpty()) {
+    result.error =
+        QStringLiteral("Invalid caster IP address, hostname or URL: %1")
+            .arg(trimmed);
+    return result;
+  }
+  if (scheme != QStringLiteral("http") &&
+      scheme != QStringLiteral("https") &&
+      scheme != QStringLiteral("ntrip") &&
+      scheme != QStringLiteral("ntrips")) {
+    result.error =
+        QStringLiteral("Unsupported caster URL scheme: %1").arg(scheme);
+    return result;
+  }
+  if (!url.userName().isEmpty() || !url.password().isEmpty()) {
+    result.error = QStringLiteral(
+        "Enter CORS credentials in the username and password fields");
+    return result;
+  }
+  if (url.hasQuery() || url.hasFragment()) {
+    result.error =
+        QStringLiteral("Caster URL must not contain a query or fragment");
+    return result;
+  }
+
+  const bool tls = scheme == QStringLiteral("https") ||
+                   scheme == QStringLiteral("ntrips");
+  const int fallback_port =
+      explicit_scheme && tls ? 443 : static_cast<int>(default_port);
+  const int port = url.port(fallback_port);
+  if (port <= 0 || port > 65535) {
+    result.error =
+        QStringLiteral("Caster port must be between 1 and 65535");
+    return result;
+  }
+
+  QString mountpoint = url.path(QUrl::FullyDecoded).trimmed();
+  while (mountpoint.startsWith(QLatin1Char('/'))) mountpoint.remove(0, 1);
+  while (mountpoint.endsWith(QLatin1Char('/'))) mountpoint.chop(1);
+  if (mountpoint.contains(QLatin1Char('/'))) {
+    result.error =
+        QStringLiteral("Caster URL path must contain one mountpoint");
+    return result;
+  }
+
+  result.endpoint.name = QStringLiteral("Manual");
+  result.endpoint.host = url.host(QUrl::FullyDecoded);
+  result.endpoint.port = static_cast<quint16>(port);
+  result.endpoint.tls = tls;
+  result.mountpoint = mountpoint;
+  return result;
 }
 
 QString validateCorsConfiguration(
@@ -136,9 +214,14 @@ QByteArray buildNtripRequest(const CorsConfiguration& configuration,
       (configuration.username + QLatin1Char(':') + configuration.password)
           .toUtf8()
           .toBase64();
+  QString host_header = endpoint.host;
+  if (host_header.contains(QLatin1Char(':')) &&
+      !host_header.startsWith(QLatin1Char('['))) {
+    host_header = QLatin1Char('[') + host_header + QLatin1Char(']');
+  }
   QByteArray request;
   request += "GET /" + mountpoint.toUtf8() + " HTTP/1.0\r\n";
-  request += "Host: " + endpoint.host.toUtf8() + ":" +
+  request += "Host: " + host_header.toUtf8() + ":" +
              QByteArray::number(endpoint.port) + "\r\n";
   request += "User-Agent: NTRIP PrismViewer/1.0\r\n";
   request += "Ntrip-Version: Ntrip/2.0\r\n";

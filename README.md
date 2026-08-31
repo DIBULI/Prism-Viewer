@@ -32,6 +32,9 @@ NTRIP correction session. China Mobile CORS is currently registered as the
 `china_mobile` service provider with:
 
 - automatic primary-to-backup caster failover;
+- an editable caster address accepting an IPv4/IPv6 address, hostname,
+  host:port, or HTTP(S)/NTRIP(S) URL; an optional URL path supplies the
+  mountpoint;
 - WGS84 port 8002 and CGCS2000 port 8001;
 - the RTCM33_GRCEJ, RTCM33_GRCEpro, RTCM33_GRCE, RTCM33_GRC, and RTCM30_GR
   mountpoints;

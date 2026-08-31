@@ -11,6 +11,7 @@ struct CorsEndpoint {
   QString name;
   QString host;
   quint16 port = 0;
+  bool tls = false;
 };
 
 struct CorsMountpoint {
@@ -40,6 +41,19 @@ struct CorsConfiguration {
   double longitude_degrees = 0.0;
   double altitude_meters = 0.0;
 };
+
+struct CorsEndpointAddress {
+  CorsEndpoint endpoint;
+  QString mountpoint;
+  QString error;
+
+  bool valid() const { return error.isEmpty(); }
+};
+
+// Accepts an IP address, hostname, host:port, or an
+// http[s]/ntrip[s] URL. A URL path is treated as the mountpoint.
+CorsEndpointAddress parseCorsEndpointAddress(
+    const QString& address, quint16 default_port);
 
 QString validateCorsConfiguration(const CorsConfiguration& configuration);
 QByteArray buildNmeaGga(const QDateTime& utc, double latitude_degrees,

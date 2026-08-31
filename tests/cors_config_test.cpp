@@ -29,6 +29,40 @@ int main() {
   ok &= require(provider->mountpoints.size() == 5,
                 "China Mobile mountpoint catalog is incomplete");
 
+  auto parsed = parseCorsEndpointAddress(
+      QStringLiteral("120.253.226.97"), 8002);
+  ok &= require(parsed.valid() &&
+                    parsed.endpoint.host == QStringLiteral("120.253.226.97") &&
+                    parsed.endpoint.port == 8002 && !parsed.endpoint.tls,
+                "Manual IPv4 caster address was not parsed");
+  parsed = parseCorsEndpointAddress(
+      QStringLiteral("caster.example.com:2101"), 8002);
+  ok &= require(parsed.valid() &&
+                    parsed.endpoint.host ==
+                        QStringLiteral("caster.example.com") &&
+                    parsed.endpoint.port == 2101,
+                "Manual hostname and port were not parsed");
+  parsed = parseCorsEndpointAddress(
+      QStringLiteral("https://cors.example.com/RTCM33_GRCEJ"), 8002);
+  ok &= require(parsed.valid() && parsed.endpoint.tls &&
+                    parsed.endpoint.port == 443 &&
+                    parsed.mountpoint == QStringLiteral("RTCM33_GRCEJ"),
+                "HTTPS caster URL was not parsed");
+  parsed = parseCorsEndpointAddress(
+      QStringLiteral("http://[2001:db8::1]:8001/RTCM30_GR"), 8002);
+  ok &= require(parsed.valid() &&
+                    parsed.endpoint.host == QStringLiteral("2001:db8::1") &&
+                    parsed.endpoint.port == 8001 &&
+                    parsed.mountpoint == QStringLiteral("RTCM30_GR"),
+                "IPv6 caster URL was not parsed");
+  ok &= require(
+      !parseCorsEndpointAddress(QStringLiteral("ftp://bad.example.com"), 8002)
+           .valid(),
+      "Unsupported caster URL scheme was accepted");
+  ok &= require(
+      !parseCorsEndpointAddress(QStringLiteral(""), 8002).valid(),
+      "Empty caster address was accepted");
+
   CorsConfiguration configuration;
   configuration.service_provider = provider->id;
   configuration.endpoints = provider->endpoints;
