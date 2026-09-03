@@ -560,7 +560,7 @@ jobs:
               sdk="$(resolve_dependency bin/prism-viewer sdk)"
               assert_packaged_dependency "$sdk"
               grep -Fq "Prism SDK linkage: shared" SDK_PROVENANCE.txt
-              if ldd "$sdk" | grep -Eq 'lib(ssl|crypto)[.]so'; then
+              if ldd "$sdk" | grep -Eq "lib(ssl|crypto)[.]so"; then
                 echo "Unified x86 SDK unexpectedly uses dynamic OpenSSL" >&2
                 exit 1
               fi
