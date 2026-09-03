@@ -248,7 +248,8 @@ jobs:
             grep -Fq 'elf64-littleaarch64' <<<"$object_headers"
           else
             file "$sdk" | tee /dev/stderr | grep -Fq 'ELF 64-bit LSB shared object, x86-64'
-            objdump -T "$sdk" | grep -Fq 'cameraExposureLimits'
+            sdk_symbols="$(objdump -T "$sdk")"
+            grep -Fq 'cameraExposureLimits' <<<"$sdk_symbols"
             dynamic_entries="$(readelf -d "$sdk")"
             grep -Fq 'Shared library: [libusb-1.0.so.0]' \
               <<<"$dynamic_entries"
