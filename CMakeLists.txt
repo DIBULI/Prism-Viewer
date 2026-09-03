@@ -93,6 +93,10 @@ else()
         "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.a")
   else()
     set(PRISM_LINUX_SDK_IS_STATIC FALSE)
+    if(PRISM_LINUX_RUNTIME_ARCH STREQUAL "linux-x64")
+      set(PRISM_USB_SDK_OPENSSL_LICENSE
+          "${PRISM_USB_SDK_ROOT}/runtime/linux-x64/openssl-LICENSE.txt")
+    endif()
     if(PRISM_LINUX_SHARED_SDK_RUNTIME)
       get_filename_component(PRISM_USB_SDK_RUNTIME
         "${PRISM_LINUX_SHARED_SDK_RUNTIME}" ABSOLUTE)
@@ -132,6 +136,11 @@ unset(PRISM_USB_SDK_RUNTIME_FILE)
 if(APPLE AND NOT EXISTS "${PRISM_USB_SDK_LIBUSB_LICENSE}")
   message(FATAL_ERROR
     "Bundled libusb license is missing: ${PRISM_USB_SDK_LIBUSB_LICENSE}")
+endif()
+if(PRISM_USB_SDK_OPENSSL_LICENSE
+    AND NOT EXISTS "${PRISM_USB_SDK_OPENSSL_LICENSE}")
+  message(FATAL_ERROR
+    "Bundled OpenSSL license is missing: ${PRISM_USB_SDK_OPENSSL_LICENSE}")
 endif()
 
 find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql)
@@ -304,6 +313,10 @@ if(WIN32)
 elseif(NOT APPLE AND NOT PRISM_LINUX_SDK_IS_STATIC)
   install(FILES "${PRISM_USB_SDK_RUNTIME}"
     DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  if(PRISM_USB_SDK_OPENSSL_LICENSE)
+    install(FILES "${PRISM_USB_SDK_OPENSSL_LICENSE}"
+      DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/PrismUsbSdk)
+  endif()
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   install(FILES packaging/prism-viewer.desktop

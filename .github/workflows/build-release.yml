@@ -167,8 +167,8 @@ jobs:
             runner: ubuntu-22.04
             sdk_arch: linux-x64
             sdk_linkage: shared
-            sdk_runtime: runtime/ros/ubuntu-20.04-x86_64/lib/libprism_usb_sdk.so
-            sdk_sha256: 917665c9e8204e3c117ab6e60ecdfff263f36e46ecd12d89b406f4f8cffe548f
+            sdk_runtime: runtime/ros/linux-x64/lib/libprism_usb_sdk.so
+            sdk_sha256: 0d00e25b3788b16de9465225ddc10825ead98efc9ab3878c43d82f8c1663fd6b
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
@@ -249,6 +249,15 @@ jobs:
           else
             file "$sdk" | tee /dev/stderr | grep -Fq 'ELF 64-bit LSB shared object, x86-64'
             objdump -T "$sdk" | grep -Fq 'cameraExposureLimits'
+            dynamic_entries="$(readelf -d "$sdk")"
+            grep -Fq 'Shared library: [libusb-1.0.so.0]' \
+              <<<"$dynamic_entries"
+            if grep -Eq 'Shared library: \[lib(ssl|crypto)\.so' \
+                <<<"$dynamic_entries"; then
+              echo "Unified x86 SDK unexpectedly depends on dynamic OpenSSL" >&2
+              exit 1
+            fi
+            test -s third_party/Prism-SDK/runtime/linux-x64/openssl-LICENSE.txt
           fi
 
       - name: Configure and build Viewer
@@ -295,25 +304,26 @@ jobs:
             cp -L "$qt_plugin_source" "$package/plugins/$relative"
           done
 
-          # Keep the matching OpenSSL runtime pair from the 20.04 build
-          # environment. The SDK uses libcrypto directly; libssl is bundled
-          # alongside it so optional TLS-backed paths never use the host copy.
-          crypto_name="$(ldd "$package/bin/prism-viewer" \
-            | awk '$1 ~ /^libcrypto[.]so[.]/ { print $1; exit }')"
-          if [ -z "$crypto_name" ]; then
-            echo "Viewer is not linked to a recognizable libcrypto" >&2
-            exit 1
-          fi
-          ssl_name="${crypto_name/libcrypto/libssl}"
-          for name in "$crypto_name" "$ssl_name"; do
-            source="$(ldconfig -p \
-              | awk -v library="$name" '$1 == library { print $NF; exit }')"
-            if [ -z "$source" ] || [ ! -f "$source" ]; then
-              echo "Required OpenSSL runtime is missing: $name" >&2
+          if [ "$LINUX_SDK_LINKAGE" = static ]; then
+            # The ARM64 static SDK resolves OpenSSL in the Ubuntu 20.04 build
+            # environment. Keep that matching runtime pair in the package.
+            crypto_name="$(ldd "$package/bin/prism-viewer" \
+              | awk '$1 ~ /^libcrypto[.]so[.]/ { print $1; exit }')"
+            if [ -z "$crypto_name" ]; then
+              echo "Viewer is not linked to a recognizable libcrypto" >&2
               exit 1
             fi
-            cp -L "$source" "$package/lib/$name"
-          done
+            ssl_name="${crypto_name/libcrypto/libssl}"
+            for name in "$crypto_name" "$ssl_name"; do
+              source="$(ldconfig -p \
+                | awk -v library="$name" '$1 == library { print $NF; exit }')"
+              if [ -z "$source" ] || [ ! -f "$source" ]; then
+                echo "Required OpenSSL runtime is missing: $name" >&2
+                exit 1
+              fi
+              cp -L "$source" "$package/lib/$name"
+            done
+          fi
 
           # Plugins are loaded with dlopen(), so they are not visible from the
           # main executable's link graph. Resolve their dependencies and any
@@ -383,8 +393,6 @@ jobs:
             "lib/libQt${QT_MAJOR}Widgets.so.${QT_MAJOR}"
             "lib/libQt${QT_MAJOR}Charts.so.${QT_MAJOR}"
             "lib/libQt${QT_MAJOR}Sql.so.${QT_MAJOR}"
-            "lib/libcrypto.so.*"
-            "lib/libssl.so.*"
             "lib/libusb-1.0.so.0"
             "*/platforms/libqxcb.so"
             "*/platforms/libqoffscreen.so"
@@ -392,7 +400,12 @@ jobs:
             "*/sqldrivers/libqsqlite.so"
           )
           if [ "$LINUX_SDK_LINKAGE" = shared ]; then
-            required_patterns+=("lib/libprism_usb_sdk.so")
+            required_patterns+=(
+              "lib/libprism_usb_sdk.so"
+              "share/licenses/PrismUsbSdk/openssl-LICENSE.txt"
+            )
+          else
+            required_patterns+=("lib/libcrypto.so.*" "lib/libssl.so.*")
           fi
           for pattern in "${required_patterns[@]}"; do
             if ! compgen -G "$package/$pattern" >/dev/null; then
@@ -466,6 +479,9 @@ jobs:
           - package_arch: x64
             runner: ubuntu-22.04
             ubuntu: "24.04"
+          - package_arch: x64
+            runner: ubuntu-22.04
+            ubuntu: "26.04"
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             ubuntu: "20.04"
@@ -475,6 +491,9 @@ jobs:
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             ubuntu: "24.04"
+          - package_arch: arm64
+            runner: ubuntu-22.04-arm
+            ubuntu: "26.04"
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Download Linux package
@@ -540,18 +559,25 @@ jobs:
               sdk="$(resolve_dependency bin/prism-viewer sdk)"
               assert_packaged_dependency "$sdk"
               grep -Fq "Prism SDK linkage: shared" SDK_PROVENANCE.txt
+              if ldd "$sdk" | grep -Eq 'lib(ssl|crypto)[.]so'; then
+                echo "Unified x86 SDK unexpectedly uses dynamic OpenSSL" >&2
+                exit 1
+              fi
+              app_libusb="$(resolve_dependency bin/prism-viewer libusb)"
+              assert_packaged_dependency "$app_libusb"
             elif ldd bin/prism-viewer | grep -q libprism_usb_sdk; then
               echo "Static arm64 Viewer unexpectedly depends on the shared Prism SDK" >&2
               exit 1
+            else
+              app_crypto="$(resolve_dependency bin/prism-viewer crypto)"
+              app_libusb="$(resolve_dependency bin/prism-viewer libusb)"
+              ssl="$(find lib -maxdepth 1 -type f -name "libssl.so.*" \
+                -print -quit)"
+              ssl_crypto="$(resolve_dependency "$ssl" crypto)"
+              assert_packaged_dependency "$app_crypto"
+              assert_packaged_dependency "$app_libusb"
+              assert_packaged_dependency "$ssl_crypto"
             fi
-            app_crypto="$(resolve_dependency bin/prism-viewer crypto)"
-            app_libusb="$(resolve_dependency bin/prism-viewer libusb)"
-            ssl="$(find lib -maxdepth 1 -type f -name "libssl.so.*" \
-              -print -quit)"
-            ssl_crypto="$(resolve_dependency "$ssl" crypto)"
-            assert_packaged_dependency "$app_crypto"
-            assert_packaged_dependency "$app_libusb"
-            assert_packaged_dependency "$ssl_crypto"
             bin/prism-viewer --startup-self-test
           '
 

@@ -30,8 +30,8 @@ pinned as the `third_party/Prism-SDK` Git submodule:
 - public headers under `include/prism`;
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
   `GetProcAddress` (the import `.lib` is deliberately not used);
-- architecture-matched `libprism_usb_sdk.a` on Linux x86-64 and arm64,
-  linked into the Viewer executable;
+- the unified Ubuntu 20.04-baseline `libprism_usb_sdk.so` on Linux x86-64;
+- `libprism_usb_sdk.a` on Linux arm64, linked into the Viewer executable;
 - `libprism_usb_sdk.dylib` plus its relocatable `libusb` runtime on Apple
   Silicon macOS, linked from the app's `Contents/Frameworks` directory.
 
@@ -129,17 +129,17 @@ git push origin v1.0.0
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
 Qt libraries and plugins, compiler runtime libraries, and recursively linked
-third-party libraries. In particular, the Linux archive carries OpenSSL,
-libusb, and the Qt XCB, JPEG, and SQLite plugins, so users do not need to
+third-party libraries. The Linux x86-64 SDK statically embeds OpenSSL and the
+ARM64 package carries the matching OpenSSL runtime; both packages include
+libusb and the Qt XCB, JPEG, and SQLite plugins. Users therefore do not need to
 install those packages separately. Linux still relies on the target system's
-kernel, glibc, and hardware/display drivers; bundling those components would
-reduce compatibility rather than improve it. Windows and Linux archives
-contain a SHA-256 file manifest, and CI checks every packaged Linux binary in
-a minimal Ubuntu image before publishing a release.
+kernel, glibc, and hardware/display drivers. Windows and Linux archives contain
+a SHA-256 file manifest, and CI checks every packaged Linux binary in a minimal
+Ubuntu image before publishing a release.
 
 Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 2.31 or newer. CI extracts each tar archive and starts the packaged Viewer in
-Ubuntu 20.04, Ubuntu 22.04, and Ubuntu 24.04 containers before publishing it:
+Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
 tar -xzf Prism-Viewer-1.0.0-linux-x64.tar.gz
@@ -155,13 +155,15 @@ The Windows x64 release supports Windows 10 version 1809 or newer and Windows
 macOS 13.0 and supports macOS 13 Ventura, macOS 14 Sonoma, and macOS 15
 Sequoia on Apple Silicon; Intel Macs and macOS 12 or earlier are not supported.
 
-The Linux Viewer links the Prism SDK implementation statically, so it no
-longer needs `libprism_usb_sdk.so`. Qt still loads platform, image, and SQL
-plugins dynamically; the tar archive therefore includes Qt, OpenSSL, libusb,
-and their recursive runtime dependencies under private runtime paths.
+The Linux x86-64 Viewer uses the single Prism SDK `.so` built on Ubuntu 20.04
+for all supported Ubuntu releases. The Linux ARM64 Viewer links the SDK
+implementation statically. Qt still loads platform, image, and SQL plugins
+dynamically; the tar archives include all required private runtime dependencies.
 
 ## Documentation
 
+- [Prism Viewer 1.0.0 update notes](docs/update/v1.0.0.md)
+- [Prism Viewer 1.0.0 更新说明](docs/update/v1.0.0.zh-CN.md)
 - [Prism Viewer 1.0.0 中文用户操作手册](docs/Prism-Viewer-1.0.0-用户操作手册.pdf)
 - [操作手册生成与截图打码脚本](docs/manual/README.md)
 - [Code structure](ARCHITECTURE.md)
