@@ -123,8 +123,8 @@ additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
@@ -142,12 +142,12 @@ Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
-tar -xzf Prism-Viewer-1.0.0-linux-x64.tar.gz
-./Prism-Viewer-1.0.0-linux-x64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.0.1-linux-x64.tar.gz
+./Prism-Viewer-1.0.1-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-tar -xzf Prism-Viewer-1.0.0-linux-arm64.tar.gz
-./Prism-Viewer-1.0.0-linux-arm64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.0.1-linux-arm64.tar.gz
+./Prism-Viewer-1.0.1-linux-arm64/bin/prism-viewer
 ```
 
 The Windows x64 release supports Windows 10 version 1809 or newer and Windows
@@ -162,6 +162,8 @@ dynamically; the tar archives include all required private runtime dependencies.
 
 ## Documentation
 
+- [Prism Viewer 1.0.1 update notes](docs/update/v1.0.1.md)
+- [Prism Viewer 1.0.1 更新说明](docs/update/v1.0.1.zh-CN.md)
 - [Prism Viewer 1.0.0 update notes](docs/update/v1.0.0.md)
 - [Prism Viewer 1.0.0 更新说明](docs/update/v1.0.0.zh-CN.md)
 - [Prism Viewer 1.0.0 中文用户操作手册](docs/Prism-Viewer-1.0.0-用户操作手册.pdf)
@@ -169,3 +171,11 @@ dynamically; the tar archives include all required private runtime dependencies.
 - [Code structure](ARCHITECTURE.md)
 - [Dataset directory structure and format](docs/dataset-format.md)
 - [ROS1/ROS2 bag export](docs/rosbag-export.md)
+
+## Recorded dataset playback
+
+When browsing a local dataset, the frame progress slider occupies an
+independent full-width row, so changing per-frame exposure text does not resize
+it. Use **Go to frame** to enter a 1-based frame number and jump directly to
+that camera frame while keeping camera, onboard-IMU, LiDAR, and LiDAR-IMU
+playback aligned to its timestamp.

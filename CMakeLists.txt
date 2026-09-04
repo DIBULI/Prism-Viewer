@@ -5,7 +5,11 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 1.0.0 LANGUAGES CXX)
+project(prism_viewer VERSION 1.0.1 LANGUAGES CXX)
+
+# The Viewer release version and the bundled binary SDK version are versioned
+# independently. Viewer 1.0.1 intentionally continues to use Prism SDK 1.0.0.
+set(PRISM_USB_SDK_VERSION "1.0.0")
 
 include(GNUInstallDirs)
 
@@ -73,7 +77,7 @@ endif()
 
 add_library(prism-viewer-sdk INTERFACE)
 target_compile_definitions(prism-viewer-sdk INTERFACE
-  PRISM_REQUIRED_USB_SDK_VERSION="${PROJECT_VERSION}")
+  PRISM_REQUIRED_USB_SDK_VERSION="${PRISM_USB_SDK_VERSION}")
 target_include_directories(prism-viewer-sdk INTERFACE
   "${PRISM_USB_SDK_INCLUDE_DIR}")
 if(WIN32)
