@@ -80,7 +80,22 @@ jobs:
 
       - name: Test Viewer
         shell: pwsh
-        run: ctest --test-dir build-windows -C Release --output-on-failure
+        run: |
+          ctest --test-dir build-windows -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) {
+            $testExit = $LASTEXITCODE
+            & build-windows/Release/prism-viewer.exe --window-layout-self-test `
+              --dataset-tab-screenshots "$env:RUNNER_TEMP/dataset-layout"
+            exit $testExit
+          }
+
+      - name: Upload Windows layout diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-layout-diagnostics
+          path: ${{ runner.temp }}/dataset-layout-*.png
+          if-no-files-found: ignore
 
       - name: Package Viewer
         shell: pwsh

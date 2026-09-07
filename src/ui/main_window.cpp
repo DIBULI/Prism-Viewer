@@ -9996,11 +9996,23 @@ int runViewerApplication(int argc, char** argv) {
       for (int selected = 0; selected < 3; ++selected) {
         dataset_sensor_tabs->setCurrentIndex(selected);
         app.processEvents();
+        QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        app.processEvents();
         for (int tab = 0; tab < 3; ++tab) {
           dataset_overview_ok = dataset_overview_ok &&
               previews[tab]->isVisible() == (tab == selected);
         }
         const auto* preview = previews[selected];
+        std::cout << "dataset_tab_layout index=" << selected
+                  << " view=" << preview->width() << 'x' << preview->height()
+                  << " tabs=" << dataset_sensor_tabs->width() << 'x'
+                  << dataset_sensor_tabs->height()
+                  << " visible=" << previews[0]->isVisible()
+                  << previews[1]->isVisible() << previews[2]->isVisible()
+                  << " controls=" << dataset_playback_button->isVisible()
+                  << dataset_playback_speed->isVisible()
+                  << dataset_playback_position->isVisible()
+                  << dataset_metadata_toggle->isVisible() << '\n';
         dataset_overview_ok = dataset_overview_ok &&
             preview->width() >= dataset_sensor_tabs->width() * 0.85 &&
             preview->height() >= dataset_sensor_tabs->height() * 0.55 &&
@@ -10016,13 +10028,24 @@ int runViewerApplication(int argc, char** argv) {
         }
       }
       dataset_sensor_tabs->setCurrentIndex(0);
+      // Native Windows delivers deferred layout requests after a page is
+      // shown; inspect the settled camera page, not its previous geometry.
+      app.processEvents();
+      QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+      app.processEvents();
       const auto camera_images =
           dataset_camera_preview->findChildren<QLabel*>(
               QStringLiteral("cameraImage"));
       dataset_overview_ok = dataset_overview_ok && camera_images.size() == 4;
       for (const auto* image : camera_images) {
+        const QRect bounds = image->parentWidget()->rect();
+        const QRect geometry = image->geometry();
+        std::cout << "dataset_camera_layout image=" << geometry.x() << ','
+                  << geometry.y() << ',' << geometry.width() << ','
+                  << geometry.height() << " parent=" << bounds.width()
+                  << 'x' << bounds.height() << '\n';
         dataset_overview_ok = dataset_overview_ok &&
-            image->parentWidget()->rect().contains(image->geometry());
+            bounds.contains(geometry);
       }
       dataset_metadata_toggle->setChecked(true);
       app.processEvents();
