@@ -915,10 +915,11 @@ def build_story():
             ["Camera 0-3 JPEG", "/prism/cameraN/image/compressed"],
             ["板载 IMU0", "/prism/imu0/data"],
             ["板载 IMU1（仅双 IMU 版本）", "/prism/imu1/data"],
-            ["LiDAR 点云", "/prism/lidar/points"],
+            ["LiDAR 点云（PointCloud2，10 Hz）", "/prism/lidar/points"],
             ["LiDAR 内置 IMU", "/prism/lidar/imu/data"],
         ], [60 * mm, 104 * mm]
     )]
+    story += [P("LiDAR 点云使用标准 sensor_msgs/PointCloud2；header stamp 为帧内第一点时间，每个点的 uint32 offset_time 字段保存相对纳秒偏移。播放或订阅只需要标准 sensor_msgs，不需要 Livox 自定义消息包。")]
     story += [callout(
         "文件安全",
         "转换先写临时文件或临时目录，完成后才替换已有输出。取消或失败不会破坏原有 Bag。输出路径不能覆盖源 Prism 数据集目录。",

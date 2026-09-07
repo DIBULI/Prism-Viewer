@@ -19,6 +19,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -176,6 +177,15 @@ RosTime rosTimeFromUs(uint64_t timestamp_us) {
                  static_cast<uint32_t>(timestamp_us % 1000000ULL) * 1000u};
 }
 
+RosTime rosTimeFromNs(uint64_t timestamp_ns) {
+  const uint64_t seconds = timestamp_ns / 1000000000ULL;
+  if (seconds > std::numeric_limits<uint32_t>::max()) {
+    throw std::runtime_error("timestamp exceeds ROS1 time range");
+  }
+  return RosTime{static_cast<uint32_t>(seconds),
+                 static_cast<uint32_t>(timestamp_ns % 1000000000ULL)};
+}
+
 Bytes timeValue(const RosTime& time) {
   Bytes bytes;
   appendU32(&bytes, time.seconds);
@@ -186,6 +196,15 @@ Bytes timeValue(const RosTime& time) {
 void appendRos1Header(Bytes* message, uint32_t sequence,
                       uint64_t timestamp_us, const std::string& frame_id) {
   const RosTime time = rosTimeFromUs(timestamp_us);
+  appendU32(message, sequence);
+  appendU32(message, time.seconds);
+  appendU32(message, time.nanoseconds);
+  appendString(message, frame_id);
+}
+
+void appendRos1HeaderNs(Bytes* message, uint32_t sequence,
+                        uint64_t timestamp_ns, const std::string& frame_id) {
+  const RosTime time = rosTimeFromNs(timestamp_ns);
   appendU32(message, sequence);
   appendU32(message, time.seconds);
   appendU32(message, time.nanoseconds);
@@ -241,6 +260,14 @@ class Ros1BagWriter {
 
   void writeMessage(Connection* connection, uint64_t timestamp_us,
                     const Bytes& message) {
+    if (timestamp_us > std::numeric_limits<uint64_t>::max() / 1000ULL) {
+      throw std::runtime_error("timestamp exceeds ROS1 bag range");
+    }
+    writeMessageNs(connection, timestamp_us * 1000ULL, message);
+  }
+
+  void writeMessageNs(Connection* connection, uint64_t timestamp_ns,
+                      const Bytes& message) {
     if (connection == nullptr) throw std::logic_error("missing connection");
     if (!connection->embedded) {
       appendConnectionRecord(&chunk_data_, *connection);
@@ -249,7 +276,7 @@ class Ros1BagWriter {
     if (chunk_data_.size() > std::numeric_limits<uint32_t>::max()) {
       throw std::runtime_error("rosbag chunk is too large");
     }
-    const RosTime time = rosTimeFromUs(timestamp_us);
+    const RosTime time = rosTimeFromNs(timestamp_ns);
     const uint32_t offset = static_cast<uint32_t>(chunk_data_.size());
     appendRecord(&chunk_data_,
                  {{"op", numberValue(kOpMessageData)},
@@ -453,9 +480,136 @@ const std::string kPointCloud2Definition =
     std::string(kHeaderDefinition) +
     "================================================================================\n"
     "MSG: sensor_msgs/PointField\n"
-    "uint8 INT8=1\nuint8 UINT8=2\nuint8 INT16=3\nuint8 UINT16=4\n"
-    "uint8 INT32=5\nuint8 UINT32=6\nuint8 FLOAT32=7\nuint8 FLOAT64=8\n"
-    "string name\nuint32 offset\nuint8 datatype\nuint32 count\n";
+    "uint8 INT8=1\n"
+    "uint8 UINT8=2\n"
+    "uint8 INT16=3\n"
+    "uint8 UINT16=4\n"
+    "uint8 INT32=5\n"
+    "uint8 UINT32=6\n"
+    "uint8 FLOAT32=7\n"
+    "uint8 FLOAT64=8\n"
+    "string name\n"
+    "uint32 offset\n"
+    "uint8 datatype\n"
+    "uint32 count\n";
+
+struct LidarFramePoint {
+  uint32_t offset_time_ns = 0;
+  float x_m = 0.0F;
+  float y_m = 0.0F;
+  float z_m = 0.0F;
+  uint8_t reflectivity = 0;
+  uint8_t tag = 0;
+};
+
+struct LidarFrame {
+  uint64_t timebase_ns = 0;
+  std::string frame_id;
+  std::vector<LidarFramePoint> points;
+};
+
+class LidarFrameAccumulator {
+ public:
+  static constexpr uint64_t kFramePeriodNs = 100000000ULL;
+
+  std::vector<LidarFrame> append(uint64_t timestamp_us,
+                                 uint32_t time_interval_100ns,
+                                 const std::string& frame_id,
+                                 const Bytes& point_data,
+                                 uint32_t point_count) {
+    constexpr uint32_t kStoredPointSize = 16u;
+    if (point_count == 0u ||
+        point_data.size() !=
+            static_cast<size_t>(point_count) * kStoredPointSize) {
+      throw std::runtime_error("LiDAR payload size does not match point count");
+    }
+    if (timestamp_us > std::numeric_limits<uint64_t>::max() / 1000ULL) {
+      throw std::overflow_error("LiDAR batch timestamp overflow");
+    }
+
+    std::vector<LidarFrame> completed;
+    const uint64_t batch_time_ns = timestamp_us * 1000ULL;
+    const uint64_t batch_span_ns =
+        static_cast<uint64_t>(time_interval_100ns) * 100ULL;
+    const uint64_t intervals = point_count > 1u ? point_count - 1u : 0u;
+    for (uint32_t index = 0; index < point_count; ++index) {
+      const uint64_t source_offset_ns =
+          intervals == 0u
+              ? 0u
+              : (static_cast<uint64_t>(index) * batch_span_ns +
+                 intervals / 2u) /
+                    intervals;
+      if (batch_time_ns >
+          std::numeric_limits<uint64_t>::max() - source_offset_ns) {
+        throw std::overflow_error("LiDAR point timestamp overflow");
+      }
+      const uint64_t point_timestamp_ns = batch_time_ns + source_offset_ns;
+
+      if (active_ && point_timestamp_ns < window_start_ns_) reset();
+      if (!active_) {
+        beginFrame(point_timestamp_ns, point_timestamp_ns, frame_id);
+      }
+      if (point_timestamp_ns >= window_end_ns_) {
+        if (!frame_.points.empty()) completed.push_back(finishFrame());
+        const uint64_t elapsed_ns = point_timestamp_ns - window_start_ns_;
+        window_start_ns_ +=
+            (elapsed_ns / kFramePeriodNs) * kFramePeriodNs;
+        beginFrame(window_start_ns_, point_timestamp_ns, frame_id);
+      }
+
+      const uint64_t offset_ns = point_timestamp_ns - frame_.timebase_ns;
+      if (offset_ns > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error("LiDAR point offset exceeds uint32 range");
+      }
+      const uint8_t* source =
+          point_data.data() + static_cast<size_t>(index) * kStoredPointSize;
+      frame_.points.push_back(
+          LidarFramePoint{static_cast<uint32_t>(offset_ns),
+                           static_cast<int32_t>(readU32(source)) / 1000.0F,
+                           static_cast<int32_t>(readU32(source + 4u)) / 1000.0F,
+                           static_cast<int32_t>(readU32(source + 8u)) / 1000.0F,
+                           source[12], source[13]});
+    }
+    return completed;
+  }
+
+  std::optional<LidarFrame> finish() {
+    if (!active_ || frame_.points.empty()) return std::nullopt;
+    LidarFrame result = finishFrame();
+    reset();
+    return result;
+  }
+
+ private:
+  void beginFrame(uint64_t window_start_ns, uint64_t first_point_ns,
+                  const std::string& frame_id) {
+    if (window_start_ns >
+        std::numeric_limits<uint64_t>::max() - kFramePeriodNs) {
+      throw std::overflow_error("LiDAR frame timestamp overflow");
+    }
+    active_ = true;
+    window_start_ns_ = window_start_ns;
+    window_end_ns_ = window_start_ns + kFramePeriodNs;
+    frame_ = {};
+    frame_.timebase_ns = first_point_ns;
+    frame_.frame_id = frame_id;
+    frame_.points.reserve(20000u);
+  }
+
+  LidarFrame finishFrame() { return std::move(frame_); }
+
+  void reset() {
+    active_ = false;
+    window_start_ns_ = 0;
+    window_end_ns_ = 0;
+    frame_ = {};
+  }
+
+  bool active_ = false;
+  uint64_t window_start_ns_ = 0;
+  uint64_t window_end_ns_ = 0;
+  LidarFrame frame_;
+};
 
 Bytes makeRos1CompressedImage(uint32_t sequence, uint64_t timestamp_us,
                               const std::string& frame_id,
@@ -497,48 +651,49 @@ Bytes makeRos1Imu(uint32_t sequence, uint64_t timestamp_us,
   return message;
 }
 
-void appendPointField(Bytes* message, const std::string& name,
-                      uint32_t offset, uint8_t datatype) {
+void appendRos1PointField(Bytes* message, const std::string& name,
+                          uint32_t offset, uint8_t datatype) {
   appendString(message, name);
   appendU32(message, offset);
   appendU8(message, datatype);
   appendU32(message, 1u);
 }
 
-Bytes makeRos1PointCloud2(uint32_t sequence, uint64_t timestamp_us,
-                          const std::string& frame_id,
-                          const Bytes& point_data, uint32_t point_count) {
-  constexpr uint32_t kStoredPointSize = 16u;
-  constexpr uint32_t kRosPointSize = 20u;
-  if (point_data.size() !=
-      static_cast<size_t>(point_count) * kStoredPointSize) {
-    throw std::runtime_error("LiDAR payload size does not match point count");
+Bytes makeRos1PointCloud2(uint32_t sequence, const LidarFrame& frame) {
+  constexpr uint32_t kPointStep = 20u;
+  if (frame.points.size() > std::numeric_limits<uint32_t>::max()) {
+    throw std::runtime_error("PointCloud2 contains too many points");
   }
+  const uint32_t point_count = static_cast<uint32_t>(frame.points.size());
+  if (point_count > std::numeric_limits<uint32_t>::max() / kPointStep) {
+    throw std::runtime_error("PointCloud2 data exceeds uint32 range");
+  }
+  const uint32_t data_size = point_count * kPointStep;
   Bytes message;
-  message.reserve(160u + static_cast<size_t>(point_count) * kRosPointSize);
-  appendRos1Header(&message, sequence, timestamp_us, frame_id);
+  message.reserve(160u + data_size);
+  appendRos1HeaderNs(&message, sequence, frame.timebase_ns, frame.frame_id);
   appendU32(&message, 1u);
   appendU32(&message, point_count);
-  appendU32(&message, 5u);
-  appendPointField(&message, "x", 0u, 7u);
-  appendPointField(&message, "y", 4u, 7u);
-  appendPointField(&message, "z", 8u, 7u);
-  appendPointField(&message, "intensity", 12u, 7u);
-  appendPointField(&message, "tag", 16u, 2u);
+  appendU32(&message, 6u);
+  appendRos1PointField(&message, "x", 0u, 7u);
+  appendRos1PointField(&message, "y", 4u, 7u);
+  appendRos1PointField(&message, "z", 8u, 7u);
+  appendRos1PointField(&message, "intensity", 12u, 2u);
+  appendRos1PointField(&message, "tag", 13u, 2u);
+  appendRos1PointField(&message, "offset_time", 16u, 6u);
   appendU8(&message, 0u);
-  appendU32(&message, kRosPointSize);
-  appendU32(&message, point_count * kRosPointSize);
-  appendU32(&message, point_count * kRosPointSize);
-  for (uint32_t point = 0; point < point_count; ++point) {
-    const uint8_t* source = point_data.data() + point * kStoredPointSize;
-    appendFloat(&message, static_cast<int32_t>(readU32(source)) / 1000.0f);
-    appendFloat(&message, static_cast<int32_t>(readU32(source + 4)) / 1000.0f);
-    appendFloat(&message, static_cast<int32_t>(readU32(source + 8)) / 1000.0f);
-    appendFloat(&message, static_cast<float>(source[12]));
-    appendU8(&message, source[13]);
+  appendU32(&message, kPointStep);
+  appendU32(&message, data_size);
+  appendU32(&message, data_size);
+  for (const auto& point : frame.points) {
+    appendFloat(&message, point.x_m);
+    appendFloat(&message, point.y_m);
+    appendFloat(&message, point.z_m);
+    appendU8(&message, point.reflectivity);
+    appendU8(&message, point.tag);
     appendU8(&message, 0u);
     appendU8(&message, 0u);
-    appendU8(&message, 0u);
+    appendU32(&message, point.offset_time_ns);
   }
   appendU8(&message, 1u);
   return message;
@@ -603,14 +758,29 @@ class CdrWriter {
 
 void writeRos2Header(CdrWriter* writer, uint64_t timestamp_us,
                      const std::string& frame_id) {
-  const uint64_t seconds = timestamp_us / 1000000ULL;
+  if (timestamp_us > std::numeric_limits<uint64_t>::max() / 1000ULL) {
+    throw std::runtime_error("timestamp exceeds ROS2 builtin Time range");
+  }
+  const uint64_t timestamp_ns = timestamp_us * 1000ULL;
+  const uint64_t seconds = timestamp_ns / 1000000000ULL;
   if (seconds >
       static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
     throw std::runtime_error("timestamp exceeds ROS2 builtin Time range");
   }
   writer->writeI32(static_cast<int32_t>(seconds));
-  writer->writeU32(
-      static_cast<uint32_t>(timestamp_us % 1000000ULL) * 1000u);
+  writer->writeU32(static_cast<uint32_t>(timestamp_ns % 1000000000ULL));
+  writer->writeString(frame_id);
+}
+
+void writeRos2HeaderNs(CdrWriter* writer, uint64_t timestamp_ns,
+                       const std::string& frame_id) {
+  const uint64_t seconds = timestamp_ns / 1000000000ULL;
+  if (seconds >
+      static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+    throw std::runtime_error("timestamp exceeds ROS2 builtin Time range");
+  }
+  writer->writeI32(static_cast<int32_t>(seconds));
+  writer->writeU32(static_cast<uint32_t>(timestamp_ns % 1000000000ULL));
   writer->writeString(frame_id);
 }
 
@@ -657,47 +827,43 @@ void writeRos2PointField(CdrWriter* writer, const std::string& name,
   writer->writeU32(1u);
 }
 
-Bytes makeRos2PointCloud2(uint64_t timestamp_us,
-                          const std::string& frame_id,
-                          const Bytes& point_data, uint32_t point_count) {
-  constexpr uint32_t kStoredPointSize = 16u;
-  constexpr uint32_t kRosPointSize = 20u;
-  if (point_data.size() !=
-      static_cast<size_t>(point_count) * kStoredPointSize) {
-    throw std::runtime_error("LiDAR payload size does not match point count");
+Bytes makeRos2PointCloud2(const LidarFrame& frame) {
+  constexpr uint32_t kPointStep = 20u;
+  if (frame.points.size() > std::numeric_limits<uint32_t>::max()) {
+    throw std::runtime_error("PointCloud2 contains too many points");
   }
-
-  Bytes ros_points;
-  ros_points.reserve(static_cast<size_t>(point_count) * kRosPointSize);
-  for (uint32_t point = 0; point < point_count; ++point) {
-    const uint8_t* source = point_data.data() + point * kStoredPointSize;
-    appendFloat(&ros_points,
-                static_cast<int32_t>(readU32(source)) / 1000.0f);
-    appendFloat(&ros_points,
-                static_cast<int32_t>(readU32(source + 4)) / 1000.0f);
-    appendFloat(&ros_points,
-                static_cast<int32_t>(readU32(source + 8)) / 1000.0f);
-    appendFloat(&ros_points, static_cast<float>(source[12]));
-    appendU8(&ros_points, source[13]);
-    appendU8(&ros_points, 0u);
-    appendU8(&ros_points, 0u);
-    appendU8(&ros_points, 0u);
+  const uint32_t point_count = static_cast<uint32_t>(frame.points.size());
+  if (point_count > std::numeric_limits<uint32_t>::max() / kPointStep) {
+    throw std::runtime_error("PointCloud2 data exceeds uint32 range");
+  }
+  Bytes point_data;
+  point_data.reserve(static_cast<size_t>(point_count) * kPointStep);
+  for (const auto& point : frame.points) {
+    appendFloat(&point_data, point.x_m);
+    appendFloat(&point_data, point.y_m);
+    appendFloat(&point_data, point.z_m);
+    appendU8(&point_data, point.reflectivity);
+    appendU8(&point_data, point.tag);
+    appendU8(&point_data, 0u);
+    appendU8(&point_data, 0u);
+    appendU32(&point_data, point.offset_time_ns);
   }
 
   CdrWriter writer;
-  writeRos2Header(&writer, timestamp_us, frame_id);
+  writeRos2HeaderNs(&writer, frame.timebase_ns, frame.frame_id);
   writer.writeU32(1u);
   writer.writeU32(point_count);
-  writer.writeU32(5u);
+  writer.writeU32(6u);
   writeRos2PointField(&writer, "x", 0u, 7u);
   writeRos2PointField(&writer, "y", 4u, 7u);
   writeRos2PointField(&writer, "z", 8u, 7u);
-  writeRos2PointField(&writer, "intensity", 12u, 7u);
-  writeRos2PointField(&writer, "tag", 16u, 2u);
+  writeRos2PointField(&writer, "intensity", 12u, 2u);
+  writeRos2PointField(&writer, "tag", 13u, 2u);
+  writeRos2PointField(&writer, "offset_time", 16u, 6u);
   writer.writeU8(0u);
-  writer.writeU32(kRosPointSize);
-  writer.writeU32(point_count * kRosPointSize);
-  writer.writeOctets(ros_points);
+  writer.writeU32(kPointStep);
+  writer.writeU32(static_cast<uint32_t>(point_data.size()));
+  writer.writeOctets(point_data);
   writer.writeU8(1u);
   return writer.finish();
 }
@@ -756,6 +922,7 @@ struct V6DatasetLayout {
   bool cameras = false;
   bool lidar = false;
   bool lidar_imu = false;
+  bool unix_epoch = false;
 };
 
 V6DatasetLayout readV6DatasetLayout(
@@ -790,13 +957,19 @@ V6DatasetLayout readV6DatasetLayout(
     throw std::runtime_error(
         "v6 dataset is incomplete and cannot be exported");
   }
-  if (required("time_domain") != "rk-clock-realtime" ||
-      required("timestamp_epoch") != "unix" ||
+  const bool unix_epoch =
+      required("time_domain") == "rk-clock-realtime" &&
+      required("timestamp_epoch") == "unix";
+  const bool sensor_board_boot_epoch =
+      required("time_domain") == "sensor-board-clock" &&
+      required("timestamp_epoch") == "boot";
+  if ((!unix_epoch && !sensor_board_boot_epoch) ||
       required("alignment") != "common-device-time-domain") {
     throw std::runtime_error("v6 dataset has an unsupported time domain");
   }
 
   V6DatasetLayout layout;
+  layout.unix_epoch = unix_epoch;
   const std::string& recording_mode = required("recording_mode");
   if (recording_mode == "full") {
     layout.full = true;
@@ -1062,22 +1235,31 @@ class Ros2BagWriter {
 
   void writeMessage(int topic_id, uint64_t timestamp_us,
                     const Bytes& message) {
+    if (timestamp_us >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / 1000ULL) {
+      throw std::runtime_error("timestamp exceeds ROS2 bag range");
+    }
+    writeMessageNs(topic_id, timestamp_us * 1000ULL, message);
+  }
+
+  void writeMessageNs(int topic_id, uint64_t timestamp_ns,
+                      const Bytes& message) {
     if (topic_id <= 0 ||
         topic_id > static_cast<int>(topics_.size())) {
       throw std::logic_error("invalid ROS2 bag topic id");
     }
-    if (timestamp_us >
-        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / 1000ULL) {
+    if (timestamp_ns >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
       throw std::runtime_error("timestamp exceeds ROS2 bag range");
     }
     if (message.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
       throw std::runtime_error("ROS2 message exceeds Qt byte-array limit");
     }
-    const int64_t timestamp_ns = static_cast<int64_t>(timestamp_us * 1000ULL);
+    const int64_t signed_timestamp_ns = static_cast<int64_t>(timestamp_ns);
     const QByteArray payload(
         reinterpret_cast<const char*>(message.data()),
         static_cast<int>(message.size()));
-    insert_message_.bindValue(0, static_cast<qlonglong>(timestamp_ns));
+    insert_message_.bindValue(0, static_cast<qlonglong>(signed_timestamp_ns));
     insert_message_.bindValue(1, topic_id);
     insert_message_.bindValue(2, payload);
     if (!insert_message_.exec()) {
@@ -1087,12 +1269,14 @@ class Ros2BagWriter {
     ++topics_[static_cast<size_t>(topic_id - 1)].message_count;
     ++message_count_;
     if (!has_messages_) {
-      minimum_timestamp_ns_ = timestamp_ns;
-      maximum_timestamp_ns_ = timestamp_ns;
+      minimum_timestamp_ns_ = signed_timestamp_ns;
+      maximum_timestamp_ns_ = signed_timestamp_ns;
       has_messages_ = true;
     } else {
-      minimum_timestamp_ns_ = std::min(minimum_timestamp_ns_, timestamp_ns);
-      maximum_timestamp_ns_ = std::max(maximum_timestamp_ns_, timestamp_ns);
+      minimum_timestamp_ns_ =
+          std::min(minimum_timestamp_ns_, signed_timestamp_ns);
+      maximum_timestamp_ns_ =
+          std::max(maximum_timestamp_ns_, signed_timestamp_ns);
     }
   }
 
@@ -1225,7 +1409,8 @@ class DatasetBagWriter {
       if (lidar_present) {
         lidar_ros1_ = &ros1_->addConnection(
             "/prism/lidar/points", "sensor_msgs/PointCloud2",
-            "1158d486dd51d683ce2f1be655c3c181", kPointCloud2Definition);
+            "1158d486dd51d683ce2f1be655c3c181",
+            kPointCloud2Definition);
       }
       if (lidar_imu_present) {
         lidar_imu_ros1_ = &ros1_->addConnection(
@@ -1299,18 +1484,13 @@ class DatasetBagWriter {
     }
   }
 
-  void writeLidar(uint32_t sequence, uint64_t timestamp_us,
-                  const std::string& frame_id, const Bytes& points,
-                  uint32_t point_count) {
+  void writeLidar(uint32_t sequence, const LidarFrame& frame) {
     if (format_ == RosbagFormat::Ros1) {
-      ros1_->writeMessage(
-          lidar_ros1_, timestamp_us,
-          makeRos1PointCloud2(sequence, timestamp_us, frame_id, points,
-                              point_count));
+      ros1_->writeMessageNs(lidar_ros1_, frame.timebase_ns,
+                            makeRos1PointCloud2(sequence, frame));
     } else {
-      ros2_->writeMessage(
-          lidar_ros2_, timestamp_us,
-          makeRos2PointCloud2(timestamp_us, frame_id, points, point_count));
+      ros2_->writeMessageNs(lidar_ros2_, frame.timebase_ns,
+                            makeRos2PointCloud2(frame));
     }
   }
 
@@ -1529,7 +1709,7 @@ RosbagExportResult exportDatasetToRosbag(
                                      std::to_string(line_number));
           }
           const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
-          if (strict_time_v6 &&
+          if (strict_time_v6 && v6_layout.unix_epoch &&
               !isPlausibleRkClockRealtimeUs(timestamp_us)) {
             throw std::runtime_error(
                 "v6 camera timestamp is not in the RK CLOCK_REALTIME epoch");
@@ -1591,7 +1771,7 @@ RosbagExportResult exportDatasetToRosbag(
                                    std::to_string(line_number));
         }
         const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
-        if (strict_time_v6 &&
+        if (strict_time_v6 && v6_layout.unix_epoch &&
             !isPlausibleRkClockRealtimeUs(timestamp_us)) {
           throw std::runtime_error(
               "v6 IMU timestamp is not in the RK CLOCK_REALTIME epoch");
@@ -1621,6 +1801,15 @@ RosbagExportResult exportDatasetToRosbag(
       uint64_t line_number = 0;
       uint64_t previous_timestamp = 0;
       uint32_t sequence = 0;
+      LidarFrameAccumulator frame_accumulator;
+      const auto write_completed_frames =
+          [&writer, &sequence, &result](
+              std::vector<LidarFrame> frames) {
+            for (const auto& frame : frames) {
+              writer.writeLidar(sequence++, frame);
+              ++result.lidar_messages;
+            }
+          };
       while (std::getline(input, line)) {
         ++line_number;
         if (line.empty() || line[0] == '#') continue;
@@ -1665,18 +1854,17 @@ RosbagExportResult exportDatasetToRosbag(
         if (strict_time_v6 &&
             (!has_v6_time_source || timestamp_synced != 1u)) {
           throw std::runtime_error(
-              "v6 lidar.tum requires a synchronized RK time source at line " +
+              "v6 lidar.tum requires a synchronized sensor time source at line " +
               std::to_string(line_number));
         }
         (void)device_type;
         (void)batch_id;
-        (void)time_interval_100ns;
-        // v6 records the LiDAR batch time normalized into the RK
-        // CLOCK_REALTIME epoch in the first column. Legacy v5 used a host
-        // receive time there. In both cases timestamp_raw remains opaque Livox
-        // metadata and must not be written directly to ROS.
+        // v6 records the LiDAR batch time in the manifest-declared common
+        // sensor time domain. Legacy v5 used a host receive time there. In
+        // both cases timestamp_raw remains opaque Livox metadata and must not
+        // be written directly to ROS.
         const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
-        if (strict_time_v6 &&
+        if (strict_time_v6 && v6_layout.unix_epoch &&
             !isPlausibleRkClockRealtimeUs(timestamp_us)) {
           throw std::runtime_error(
               "v6 LiDAR timestamp is not in the RK CLOCK_REALTIME epoch");
@@ -1690,17 +1878,21 @@ RosbagExportResult exportDatasetToRosbag(
         Bytes points = readContainerPayload(
             dataset_root, relative_path, offset, static_cast<uint32_t>(size),
             &container, &open_container);
-        writer.writeLidar(
-            sequence++, timestamp_us,
-            model == 1u ? "livox_mid360" : "livox_mid360s", points,
-            static_cast<uint32_t>(point_count));
-        ++result.lidar_messages;
+        const std::string frame_id =
+            model == 1u ? "livox_mid360" : "livox_mid360s";
+        write_completed_frames(frame_accumulator.append(
+            timestamp_us, time_interval_100ns, frame_id, points,
+            static_cast<uint32_t>(point_count)));
         result.lidar_points += point_count;
         ++completed;
         checkCancelled(cancelled);
         reportProgress(progress, completed, total, stage, false);
       }
       if (!input.eof()) throw std::runtime_error("LiDAR index read failed");
+      if (auto tail = frame_accumulator.finish()) {
+        writer.writeLidar(sequence++, *tail);
+        ++result.lidar_messages;
+      }
       reportProgress(progress, completed, total, stage, true);
     }
 
@@ -1774,12 +1966,12 @@ RosbagExportResult exportDatasetToRosbag(
         if (strict_time_v6 &&
             (!has_time_source || !has_tai_flag || timestamp_synced != 1u)) {
           throw std::runtime_error(
-              "v6 lidar_imu.tum requires a synchronized RK time source at line " +
+              "v6 lidar_imu.tum requires a synchronized sensor time source at line " +
               std::to_string(line_number));
         }
 
         const uint64_t timestamp_us = parseTimestampUs(timestamp_text);
-        if (strict_time_v6 &&
+        if (strict_time_v6 && v6_layout.unix_epoch &&
             !isPlausibleRkClockRealtimeUs(timestamp_us)) {
           throw std::runtime_error(
               "v6 LiDAR IMU timestamp is not in the RK CLOCK_REALTIME epoch");

@@ -165,10 +165,22 @@ class Ros1Reader {
  public:
   explicit Ros1Reader(Bytes bytes) : bytes_(std::move(bytes)) {}
 
+  uint8_t readU8() {
+    requireBytes(1u);
+    return bytes_[offset_++];
+  }
+
   uint32_t readU32() {
     requireBytes(4u);
     const uint32_t value = ::readU32(bytes_, offset_);
     offset_ += 4u;
+    return value;
+  }
+
+  float readFloat() {
+    const uint32_t bits = readU32();
+    float value = 0.0F;
+    std::memcpy(&value, &bits, sizeof(value));
     return value;
   }
 
@@ -187,6 +199,15 @@ class Ros1Reader {
     const std::string value(
         bytes_.begin() + static_cast<ptrdiff_t>(offset_),
         bytes_.begin() + static_cast<ptrdiff_t>(offset_ + size));
+    offset_ += size;
+    return value;
+  }
+
+  Bytes readOctets() {
+    const uint32_t size = readU32();
+    requireBytes(size);
+    Bytes value(bytes_.begin() + static_cast<ptrdiff_t>(offset_),
+                bytes_.begin() + static_cast<ptrdiff_t>(offset_ + size));
     offset_ += size;
     return value;
   }
@@ -345,10 +366,15 @@ int main(int argc, char** argv) {
       lidar_points.push_back(0u);
       lidar_points.push_back(0u);
     }
-    writeBytes(root / "lidar-data-0000.bin", lidar_points);
+    Bytes lidar_container = lidar_points;
+    lidar_container.insert(lidar_container.end(), lidar_points.begin(),
+                           lidar_points.end());
+    writeBytes(root / "lidar-data-0000.bin", lidar_container);
     writeText(root / "lidar.tum",
               "# lidar\n1780000000.000700 lidar-data-0000.bin 0 32 2 2 35 "
-              "1 9 1780000037000700000 100 1 1\n");
+              "1 9 1780000037000700000 100 1 1\n"
+              "1780000000.100700 lidar-data-0000.bin 32 32 2 2 35 "
+              "1 10 1780000037100700000 100 1 1\n");
     writeText(root / "lidar_imu.tum",
               "# lidar imu: SI units plus optional provenance\n"
               "1780000000.000800 1.25 -2.5 9.80665 0.125 -0.25 0.5 "
@@ -359,8 +385,8 @@ int main(int argc, char** argv) {
         root, bag, prism_viewer::dataset::RosbagFormat::Ros1, false);
     if (!result.success || result.camera_messages != 4u ||
         result.camera_exposure_messages != 4u ||
-        result.imu_messages != 2u || result.lidar_messages != 1u ||
-        result.lidar_imu_messages != 1u || result.lidar_points != 2u ||
+        result.imu_messages != 2u || result.lidar_messages != 2u ||
+        result.lidar_imu_messages != 1u || result.lidar_points != 4u ||
         result.output_bytes == 0u) {
       throw std::runtime_error("export result counts are incorrect: " +
                                result.error);
@@ -423,7 +449,7 @@ int main(int argc, char** argv) {
       }
       offset = record.next_offset;
     }
-    if (offset != index_position || index_entries != 12u ||
+    if (offset != index_position || index_entries != 13u ||
         message_counts.size() != 12u) {
       throw std::runtime_error("bag chunks or indexes are incomplete");
     }
@@ -439,7 +465,8 @@ int main(int argc, char** argv) {
             parseFields(bytes, record.data_offset, record.data_size);
         connection_types[connection] = fieldString(fields, "type");
         connection_topics[connection] = fieldString(fields, "topic");
-        if (connection_topics[connection].find("/prism/") != 0u) {
+        if (connection_topics[connection].find("/prism/") != 0u &&
+            connection_topics[connection].find("/livox/") != 0u) {
           throw std::runtime_error("unexpected ROS topic");
         }
       } else if (op(record) == 0x06u) {
@@ -458,6 +485,7 @@ int main(int argc, char** argv) {
         connection_topics[4] != "/prism/camera0/exposure_us" ||
         connection_topics[8] != "/prism/imu0/data" ||
         connection_topics[9] != "/prism/imu1/data" ||
+        connection_topics[10] != "/prism/lidar/points" ||
         connection_topics[11] != "/prism/lidar/imu/data") {
       throw std::runtime_error("bag connections are incorrect");
     }
@@ -484,9 +512,44 @@ int main(int argc, char** argv) {
     if (ros1_lidar_sequence != 0u ||
         ros1_lidar_seconds != 1780000000u ||
         ros1_lidar_nanoseconds != 700000u ||
-        ros1_lidar_frame != "livox_mid360s") {
+        ros1_lidar_frame != "livox_mid360s" ||
+        ros1_lidar.readU32() != 1u || ros1_lidar.readU32() != 2u ||
+        ros1_lidar.readU32() != 6u) {
+      throw std::runtime_error("ROS1 PointCloud2 header is incorrect");
+    }
+    const std::array<std::string, 6> expected_names = {
+        "x", "y", "z", "intensity", "tag", "offset_time"};
+    const std::array<uint32_t, 6> expected_offsets = {0u, 4u, 8u, 12u, 13u,
+                                                       16u};
+    const std::array<uint8_t, 6> expected_types = {7u, 7u, 7u, 2u, 2u, 6u};
+    for (size_t field = 0; field < expected_names.size(); ++field) {
+      if (ros1_lidar.readString() != expected_names[field] ||
+          ros1_lidar.readU32() != expected_offsets[field] ||
+          ros1_lidar.readU8() != expected_types[field] ||
+          ros1_lidar.readU32() != 1u) {
+        throw std::runtime_error("ROS1 PointCloud2 fields are incorrect");
+      }
+    }
+    if (ros1_lidar.readU8() != 0u || ros1_lidar.readU32() != 20u ||
+        ros1_lidar.readU32() != 40u) {
+      throw std::runtime_error("ROS1 PointCloud2 layout is incorrect");
+    }
+    Ros1Reader ros1_points(ros1_lidar.readOctets());
+    if (!nearlyEqual(ros1_points.readFloat(), 1.0) ||
+        !nearlyEqual(ros1_points.readFloat(), -2.0) ||
+        !nearlyEqual(ros1_points.readFloat(), 3.0) ||
+        ros1_points.readU8() != 70u || ros1_points.readU8() != 4u ||
+        ros1_points.readU8() != 0u || ros1_points.readU8() != 0u ||
+        ros1_points.readU32() != 0u ||
+        !nearlyEqual(ros1_points.readFloat(), 4.0) ||
+        !nearlyEqual(ros1_points.readFloat(), 5.0) ||
+        !nearlyEqual(ros1_points.readFloat(), -6.0) ||
+        ros1_points.readU8() != 71u || ros1_points.readU8() != 5u ||
+        ros1_points.readU8() != 0u || ros1_points.readU8() != 0u ||
+        ros1_points.readU32() != 10000u || !ros1_points.atEnd() ||
+        ros1_lidar.readU8() != 1u || !ros1_lidar.atEnd()) {
       throw std::runtime_error(
-          "ROS1 LiDAR did not preserve the normalized RK measurement time");
+          "ROS1 PointCloud2 or point offsets are incorrect");
     }
     Ros1Reader ros1_lidar_imu(first_messages.at(11u));
     if (ros1_lidar_imu.readU32() != 0u ||
@@ -563,9 +626,9 @@ int main(int argc, char** argv) {
         root, ros2_bag, prism_viewer::dataset::RosbagFormat::Ros2, false);
     if (!ros2_result.success || ros2_result.camera_messages != 4u ||
         ros2_result.camera_exposure_messages != 4u ||
-        ros2_result.imu_messages != 2u || ros2_result.lidar_messages != 1u ||
+        ros2_result.imu_messages != 2u || ros2_result.lidar_messages != 2u ||
         ros2_result.lidar_imu_messages != 1u ||
-        ros2_result.lidar_points != 2u || ros2_result.output_bytes == 0u ||
+        ros2_result.lidar_points != 4u || ros2_result.output_bytes == 0u ||
         !std::filesystem::is_directory(ros2_bag)) {
       throw std::runtime_error("ROS2 export result is incorrect: " +
                                ros2_result.error);
@@ -580,11 +643,12 @@ int main(int argc, char** argv) {
     const std::string metadata = readText(ros2_metadata);
     if (metadata.find("version: 5") == std::string::npos ||
         metadata.find("storage_identifier: sqlite3") == std::string::npos ||
-        metadata.find("message_count: 12") == std::string::npos ||
+        metadata.find("message_count: 13") == std::string::npos ||
         metadata.find("sensor_msgs/msg/CompressedImage") == std::string::npos ||
         metadata.find("std_msgs/msg/UInt32") == std::string::npos ||
         metadata.find("sensor_msgs/msg/Imu") == std::string::npos ||
-        metadata.find("sensor_msgs/msg/PointCloud2") == std::string::npos ||
+        metadata.find("sensor_msgs/msg/PointCloud2") ==
+            std::string::npos ||
         metadata.find("dataset_ros2_0.db3") == std::string::npos) {
       throw std::runtime_error("ROS2 metadata.yaml is incomplete");
     }
@@ -643,7 +707,7 @@ int main(int argc, char** argv) {
       }
       QSqlQuery count(database);
       if (!count.exec(QStringLiteral("SELECT COUNT(*) FROM messages;")) ||
-          !count.next() || count.value(0).toULongLong() != 12u) {
+          !count.next() || count.value(0).toULongLong() != 13u) {
         throw std::runtime_error("ROS2 message count is incorrect");
       }
       const auto messageFor = [&database](const QString& topic) {
@@ -795,17 +859,13 @@ int main(int argc, char** argv) {
         lidar_message.readU32() != 700000u ||
         lidar_message.readString() != "livox_mid360s" ||
         lidar_message.readU32() != 1u || lidar_message.readU32() != 2u ||
-        lidar_message.readU32() != 5u) {
+        lidar_message.readU32() != 6u) {
       throw std::runtime_error("ROS2 PointCloud2 header is incorrect");
     }
-    const std::array<std::string, 5> field_names = {
-        "x", "y", "z", "intensity", "tag"};
-    const std::array<uint32_t, 5> field_offsets = {0u, 4u, 8u, 12u, 16u};
-    const std::array<uint8_t, 5> field_types = {7u, 7u, 7u, 7u, 2u};
-    for (size_t field = 0; field < field_names.size(); ++field) {
-      if (lidar_message.readString() != field_names[field] ||
-          lidar_message.readU32() != field_offsets[field] ||
-          lidar_message.readU8() != field_types[field] ||
+    for (size_t field = 0; field < expected_names.size(); ++field) {
+      if (lidar_message.readString() != expected_names[field] ||
+          lidar_message.readU32() != expected_offsets[field] ||
+          lidar_message.readU8() != expected_types[field] ||
           lidar_message.readU32() != 1u) {
         throw std::runtime_error("ROS2 PointCloud2 fields are incorrect");
       }
@@ -814,19 +874,22 @@ int main(int argc, char** argv) {
         lidar_message.readU32() != 40u) {
       throw std::runtime_error("ROS2 PointCloud2 layout is incorrect");
     }
-    const Bytes ros2_points = lidar_message.readOctets();
-    const auto pointFloat = [&ros2_points](size_t offset) {
-      const uint32_t bits = ::readU32(ros2_points, offset);
-      float value = 0.0f;
-      std::memcpy(&value, &bits, sizeof(value));
-      return value;
-    };
-    if (ros2_points.size() != 40u || !nearlyEqual(pointFloat(0u), 1.0) ||
-        !nearlyEqual(pointFloat(4u), -2.0) ||
-        !nearlyEqual(pointFloat(8u), 3.0) ||
-        !nearlyEqual(pointFloat(12u), 70.0) || ros2_points[16] != 4u ||
+    Ros1Reader ros2_points(lidar_message.readOctets());
+    if (!nearlyEqual(ros2_points.readFloat(), 1.0) ||
+        !nearlyEqual(ros2_points.readFloat(), -2.0) ||
+        !nearlyEqual(ros2_points.readFloat(), 3.0) ||
+        ros2_points.readU8() != 70u || ros2_points.readU8() != 4u ||
+        ros2_points.readU8() != 0u || ros2_points.readU8() != 0u ||
+        ros2_points.readU32() != 0u ||
+        !nearlyEqual(ros2_points.readFloat(), 4.0) ||
+        !nearlyEqual(ros2_points.readFloat(), 5.0) ||
+        !nearlyEqual(ros2_points.readFloat(), -6.0) ||
+        ros2_points.readU8() != 71u || ros2_points.readU8() != 5u ||
+        ros2_points.readU8() != 0u || ros2_points.readU8() != 0u ||
+        ros2_points.readU32() != 10000u || !ros2_points.atEnd() ||
         lidar_message.readU8() != 1u || !lidar_message.atEnd()) {
-      throw std::runtime_error("ROS2 PointCloud2 data is incorrect");
+      throw std::runtime_error(
+          "ROS2 PointCloud2 CDR or point offsets are incorrect");
     }
 
     const std::filesystem::path cancelled_ros2 =
@@ -884,6 +947,38 @@ int main(int argc, char** argv) {
                  "conn_count") != 2u) {
       throw std::runtime_error("single synchronized IMU export failed: " +
                                single_imu_result.error);
+    }
+
+    const std::filesystem::path boot_time_root =
+        root / "sensor-board-boot-time";
+    std::filesystem::create_directories(boot_time_root);
+    writeText(boot_time_root / "dataset.info",
+              "format=prism-dataset-v6\n"
+              "complete=1\n"
+              "recording_mode=imu-only\n"
+              "image_storage=none\n"
+              "camera_index=none\n"
+              "lidar_storage=none\n"
+              "lidar_imu_storage=none\n"
+              "time_domain=sensor-board-clock\n"
+              "timestamp_epoch=boot\n"
+              "alignment=common-device-time-domain\n");
+    writeText(boot_time_root / "imu0.tum",
+              "1.000000 0.1 0.2 9.8 0.01 0.02 0.03\n");
+    writeText(boot_time_root / "imu1.tum", "# empty IMU1\n");
+    const std::filesystem::path boot_time_bag =
+        root / "sensor-board-boot-time.bag";
+    const auto boot_time_result =
+        prism_viewer::dataset::exportDatasetToRosbag(
+            boot_time_root, boot_time_bag,
+            prism_viewer::dataset::RosbagFormat::Ros1, false);
+    if (!boot_time_result.success || boot_time_result.imu_messages != 1u ||
+        boot_time_result.camera_messages != 0u ||
+        fieldU32(parseRecord(readFile(boot_time_bag), 13u),
+                 "conn_count") != 2u) {
+      throw std::runtime_error(
+          "Sensor Board boot-time export failed: " +
+          boot_time_result.error);
     }
 
     // v5 keeps the original ten-column point index and six-field LiDAR IMU
@@ -955,7 +1050,8 @@ int main(int argc, char** argv) {
             invalid_v6_root, invalid_v6_bag,
             prism_viewer::dataset::RosbagFormat::Ros1, false);
     if (invalid_v6_result.success ||
-        invalid_v6_result.error.find("requires a synchronized RK time source") ==
+        invalid_v6_result.error.find(
+            "requires a synchronized sensor time source") ==
             std::string::npos ||
         std::filesystem::exists(invalid_v6_bag)) {
       throw std::runtime_error(
@@ -1035,7 +1131,7 @@ int main(int argc, char** argv) {
         legacy_full_result.camera_exposure_messages != 4u ||
         legacy_full_result.imu_messages != 2u ||
         legacy_full_result.lidar_imu_messages != 0u ||
-        legacy_full_result.lidar_messages != 1u) {
+        legacy_full_result.lidar_messages != 2u) {
       throw std::runtime_error("legacy full dataset export failed: " +
                                legacy_full_result.error);
     }
@@ -1244,7 +1340,11 @@ int main(int argc, char** argv) {
           ros2_bag, destination,
           std::filesystem::copy_options::recursive);
     }
-    std::filesystem::remove_all(root);
+    if (std::getenv("PRISM_KEEP_ROSBAG_TEST_OUTPUT") == nullptr) {
+      std::filesystem::remove_all(root);
+    } else {
+      std::cout << "ROS bag test output kept at " << root << '\n';
+    }
     std::cout << "ROS1 and ROS2 bag exporter tests passed\n";
     return 0;
   } catch (const std::exception& exception) {

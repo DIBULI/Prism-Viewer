@@ -30,8 +30,15 @@ IMU；`/prism/lidar/imu/data` 是独立的雷达内置 IMU，不能混入或替�
 相机保留原始 JPEG，不做有损重编码。每个图像还会在对应的
 `/prism/cameraN/exposure_us` 话题输出数据集记录的实际曝光时间，`data` 的单位为
 微秒；曝光消息的 Bag 时间戳与对应 JPEG 完全相同。该话题使用标准 `UInt32`
-消息，不需要安装 Prism 自定义 ROS 消息包。点云字段为 `x`、`y`、`z`
-（float32 米）、`intensity`（float32，来自 Livox reflectivity）和 `tag`（uint8）。
+消息，不需要安装 Prism 自定义 ROS 消息包。点云采用标准 `PointCloud2`，header
+stamp 是帧内第一点在数据集声明时间域中的纳秒时间，坐标为 float32 米。每个点固定占
+20 字节，字段为 `x`、`y`、`z`、`intensity`、`tag` 和 `offset_time`；其中
+`offset_time` 是该点相对 header stamp 的 uint32 纳秒偏移。
+
+导出器按照 Livox ROS Driver 2 的默认 `publish_freq=10.0` 语义，利用每个原始
+批次的 `timestamp`、`time_interval_100ns` 和点序号恢复逐点时间，再按连续
+100 ms 窗口聚合成一条 `PointCloud2`。最后不足 100 ms 的尾帧仍会输出，保证
+转换不丢点。导出和播放只依赖标准 `sensor_msgs`，不要求安装 Livox 自定义消息包。
 
 ROS2 消息使用 little-endian CDR 序列化。SQLite 数据库采用 rosbag2 schema
 version 3，`metadata.yaml` 采用 version 5，以兼容 ROS2 Humble 及能够读取该
@@ -50,7 +57,7 @@ lidar-data-0001.bin
 lidar_imu.tum
 ```
 
-`lidar.tum` 保存归一化到 RK `CLOCK_REALTIME` 的雷达批次测量时间、容器位置、
+`lidar.tum` 保存归一化到 manifest 声明公共时间域的雷达批次测量时间、容器位置、
 点数、型号、Livox 设备类型、
 原始时间类型、批次号、原始时间戳、时间间隔和同步来源。点坐标在容器中保持
 毫米整数，只有导出 `PointCloud2` 时才转换成米。`lidar_imu.tum` 保存雷达内置
@@ -77,17 +84,20 @@ IMU 话题。
 
 ## 时间戳和文件安全
 
-- 相机、板载 IMU、LiDAR 点云和雷达 IMU 的 ROS 时间都使用各自索引第一列，
-  即以 Unix epoch 表示的 RK `CLOCK_REALTIME` 微秒时间。
+- 相机、板载 IMU、LiDAR 点云和雷达 IMU 的 ROS 时间都使用各自索引第一列。
+  `time_domain=rk-clock-realtime`、`timestamp_epoch=unix` 时是绝对 UTC；
+  `time_domain=sensor-board-clock`、`timestamp_epoch=boot` 时是 Sensor Board
+  启动相对时间。后者可正常播放和对齐，但不能当作绝对日期时间。
 - v6 只录制同步到该共同设备时间域的测量时间：相机采用公共 TRIG0 上升沿，
   板载 IMU 采用 sensor-board 测量时间，点云和雷达 IMU 采用 Agent 从雷达时钟
-  归一化出的 RK 时间。绝对 UTC 准确度不影响同设备内的对齐；Viewer 主机时间
+  归一化出的公共时间。绝对 UTC 准确度不影响同设备内的对齐；Viewer 主机时间
   不生成或后备数据时间戳。
 - `lidar.tum` 中的 `time_type` 和 `timestamp_raw` 仅用于保留来源。原始 PTP
   纳秒可能处于 TAI 时钟域，导出器不会把它直接用作 ROS 时间。
-- `time_interval_100ns`、同步状态和 TAI 偏移标记保留在 Prism 数据集；ROS
-  消息时间使用第一列 RK 时间。当前 PointCloud2 只有批次 header stamp，没有逐点
-  时间字段或运动去畸变。
+- `time_interval_100ns` 用于恢复批内逐点时间并生成 PointCloud2 的
+  `offset_time` 字段；
+  同步状态和 TAI 偏移标记仍保留在 Prism 数据集。导出只恢复时间，不对点坐标做
+  运动去畸变。
 - v6 导出会验证四路相机同一帧时间完全一致、LiDAR 点云/雷达 IMU 的同步来源
   字段，以及 manifest 声明的录制模式和必需文件。录制期间的 manifest 保持
   `complete=0`，只有停止成功后才原子替换为 `complete=1`；v3-v5 按旧格式兼容
@@ -108,5 +118,5 @@ ros2 bag info dataset.rosbag2
 ros2 bag play dataset.rosbag2
 ```
 
-ROS1 输出使用未压缩 chunk。ROS2 输出使用未压缩 SQLite3，读取端不需要 Prism
-专用插件。
+ROS1 输出使用未压缩 chunk。ROS2 输出使用未压缩 SQLite3；点云使用标准
+`sensor_msgs/PointCloud2`，读取端不需要 Prism 或 Livox 专用消息插件。
