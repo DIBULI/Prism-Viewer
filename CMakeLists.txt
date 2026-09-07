@@ -154,6 +154,7 @@ else()
   set(QT_PACKAGE Qt5)
 endif()
 find_package(Threads REQUIRED)
+target_link_libraries(prism-viewer-sdk INTERFACE Threads::Threads)
 
 option(PRISM_DEPLOY_RUNTIME_DEPENDENCIES
   "Install redistributable runtime dependencies for a release package" OFF)

@@ -83,8 +83,9 @@ DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame) {
             ? static_cast<uint8_t>(TimeSyncProvider::RkPtp)
             : static_cast<uint8_t>(TimeSyncProvider::SensorBoardInternal);
     normalized.payload[255] = 0u;
-    DeviceInfoStatus status;
-    status.info = prism::parseDeviceInfo(normalized);
+    // Reuse the local v4 decoder: Windows only exposes the SDK RuntimeApi,
+    // not the standalone C++ parseDeviceInfo symbol.
+    DeviceInfoStatus status = parseCompatibleDeviceInfo(normalized);
     status.time_sync_provider =
         status.info.sensor_board_time_synced
             ? TimeSyncProvider::LegacyUnknown
