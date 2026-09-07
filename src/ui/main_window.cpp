@@ -3021,6 +3021,7 @@ class MainWindow : public QMainWindow {
     dataset_frame_label_ = new QLabel(
         uiText("Frame: -", "帧：-"), dataset_page_);
     dataset_frame_slider_ = new QSlider(Qt::Horizontal, dataset_page_);
+    dataset_frame_slider_->setObjectName(QStringLiteral("datasetFrameSlider"));
     dataset_frame_slider_->setEnabled(false);
     dataset_frame_slider_->setRange(0, 0);
     dataset_navigation->addWidget(dataset_previous_frame_button_);
@@ -3039,16 +3040,13 @@ class MainWindow : public QMainWindow {
     dataset_playback_timer_->setSingleShot(true);
     dataset_playback_timer_->setTimerType(Qt::PreciseTimer);
 
-    auto* dataset_overview_splitter =
-        new QSplitter(Qt::Horizontal, dataset_page_);
-    dataset_overview_splitter->setObjectName(
-        QStringLiteral("datasetPlaybackOverviewSplitter"));
-    dataset_overview_splitter->setChildrenCollapsible(false);
-    dataset_overview_splitter->setHandleWidth(8);
+    dataset_sensor_tabs_ = new QTabWidget(dataset_page_);
+    dataset_sensor_tabs_->setObjectName(QStringLiteral("datasetSensorTabs"));
 
     auto* dataset_images_group = new QGroupBox(
         uiText("Recorded camera frame set", "已记录的四路相机帧集"),
-        dataset_overview_splitter);
+        dataset_sensor_tabs_);
+    dataset_images_group->setObjectName(QStringLiteral("datasetCameraTab"));
     auto* dataset_images_grid = new QGridLayout(dataset_images_group);
     dataset_images_grid->setHorizontalSpacing(10);
     dataset_images_grid->setVerticalSpacing(10);
@@ -3068,7 +3066,7 @@ class MainWindow : public QMainWindow {
       stack->addWidget(dataset_caption);
       dataset_image_labels_[camera] = new ImageViewLabel(tile);
       dataset_image_labels_[camera]->setObjectName(QStringLiteral("cameraImage"));
-      dataset_image_labels_[camera]->setMinimumSize(260, 180);
+      dataset_image_labels_[camera]->setMinimumSize(160, 100);
       dataset_image_labels_[camera]->setCursor(Qt::PointingHandCursor);
       dataset_image_labels_[camera]->clearImage(
           uiText("No dataset frame", "无数据集图像"));
@@ -3077,16 +3075,10 @@ class MainWindow : public QMainWindow {
       stack->addWidget(dataset_image_labels_[camera], 1);
       dataset_images_grid->addWidget(tile, camera / 2, camera % 2);
     }
-    auto* dataset_sensor_splitter =
-        new QSplitter(Qt::Vertical, dataset_overview_splitter);
-    dataset_sensor_splitter->setObjectName(
-        QStringLiteral("datasetSensorPreviewSplitter"));
-    dataset_sensor_splitter->setChildrenCollapsible(false);
-    dataset_sensor_splitter->setHandleWidth(8);
-
     auto* dataset_imu_group = new QGroupBox(
         uiText("Onboard IMU playback", "板载 IMU 回放"),
-        dataset_sensor_splitter);
+        dataset_sensor_tabs_);
+    dataset_imu_group->setObjectName(QStringLiteral("datasetImuTab"));
     auto* dataset_imu_layout = new QVBoxLayout(dataset_imu_group);
     dataset_imu_layout->setContentsMargins(8, 12, 8, 8);
     dataset_imu_layout->setSpacing(6);
@@ -3129,7 +3121,8 @@ class MainWindow : public QMainWindow {
     dataset_imu_layout->addWidget(dataset_imu_plot_, 1);
 
     auto* dataset_lidar_group = new QGroupBox(
-        uiText("LiDAR playback", "雷达回放"), dataset_sensor_splitter);
+        uiText("LiDAR playback", "雷达回放"), dataset_sensor_tabs_);
+    dataset_lidar_group->setObjectName(QStringLiteral("datasetLidarTab"));
     auto* dataset_lidar_layout = new QVBoxLayout(dataset_lidar_group);
     dataset_lidar_layout->setContentsMargins(8, 12, 8, 8);
     dataset_lidar_layout->setSpacing(6);
@@ -3185,17 +3178,12 @@ class MainWindow : public QMainWindow {
               }
             });
 
-    dataset_sensor_splitter->addWidget(dataset_imu_group);
-    dataset_sensor_splitter->addWidget(dataset_lidar_group);
-    dataset_sensor_splitter->setStretchFactor(0, 1);
-    dataset_sensor_splitter->setStretchFactor(1, 1);
-    dataset_sensor_splitter->setSizes({320, 320});
-    dataset_overview_splitter->addWidget(dataset_images_group);
-    dataset_overview_splitter->addWidget(dataset_sensor_splitter);
-    dataset_overview_splitter->setStretchFactor(0, 6);
-    dataset_overview_splitter->setStretchFactor(1, 5);
-    dataset_overview_splitter->setSizes({800, 650});
-    dataset_layout->addWidget(dataset_overview_splitter, 1);
+    dataset_sensor_tabs_->addTab(dataset_images_group, uiText("Camera", "相机"));
+    dataset_sensor_tabs_->addTab(dataset_imu_group, QStringLiteral("IMU"));
+    dataset_sensor_tabs_->addTab(dataset_lidar_group, QStringLiteral("LiDAR"));
+    dataset_layout->addWidget(dataset_sensor_tabs_, 1);
+    connect(dataset_sensor_tabs_, &QTabWidget::currentChanged, this,
+            [this](int) { updateVisualizationActivity(); });
 
     dataset_details_ = new QPlainTextEdit(dataset_page_);
     dataset_details_->setObjectName(QStringLiteral("datasetMetadataDetails"));
@@ -3730,13 +3718,35 @@ class MainWindow : public QMainWindow {
         imu_page_->isEnabled() && lidar_page_->isEnabled() &&
         imu0_selector_->isEnabled() && imu1_selector_->isEnabled() &&
         dataset_playback_button_->isEnabled();
+    // All streams advance on the shared timeline even while Camera is selected.
+    // Switching views must neither reset the data nor move a paused playback.
+    const auto cursor_before_switch = dataset_playback_cursor_;
+    const auto frame_before_switch = dataset_current_frame_;
+    const auto rate_before_switch = dataset_playback_rate_;
+    const auto counts_before_switch = dataset_playback_imu_counts_;
+    const auto position_before_switch = dataset_playback_position_label_->text();
+    bool tab_switch_ok = dataset_sensor_tabs_->count() == 3;
+    tabs_->setCurrentWidget(dataset_page_);
+    for (int tab : {1, 2, 0}) {
+      dataset_sensor_tabs_->setCurrentIndex(tab);
+      tab_switch_ok = tab_switch_ok &&
+          dataset_playback_cursor_ == cursor_before_switch &&
+          dataset_current_frame_ == frame_before_switch &&
+          dataset_playback_rate_ == rate_before_switch &&
+          dataset_playback_imu_counts_ == counts_before_switch &&
+          dataset_playback_position_label_->text() == position_before_switch &&
+          !dataset_playback_active_ &&
+          dataset_imu_plot_->sampleCount(0) == 1u &&
+          dataset_imu_plot_->sampleCount(1) == 1u &&
+          dataset_lidar_point_cloud_widget_->pointCount() == 2u;
+    }
     const bool success = streams_loaded && events_dispatched && imu_rendered &&
                          lidar_rendered && overview_rendered && rtk_rendered &&
-                         pages_available;
+                         pages_available && tab_switch_ok;
     if (report != nullptr) {
       *report = QStringLiteral(
                     "streams=%1 dispatch=%2 imu=%3 lidar=%4 overview=%5 "
-                    "rtk=%6 pages=%7 events=%8 points=%9")
+                    "rtk=%6 pages=%7 events=%8 points=%9 tab_switch=%10")
                     .arg(streams_loaded ? QStringLiteral("PASS")
                                         : QStringLiteral("FAIL"))
                     .arg(events_dispatched ? QStringLiteral("PASS")
@@ -3752,7 +3762,9 @@ class MainWindow : public QMainWindow {
                     .arg(pages_available ? QStringLiteral("PASS")
                                          : QStringLiteral("FAIL"))
                     .arg(dataset_playback_data_.timeline.size())
-                    .arg(dataset_playback_lidar_points_);
+                    .arg(dataset_playback_lidar_points_)
+                    .arg(tab_switch_ok ? QStringLiteral("PASS")
+                                       : QStringLiteral("FAIL"));
     }
     return success;
   }
@@ -3859,7 +3871,9 @@ class MainWindow : public QMainWindow {
     if (imu_plot_ != nullptr) imu_plot_->setActive(imu_active);
     if (dataset_imu_plot_ != nullptr) {
       dataset_imu_plot_->setActive(
-          window_active && tabs_->currentWidget() == dataset_page_);
+          window_active && tabs_->currentWidget() == dataset_page_ &&
+          dataset_sensor_tabs_ != nullptr &&
+          dataset_sensor_tabs_->currentIndex() == 1);
     }
     lidar_ui_enabled_.store(
         window_active && tabs_->currentWidget() == lidar_page_,
@@ -7326,6 +7340,9 @@ class MainWindow : public QMainWindow {
       dataset_playback_cursor_ = 0u;
       updateDatasetPlaybackPositionLabel();
     }
+    dataset_sensor_tabs_->setCurrentIndex(
+        dataset_frame_count_ != 0u ? 0 : (hasDatasetImuPlayback() ? 1 :
+                                         (hasDatasetLidarPlayback() ? 2 : 0)));
     updateDatasetPlaybackControls();
     appendLog(QStringLiteral(
                   "Recorded dataset loaded: %1 mode=%2 frame_sets=%3")
@@ -8684,6 +8701,7 @@ class MainWindow : public QMainWindow {
   WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
   CorsPanel* cors_panel_ = nullptr;
   QWidget* dataset_page_ = nullptr;
+  QTabWidget* dataset_sensor_tabs_ = nullptr;
   std::array<ImageViewLabel*, 4> image_labels_{};
   std::array<QLabel*, 4> frame_labels_{};
   CameraZoomDialog* live_camera_zoom_dialog_ = nullptr;
@@ -9711,10 +9729,10 @@ int runViewerApplication(int argc, char** argv) {
         window.findChild<QWidget*>(QStringLiteral("lidarPointCloudWidget"));
     auto* dataset_page =
         window.findChild<QWidget*>(QStringLiteral("datasetPage"));
-    auto* dataset_overview_splitter = window.findChild<QSplitter*>(
-        QStringLiteral("datasetPlaybackOverviewSplitter"));
-    auto* dataset_sensor_splitter = window.findChild<QSplitter*>(
-        QStringLiteral("datasetSensorPreviewSplitter"));
+    auto* dataset_sensor_tabs = window.findChild<QTabWidget*>(
+        QStringLiteral("datasetSensorTabs"));
+    auto* dataset_camera_preview = window.findChild<QWidget*>(
+        QStringLiteral("datasetCameraTab"));
     auto* dataset_imu_preview = window.findChild<QWidget*>(
         QStringLiteral("datasetImuPlotWidget"));
     auto* dataset_lidar_preview = window.findChild<QWidget*>(
@@ -9818,24 +9836,58 @@ int runViewerApplication(int argc, char** argv) {
     }
     bool dataset_overview_ok =
         main_tabs != nullptr && dataset_page != nullptr &&
-        dataset_overview_splitter != nullptr &&
-        dataset_sensor_splitter != nullptr &&
+        dataset_sensor_tabs != nullptr && dataset_camera_preview != nullptr &&
         dataset_imu_preview != nullptr && dataset_lidar_preview != nullptr &&
-        dataset_overview_splitter->orientation() == Qt::Horizontal &&
-        dataset_overview_splitter->count() == 2 &&
-        dataset_sensor_splitter->orientation() == Qt::Vertical &&
-        dataset_sensor_splitter->count() == 2;
+        dataset_sensor_tabs->count() == 3 &&
+        dataset_sensor_tabs->widget(0)->objectName() ==
+            QStringLiteral("datasetCameraTab") &&
+        dataset_sensor_tabs->widget(1)->objectName() ==
+            QStringLiteral("datasetImuTab") &&
+        dataset_sensor_tabs->widget(2)->objectName() ==
+            QStringLiteral("datasetLidarTab") &&
+        dataset_sensor_tabs->widget(1)->isAncestorOf(dataset_imu_preview) &&
+        dataset_sensor_tabs->widget(2)->isAncestorOf(dataset_lidar_preview) &&
+        !dataset_sensor_tabs->isAncestorOf(dataset_playback_button) &&
+        !dataset_sensor_tabs->isAncestorOf(dataset_metadata_toggle);
     if (dataset_overview_ok) {
       main_tabs->setCurrentWidget(dataset_page);
       app.processEvents();
-      const QList<int> overview_sizes = dataset_overview_splitter->sizes();
-      const QList<int> sensor_sizes = dataset_sensor_splitter->sizes();
-      dataset_overview_ok =
-          overview_sizes.size() == 2 && overview_sizes[0] > 0 &&
-          overview_sizes[1] > 0 && sensor_sizes.size() == 2 &&
-          sensor_sizes[0] > 0 && sensor_sizes[1] > 0 &&
-          dataset_imu_preview->isVisible() &&
-          dataset_lidar_preview->isVisible();
+      const int screenshot_arg = command_line.indexOf(
+          QStringLiteral("--dataset-tab-screenshots"));
+      const std::array<QWidget*, 3> previews = {
+          dataset_camera_preview, dataset_imu_preview, dataset_lidar_preview};
+      const std::array<const char*, 3> screenshot_names = {"camera", "imu", "lidar"};
+      for (int selected = 0; selected < 3; ++selected) {
+        dataset_sensor_tabs->setCurrentIndex(selected);
+        app.processEvents();
+        for (int tab = 0; tab < 3; ++tab) {
+          dataset_overview_ok = dataset_overview_ok &&
+              previews[tab]->isVisible() == (tab == selected);
+        }
+        const auto* preview = previews[selected];
+        dataset_overview_ok = dataset_overview_ok &&
+            preview->width() >= dataset_sensor_tabs->width() * 0.85 &&
+            preview->height() >= dataset_sensor_tabs->height() * 0.55 &&
+            dataset_playback_button->isVisible() &&
+            dataset_playback_speed->isVisible() &&
+            dataset_playback_position->isVisible() &&
+            dataset_metadata_toggle->isVisible();
+        if (screenshot_arg >= 0 && screenshot_arg + 1 < command_line.size()) {
+          dataset_overview_ok = dataset_page->grab().save(
+              command_line[screenshot_arg + 1] + QLatin1Char('-') +
+              QString::fromLatin1(screenshot_names[selected]) +
+              QStringLiteral(".png")) && dataset_overview_ok;
+        }
+      }
+      dataset_sensor_tabs->setCurrentIndex(0);
+      const auto camera_images =
+          dataset_camera_preview->findChildren<QLabel*>(
+              QStringLiteral("cameraImage"));
+      dataset_overview_ok = dataset_overview_ok && camera_images.size() == 4;
+      for (const auto* image : camera_images) {
+        dataset_overview_ok = dataset_overview_ok &&
+            image->parentWidget()->rect().contains(image->geometry());
+      }
       dataset_metadata_toggle->setChecked(true);
       app.processEvents();
       dataset_overview_ok = dataset_overview_ok &&
@@ -9866,7 +9918,7 @@ int runViewerApplication(int argc, char** argv) {
               << (imu_zoom_ok ? "PASS" : "FAIL")
               << " lidar_horizontal="
               << (lidar_layout_ok ? "PASS" : "FAIL")
-              << " dataset_overview="
+              << " dataset_tabs="
               << (dataset_overview_ok ? "PASS" : "FAIL")
               << " imu_10s_window="
               << (imu_window_ok ? "PASS" : "FAIL")
