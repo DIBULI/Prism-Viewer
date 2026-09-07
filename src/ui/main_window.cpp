@@ -3207,9 +3207,20 @@ class MainWindow : public QMainWindow {
               }
             });
 
-    dataset_sensor_tabs_->addTab(dataset_images_group, uiText("Camera", "相机"));
-    dataset_sensor_tabs_->addTab(dataset_imu_group, QStringLiteral("IMU"));
-    dataset_sensor_tabs_->addTab(dataset_lidar_group, QStringLiteral("LiDAR"));
+    auto add_sensor_tab = [this](QWidget* content, const QString& title) {
+      // Keep each view's real minimum size inside a scrollable viewport.
+      // Small desktops must not squeeze camera tiles or cut chart axes off.
+      content->layout()->setSizeConstraint(QLayout::SetMinimumSize);
+      auto* scroll = new QScrollArea(dataset_sensor_tabs_);
+      scroll->setObjectName(content->objectName() + QStringLiteral("Scroll"));
+      scroll->setFrameShape(QFrame::NoFrame);
+      scroll->setWidgetResizable(true);
+      scroll->setWidget(content);
+      dataset_sensor_tabs_->addTab(scroll, title);
+    };
+    add_sensor_tab(dataset_images_group, uiText("Camera", "相机"));
+    add_sensor_tab(dataset_imu_group, QStringLiteral("IMU"));
+    add_sensor_tab(dataset_lidar_group, QStringLiteral("LiDAR"));
     dataset_layout->addWidget(dataset_sensor_tabs_, 1);
     connect(dataset_sensor_tabs_, &QTabWidget::currentChanged, this,
             [this](int) { updateVisualizationActivity(); });
@@ -9786,7 +9797,8 @@ int runViewerApplication(int argc, char** argv) {
     return success ? 0 : 14;
   }
   if (command_line.contains(QStringLiteral("--window-layout-self-test"))) {
-    window.resize(1480, 940);
+    window.resize(command_line.contains(QStringLiteral("--compact-layout-test"))
+                      ? QSize(1200, 680) : QSize(1480, 940));
     window.show();
     app.processEvents();
     window.ensurePolished();
@@ -9965,11 +9977,12 @@ int runViewerApplication(int argc, char** argv) {
         dataset_imu_preview != nullptr && dataset_lidar_preview != nullptr &&
         dataset_sensor_tabs->count() == 3 &&
         dataset_sensor_tabs->widget(0)->objectName() ==
-            QStringLiteral("datasetCameraTab") &&
+            QStringLiteral("datasetCameraTabScroll") &&
         dataset_sensor_tabs->widget(1)->objectName() ==
-            QStringLiteral("datasetImuTab") &&
+            QStringLiteral("datasetImuTabScroll") &&
         dataset_sensor_tabs->widget(2)->objectName() ==
-            QStringLiteral("datasetLidarTab") &&
+            QStringLiteral("datasetLidarTabScroll") &&
+        dataset_sensor_tabs->widget(0)->isAncestorOf(dataset_camera_preview) &&
         dataset_sensor_tabs->widget(1)->isAncestorOf(dataset_imu_preview) &&
         dataset_sensor_tabs->widget(2)->isAncestorOf(dataset_lidar_preview) &&
         !dataset_sensor_tabs->isAncestorOf(dataset_playback_button) &&
@@ -10003,6 +10016,22 @@ int runViewerApplication(int argc, char** argv) {
               previews[tab]->isVisible() == (tab == selected);
         }
         const auto* preview = previews[selected];
+        auto* scroll = qobject_cast<QScrollArea*>(
+            dataset_sensor_tabs->widget(selected));
+        dataset_overview_ok = dataset_overview_ok && scroll != nullptr &&
+            scroll->widgetResizable() &&
+            scroll->widget()->height() >= scroll->widget()->minimumSizeHint().height();
+        if (scroll != nullptr) {
+          auto* bar = scroll->verticalScrollBar();
+          bar->setValue(bar->maximum());
+          app.processEvents();
+          const int bottom = preview->mapTo(
+              scroll->viewport(), QPoint(0, preview->height() - 1)).y();
+          dataset_overview_ok = dataset_overview_ok && bottom >= 0 &&
+              bottom < scroll->viewport()->height();
+          bar->setValue(0);
+          app.processEvents();
+        }
         std::cout << "dataset_tab_layout index=" << selected
                   << " view=" << preview->width() << 'x' << preview->height()
                   << " tabs=" << dataset_sensor_tabs->width() << 'x'

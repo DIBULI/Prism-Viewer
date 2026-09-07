@@ -587,6 +587,10 @@ if(BUILD_TESTING)
     NAME main-window-layout
     COMMAND prism-viewer --window-layout-self-test
   )
+  add_test(
+    NAME main-window-layout-compact
+    COMMAND prism-viewer --window-layout-self-test --compact-layout-test
+  )
   set_tests_properties(
     dataset-recorder-full dataset-recorder-imu-only dataset-playback-ui
     PROPERTIES RUN_SERIAL TRUE
@@ -598,6 +602,7 @@ if(BUILD_TESTING)
     set_tests_properties(
       dataset-recorder-full dataset-recorder-imu-only dataset-playback-ui
       main-window-layout
+      main-window-layout-compact
       PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
   endif()
