@@ -64,10 +64,13 @@ The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
 Viewer 1.1.0 uses Prism SDK **v1.1.0**, commit
-`fa9f5feef3f326c1538817c3474d3047fe226a81` (Runtime API 12), on every
+`01af764ebc55d049b501b1dd2a356d7379f1e2e5` (Runtime API 12), on every
 platform. It requires Agent 1.1.0. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
+This SDK update adds the aligned C++ RK-local API for applications running on
+the RK device. Viewer continues to use the Host USB API; its Host runtime and
+device protocol are unchanged by the RK-local update.
 The package contains:
 
 - public headers under `include/prism`;
