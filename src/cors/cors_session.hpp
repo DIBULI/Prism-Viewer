@@ -6,9 +6,12 @@
 #include <QtCore/QString>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
+#include <optional>
 #include <thread>
 
 namespace prism_viewer::cors {
@@ -52,6 +55,7 @@ class CorsSession final {
   void start(const CorsConfiguration& configuration,
              CorsCorrectionTransport transport,
              StatusHandler status_handler);
+  void setLiveGga(const std::optional<CorsGgaData>& data);
   void requestStop() noexcept;
   void stop();
   bool active() const noexcept;
@@ -60,9 +64,13 @@ class CorsSession final {
   void workerMain(CorsConfiguration configuration,
                   CorsCorrectionTransport transport,
                   StatusHandler status_handler);
+  QByteArray currentGga(const CorsConfiguration& configuration) const;
 
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> active_{false};
+  mutable std::mutex live_gga_mutex_;
+  std::optional<CorsGgaData> live_gga_;
+  std::chrono::steady_clock::time_point live_gga_updated_at_{};
   std::thread worker_;
 };
 

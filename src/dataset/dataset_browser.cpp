@@ -591,11 +591,19 @@ DatasetValidationResult validatePrismDatasetImpl(
         if (!declared || *declared != actual) {
           addIssue(&result, DatasetValidationSeverity::Error, "dataset.info",
                    0, name + " declares " + found->second +
-                          " but gps_rtk.csv contains " +
+                          " but the recorded status file contains " +
                           std::to_string(actual));
         }
       };
   result.recording_mode = field("recording_mode");
+  result.time_domain = field("time_domain");
+  result.timestamp_epoch = field("timestamp_epoch");
+  const bool unix_time_v6 =
+      strict_v6 && result.time_domain == "rk-clock-realtime" &&
+      result.timestamp_epoch == "unix";
+  const bool sensor_board_boot_time_v6 =
+      strict_v6 && result.time_domain == "sensor-board-clock" &&
+      result.timestamp_epoch == "boot";
   if (strict_v6) {
     const std::array<const char*, 8> required = {
         "complete",       "recording_mode", "image_storage",
@@ -616,8 +624,7 @@ DatasetValidationResult validatePrismDatasetImpl(
       addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
                "recording_mode must be full or imu-only");
     }
-    if (field("time_domain") != "rk-clock-realtime" ||
-        field("timestamp_epoch") != "unix" ||
+    if ((!unix_time_v6 && !sensor_board_boot_time_v6) ||
         field("alignment") != "common-device-time-domain") {
       addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
                "v6 time-domain declaration is missing or unsupported");
@@ -682,7 +689,7 @@ DatasetValidationResult validatePrismDatasetImpl(
                    line_number, error.what());
           continue;
         }
-        if (strict_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
+        if (unix_time_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
           addIssue(&result, DatasetValidationSeverity::Error, filename,
                    line_number,
                    "timestamp is outside the declared RK CLOCK_REALTIME epoch");
@@ -759,7 +766,7 @@ DatasetValidationResult validatePrismDatasetImpl(
       }
       try {
         const uint64_t timestamp_us = strictTimestampUs(timestamp_text);
-        if (strict_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
+        if (unix_time_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
           throw std::runtime_error(
               "timestamp is outside the declared RK CLOCK_REALTIME epoch");
         }
@@ -845,7 +852,7 @@ DatasetValidationResult validatePrismDatasetImpl(
       }
       try {
         const uint64_t timestamp_us = strictTimestampUs(timestamp_text);
-        if (strict_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
+        if (unix_time_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
           throw std::runtime_error(
               "timestamp is outside the declared RK CLOCK_REALTIME epoch");
         }
@@ -954,7 +961,7 @@ DatasetValidationResult validatePrismDatasetImpl(
       }
       try {
         const uint64_t timestamp_us = strictTimestampUs(timestamp_text);
-        if (strict_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
+        if (unix_time_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
           throw std::runtime_error(
               "timestamp is outside the declared RK CLOCK_REALTIME epoch");
         }
@@ -1106,6 +1113,279 @@ DatasetValidationResult validatePrismDatasetImpl(
   } else {
     checkOptionalManifestCount("gps_rtk_samples", 0u);
     checkOptionalManifestCount("gps_rtk_navigation_samples", 0u);
+  }
+
+  const auto validateRawRtcm =
+      [&](const std::string& prefix, const std::string& storage,
+          bool rover, bool* present, uint64_t* batches,
+          uint64_t* bytes, uint64_t* dropped_bytes) {
+        const std::string data_name = prefix + ".bin";
+        const std::string index_name = prefix + ".csv";
+        const std::filesystem::path data_path = root / data_name;
+        const std::filesystem::path index_path = root / index_name;
+        const bool data_present = std::filesystem::is_regular_file(data_path);
+        const bool index_present = std::filesystem::is_regular_file(index_path);
+        *present = data_present && index_present;
+        const bool declared = manifest.find(prefix + "_storage") != manifest.end();
+        if (declared) {
+          if (field((prefix + "_storage").c_str()) != storage ||
+              field((prefix + "_index").c_str()) != "csv-v1" ||
+              !*present) {
+            addIssue(&result, DatasetValidationSeverity::Error,
+                     "dataset.info", 0,
+                     prefix + " files do not match the manifest declaration");
+          }
+        } else if ((data_present || index_present) && strict_v6) {
+          addIssue(&result, DatasetValidationSeverity::Error,
+                   "dataset.info", 0,
+                   "v6 dataset has undeclared " + prefix + " files");
+        }
+        if (data_present != index_present) {
+          addIssue(&result, DatasetValidationSeverity::Error, prefix, 0,
+                   "raw RTCM data and index must both be present");
+        }
+        if (!*present) {
+          checkOptionalManifestCount(prefix + "_batches", 0u);
+          checkOptionalManifestCount(prefix + "_bytes", 0u);
+          if (rover) {
+            checkOptionalManifestCount(
+                prefix + "_agent_dropped_bytes", 0u);
+          }
+          return;
+        }
+
+        std::error_code size_error;
+        const uint64_t data_file_size =
+            std::filesystem::file_size(data_path, size_error);
+        if (size_error) {
+          addIssue(&result, DatasetValidationSeverity::Error, data_name, 0,
+                   "cannot determine raw RTCM file size");
+        }
+        std::ifstream input(index_path);
+        uint64_t line_number = 0U;
+        bool header_seen = false;
+        uint64_t previous_elapsed = 0U;
+        uint64_t previous_dropped = 0U;
+        for (std::string line; std::getline(input, line);) {
+          ++line_number;
+          if (line.empty() || line.front() == '#') continue;
+          if (!header_seen) {
+            header_seen = true;
+            const std::string expected =
+                rover
+                    ? "batch_index,recording_elapsed_us,host_receive_unix_us,byte_offset,byte_size,stream_sequence,agent_dropped_bytes"
+                    : "batch_index,recording_elapsed_us,host_receive_unix_us,byte_offset,byte_size";
+            if (line != expected) {
+              addIssue(&result, DatasetValidationSeverity::Error, index_name,
+                       line_number, "unsupported raw RTCM CSV header");
+            }
+            continue;
+          }
+          if (checkCancelled(cancelled, &result)) return;
+          const std::vector<std::string> columns = splitCsv(line);
+          if (columns.size() != (rover ? 7u : 5u)) {
+            addIssue(&result, DatasetValidationSeverity::Error, index_name,
+                     line_number, "raw RTCM row has the wrong column count");
+            continue;
+          }
+          std::vector<uint64_t> values;
+          values.reserve(columns.size());
+          bool numeric = true;
+          for (const auto& column : columns) {
+            const auto value = decimalValue(column);
+            numeric = numeric && value.has_value();
+            values.push_back(value.value_or(0U));
+          }
+          if (!numeric || values[0] != *batches ||
+              (*batches != 0U && values[1] < previous_elapsed) ||
+              values[2] < kMinimumRkClockRealtimeUs ||
+              values[3] != *bytes || values[4] == 0U ||
+              values[4] > std::numeric_limits<uint64_t>::max() - *bytes ||
+              (rover && (values[5] != *batches + 1U ||
+                          values[6] < previous_dropped))) {
+            addIssue(&result, DatasetValidationSeverity::Error, index_name,
+                     line_number,
+                     "raw RTCM sequence, timestamp, offset, or size is invalid");
+            continue;
+          }
+          previous_elapsed = values[1];
+          if (rover) {
+            previous_dropped = values[6];
+            *dropped_bytes = values[6];
+          }
+          *bytes += values[4];
+          ++*batches;
+          ++result.checked_records;
+        }
+        if (!input.eof()) {
+          addIssue(&result, DatasetValidationSeverity::Error, index_name, 0,
+                   "failed while reading raw RTCM index");
+        }
+        if (!header_seen) {
+          addIssue(&result, DatasetValidationSeverity::Error, index_name, 0,
+                   "raw RTCM CSV header is missing");
+        }
+        if (!size_error && *bytes != data_file_size) {
+          addIssue(&result, DatasetValidationSeverity::Error, data_name, 0,
+                   "raw RTCM index does not cover the complete binary file");
+        }
+        if (rover && *dropped_bytes != 0U) {
+          addIssue(&result, DatasetValidationSeverity::Error, index_name, 0,
+                   "Agent dropped rover RTCM bytes before USB delivery");
+        }
+        checkOptionalManifestCount(prefix + "_batches", *batches);
+        checkOptionalManifestCount(prefix + "_bytes", *bytes);
+        if (rover) {
+          checkOptionalManifestCount(
+              prefix + "_agent_dropped_bytes", *dropped_bytes);
+        }
+      };
+  validateRawRtcm("rover_rtcm", "raw-rtcm3-v1", true,
+                  &result.rover_rtcm_present, &result.rover_rtcm_batches,
+                  &result.rover_rtcm_bytes,
+                  &result.rover_rtcm_agent_dropped_bytes);
+  uint64_t ignored_base_dropped = 0U;
+  validateRawRtcm("base_rtcm", "raw-rtcm-v1", false,
+                  &result.base_rtcm_present, &result.base_rtcm_batches,
+                  &result.base_rtcm_bytes, &ignored_base_dropped);
+
+  const std::filesystem::path time_sync_path = root / "time_sync.csv";
+  result.time_sync_present = std::filesystem::is_regular_file(time_sync_path);
+  const bool time_sync_manifest_present =
+      manifest.find("time_sync_storage") != manifest.end();
+  if (time_sync_manifest_present) {
+    if (field("time_sync_storage") != "csv-v1" ||
+        !result.time_sync_present) {
+      addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
+               "time-sync file does not match the manifest declaration");
+    }
+  } else if (result.time_sync_present && strict_v6) {
+    addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
+             "v6 dataset with time_sync.csv is missing time_sync_storage");
+  }
+  if (result.time_sync_present) {
+    constexpr const char* kTimeSyncHeader =
+        "sample_index,recording_elapsed_us,host_receive_unix_us,"
+        "rk_system_time_us,device_info_version,sensor_board_online,"
+        "sensor_board_time_synced,time_sync_provider,"
+        "time_sync_provider_name,imu_time_synced_mask,"
+        "sensor_board_error_flags";
+    std::ifstream input(time_sync_path);
+    uint64_t line_number = 0u;
+    uint64_t previous_elapsed_us = 0u;
+    uint64_t previous_provider = 0u;
+    bool have_previous = false;
+    bool header_seen = false;
+    for (std::string line; std::getline(input, line);) {
+      ++line_number;
+      if (line.empty() || line.front() == '#') continue;
+      if (!header_seen) {
+        header_seen = true;
+        if (line != kTimeSyncHeader) {
+          addIssue(&result, DatasetValidationSeverity::Error,
+                   "time_sync.csv", line_number,
+                   "unsupported time-sync CSV header");
+        }
+        continue;
+      }
+      if (checkCancelled(cancelled, &result)) return result;
+      const std::vector<std::string> columns = splitCsv(line);
+      if (columns.size() != 11u) {
+        addIssue(&result, DatasetValidationSeverity::Error,
+                 "time_sync.csv", line_number,
+                 "time-sync row must contain 11 columns");
+        continue;
+      }
+      std::array<std::optional<uint64_t>, 10> values;
+      const std::array<size_t, 10> numeric_columns = {
+          0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 9u, 10u};
+      bool numeric_ok = true;
+      for (size_t index = 0; index < numeric_columns.size(); ++index) {
+        values[index] = decimalValue(columns[numeric_columns[index]]);
+        numeric_ok = numeric_ok && values[index].has_value();
+      }
+      if (!numeric_ok) {
+        addIssue(&result, DatasetValidationSeverity::Error,
+                 "time_sync.csv", line_number,
+                 "time-sync row contains an invalid number");
+        continue;
+      }
+      const uint64_t sample_index = *values[0];
+      const uint64_t elapsed_us = *values[1];
+      const uint64_t host_receive_us = *values[2];
+      const uint64_t rk_system_time_us = *values[3];
+      const uint64_t info_version = *values[4];
+      const uint64_t board_online = *values[5];
+      const uint64_t board_synced = *values[6];
+      const uint64_t provider = *values[7];
+      const uint64_t imu_sync_mask = *values[8];
+      const uint64_t error_flags = *values[9];
+      const bool provider_valid =
+          provider <= 2u || provider == 255u;
+      const char* expected_name =
+          provider == 0u
+              ? (strict_v6 ? "Sensor Board internal" : "none")
+              : (provider == 1u
+                     ? "Host via Sensor Board"
+                     : (provider == 2u
+                            ? "GPS"
+                            : "unknown (legacy DeviceInfo)"));
+      const bool provider_matches_domain =
+          !strict_v6 || (sensor_board_boot_time_v6 && provider == 0u) ||
+          (unix_time_v6 &&
+           (provider == 1u || provider == 2u || provider == 255u));
+      const bool provider_sync_matches =
+          strict_v6 ? (provider > 2u || board_synced != 0u)
+                    : ((board_synced != 0u) == (provider != 0u));
+      if (sample_index != result.time_sync_samples ||
+          (have_previous && elapsed_us < previous_elapsed_us) ||
+          host_receive_us < kMinimumRkClockRealtimeUs ||
+          (unix_time_v6 && rk_system_time_us != 0u &&
+           rk_system_time_us < kMinimumRkClockRealtimeUs) ||
+          info_version == 0u ||
+          info_version > std::numeric_limits<uint16_t>::max() ||
+          board_online > 1u || board_synced > 1u || !provider_valid ||
+          !provider_matches_domain || columns[8] != expected_name ||
+          !provider_sync_matches ||
+          (board_synced != 0u && board_online == 0u) ||
+          imu_sync_mask > 0x03u ||
+          error_flags > std::numeric_limits<uint32_t>::max()) {
+        addIssue(&result, DatasetValidationSeverity::Error,
+                 "time_sync.csv", line_number,
+                 "time-sync sequence, timestamp, flag, or provider is invalid");
+        continue;
+      }
+      if (have_previous && provider != previous_provider) {
+        ++result.time_sync_provider_transitions;
+      }
+      previous_elapsed_us = elapsed_us;
+      previous_provider = provider;
+      have_previous = true;
+      ++result.time_sync_samples;
+      ++result.checked_records;
+    }
+    if (!input.eof()) {
+      addIssue(&result, DatasetValidationSeverity::Error,
+               "time_sync.csv", 0,
+               "failed while reading time-sync CSV");
+    }
+    if (!header_seen) {
+      addIssue(&result, DatasetValidationSeverity::Error,
+               "time_sync.csv", 0,
+               "time-sync CSV header is missing");
+    }
+    if (time_sync_manifest_present && result.time_sync_samples == 0u) {
+      addIssue(&result, DatasetValidationSeverity::Error,
+               "time_sync.csv", 0,
+               "declared time-sync status stream is empty");
+    }
+    checkOptionalManifestCount("time_sync_samples",
+                               result.time_sync_samples);
+    checkOptionalManifestCount("time_sync_provider_transitions",
+                               result.time_sync_provider_transitions);
+  } else {
+    checkOptionalManifestCount("time_sync_samples", 0u);
+    checkOptionalManifestCount("time_sync_provider_transitions", 0u);
   }
 
   checkOverlappingRanges(&ranges, &result);

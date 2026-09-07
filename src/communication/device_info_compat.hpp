@@ -7,7 +7,8 @@
 namespace prism_viewer::communication {
 
 enum class TimeSyncProvider : uint8_t {
-  Unsynced = 0,
+  SensorBoardInternal = 0,
+  Unsynced = SensorBoardInternal,
   RkPtp = 1,
   Gps = 2,
   LegacyUnknown = 0xff,
@@ -15,7 +16,7 @@ enum class TimeSyncProvider : uint8_t {
 
 struct DeviceInfoStatus {
   prism::DeviceInfo info;
-  TimeSyncProvider time_sync_provider = TimeSyncProvider::Unsynced;
+  TimeSyncProvider time_sync_provider = TimeSyncProvider::SensorBoardInternal;
 };
 
 // Parses both the public Host SDK 1.0 DeviceInfo v3 response and Agent 1.1

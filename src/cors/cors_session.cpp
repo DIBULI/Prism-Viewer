@@ -17,7 +17,8 @@ constexpr int kConnectTimeoutMs = 5000;
 constexpr int kHeaderTimeoutMs = 5000;
 constexpr int kSocketPollMs = 100;
 constexpr int kCorrectionFlushMs = 250;
-constexpr int kGgaPeriodMs = 5000;
+constexpr int kGgaPeriodMs = 1000;
+constexpr int kLiveGgaMaximumAgeMs = 2500;
 constexpr int kReconnectDelayMs = 2000;
 constexpr int kMaximumCorrectionBatchBytes = 16 * 1024;
 
@@ -70,6 +71,30 @@ QString endpointLabel(const CorsEndpoint& endpoint) {
 }  // namespace
 
 CorsSession::~CorsSession() { stop(); }
+
+void CorsSession::setLiveGga(const std::optional<CorsGgaData>& data) {
+  const std::lock_guard<std::mutex> lock(live_gga_mutex_);
+  live_gga_ = data;
+  live_gga_updated_at_ = data.has_value()
+                             ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+}
+
+QByteArray CorsSession::currentGga(
+    const CorsConfiguration& configuration) const {
+  {
+    const std::lock_guard<std::mutex> lock(live_gga_mutex_);
+    if (live_gga_.has_value() &&
+        std::chrono::steady_clock::now() - live_gga_updated_at_ <=
+            std::chrono::milliseconds(kLiveGgaMaximumAgeMs)) {
+      return buildNmeaGga(*live_gga_);
+    }
+  }
+  return buildNmeaGga(QDateTime::currentDateTimeUtc(),
+                      configuration.latitude_degrees,
+                      configuration.longitude_degrees,
+                      configuration.altitude_meters);
+}
 
 void CorsSession::start(const CorsConfiguration& configuration,
                         CorsCorrectionTransport transport,
@@ -174,11 +199,7 @@ void CorsSession::workerMain(CorsConfiguration configuration,
         continue;
       }
 
-      const QByteArray initial_gga =
-          buildNmeaGga(QDateTime::currentDateTimeUtc(),
-                       configuration.latitude_degrees,
-                       configuration.longitude_degrees,
-                       configuration.altitude_meters);
+      const QByteArray initial_gga = currentGga(configuration);
       writeAll(&socket,
                buildNtripRequest(configuration, endpoint, initial_gga),
                stop_requested_);
@@ -207,6 +228,12 @@ void CorsSession::workerMain(CorsConfiguration configuration,
       if (!inspection.accepted) {
         throw FatalSessionError(inspection.error.toStdString());
       }
+
+      // Some NTRIP v1/VRS casters acknowledge with a bare `ICY 200 OK` line
+      // and do not start their RTCM stream until the client sends GGA as
+      // stream data.  Keep the Ntrip-GGA request header for casters that use
+      // it, and also send the standard standalone sentence immediately.
+      writeAll(&socket, initial_gga + QByteArray("\r\n"), stop_requested_);
 
       status.rtk_status = transport.begin();
       status.rtk_status_valid = true;
@@ -258,11 +285,7 @@ void CorsSession::workerMain(CorsConfiguration configuration,
         }
 
         if (gga_timer.elapsed() >= kGgaPeriodMs) {
-          const QByteArray gga =
-              buildNmeaGga(QDateTime::currentDateTimeUtc(),
-                           configuration.latitude_degrees,
-                           configuration.longitude_degrees,
-                           configuration.altitude_meters);
+          const QByteArray gga = currentGga(configuration);
           writeAll(&socket, gga + QByteArray("\r\n"), stop_requested_);
           gga_timer.restart();
         }

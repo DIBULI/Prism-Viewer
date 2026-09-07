@@ -4,6 +4,7 @@
 #include "communication/prism_runtime.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace prism_viewer::communication {
@@ -16,6 +17,7 @@ struct OpenedDevice {
   prism::DeviceConfiguration configuration;
   prism::ExposureConfiguration exposure;
   prism::ExposureLimits exposure_limits;
+  std::optional<prism::GnssTimingStatus> gnss_timing;
   prism::NetworkInfo network;
   std::wstring serial_number;
   std::wstring path;

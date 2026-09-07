@@ -139,6 +139,7 @@ constexpr auto kImuPlotRefreshPeriod = std::chrono::milliseconds(33);
 constexpr size_t kMaximumPendingImuPlotSamples = 32;
 constexpr auto kMetadataUiPeriod = std::chrono::milliseconds(200);
 constexpr auto kCameraStatusUiPeriod = std::chrono::milliseconds(250);
+constexpr auto kRtkNavigationStatusPeriod = std::chrono::milliseconds(100);
 constexpr size_t kMaximumQueuedPreviewFrameSets = 1;
 constexpr int kCameraPreviewWidth = 640;
 constexpr int kCameraPreviewHeight = 512;
@@ -192,21 +193,6 @@ using prism_viewer::ui::DeviceInfoPanel;
 using prism_viewer::ui::WifiHotspotPanel;
 using prism_viewer::ui::WifiHotspotViewState;
 using prism_viewer::ui::decodePreviewJpeg;
-
-QString timeSyncProviderText(TimeSyncProvider provider) {
-  switch (provider) {
-    case TimeSyncProvider::Unsynced:
-      return uiText("none", "无");
-    case TimeSyncProvider::RkPtp:
-      return uiText("RK (PTP)", "RK（PTP）");
-    case TimeSyncProvider::Gps:
-      return QStringLiteral("GPS");
-    case TimeSyncProvider::LegacyUnknown:
-      return uiText("unknown (legacy DeviceInfo)",
-                    "未知（旧版 DeviceInfo）");
-  }
-  return uiText("unknown", "未知");
-}
 
 QString accelerationUnitText(AccelerationUnit unit) {
   switch (unit) {
@@ -363,6 +349,24 @@ enum class DatasetRecordingMode {
   ImuOnly,
 };
 
+enum class DatasetTimestampDomain {
+  SensorBoardBoot,
+  UnixUtc,
+};
+
+DatasetTimestampDomain datasetTimestampDomainForProvider(
+    TimeSyncProvider provider) {
+  switch (provider) {
+    case TimeSyncProvider::SensorBoardInternal:
+      return DatasetTimestampDomain::SensorBoardBoot;
+    case TimeSyncProvider::RkPtp:
+    case TimeSyncProvider::Gps:
+    case TimeSyncProvider::LegacyUnknown:
+      return DatasetTimestampDomain::UnixUtc;
+  }
+  return DatasetTimestampDomain::SensorBoardBoot;
+}
+
 bool shouldTakeFrameJob(bool frame_available, bool lidar_available,
                         uint64_t frame_timestamp_us,
                         uint64_t lidar_timestamp_us) {
@@ -384,6 +388,13 @@ struct DatasetRecordingSummary {
   uint64_t lidar_imu_sample_count = 0;
   uint64_t gps_rtk_sample_count = 0;
   uint64_t gps_rtk_navigation_sample_count = 0;
+  uint64_t rover_rtcm_batch_count = 0;
+  uint64_t rover_rtcm_byte_count = 0;
+  uint64_t rover_rtcm_agent_dropped_bytes = 0;
+  uint64_t base_rtcm_batch_count = 0;
+  uint64_t base_rtcm_byte_count = 0;
+  uint64_t time_sync_sample_count = 0;
+  uint64_t time_sync_transition_count = 0;
   std::array<uint64_t, 2> unsynced_imu_samples_dropped{};
   uint64_t unsynced_camera_frame_sets_dropped = 0;
   uint64_t unsynced_lidar_batches_dropped = 0;
@@ -409,7 +420,7 @@ class DatasetRecorder {
  public:
   bool start(const std::filesystem::path& root, bool overwrite,
              DatasetRecordingMode mode, bool record_lidar_streams,
-             std::string* error) {
+             DatasetTimestampDomain timestamp_domain, std::string* error) {
     std::unique_lock<std::mutex> lock(mutex_);
     try {
       if (session_open_) {
@@ -424,12 +435,14 @@ class DatasetRecorder {
         return false;
       }
       root_ = root;
-      const std::array<std::filesystem::path, 10> known_outputs = {
+      const std::array<std::filesystem::path, 15> known_outputs = {
           root_ / "imu0.tum", root_ / "imu1.tum", root_ / "cam0.tum",
           root_ / "cam1.tum", root_ / "cam2.tum", root_ / "cam3.tum",
           root_ / "lidar.tum", root_ / "lidar_imu.tum",
           root_ / "gps_rtk.csv",
-          root_ / "dataset.info"};
+          root_ / "rover_rtcm.bin", root_ / "rover_rtcm.csv",
+          root_ / "base_rtcm.bin", root_ / "base_rtcm.csv",
+          root_ / "time_sync.csv", root_ / "dataset.info"};
       bool existing_dataset = false;
       for (const auto& path : known_outputs) {
         const bool exists = std::filesystem::exists(path, filesystem_error);
@@ -519,6 +532,15 @@ class DatasetRecorder {
       lidar_imu_sample_count_ = 0;
       gps_rtk_sample_count_ = 0;
       gps_rtk_navigation_sample_count_ = 0;
+      rover_rtcm_batch_count_ = 0;
+      rover_rtcm_byte_count_ = 0;
+      rover_rtcm_agent_dropped_bytes_ = 0;
+      base_rtcm_batch_count_ = 0;
+      base_rtcm_byte_count_ = 0;
+      time_sync_sample_count_ = 0;
+      time_sync_transition_count_ = 0;
+      have_last_time_sync_provider_ = false;
+      last_time_sync_provider_ = TimeSyncProvider::Unsynced;
       unsynced_imu_samples_dropped_.fill(0);
       unsynced_camera_frame_sets_dropped_ = 0;
       unsynced_lidar_batches_dropped_ = 0;
@@ -531,6 +553,7 @@ class DatasetRecorder {
       queued_payload_bytes_ = 0;
       stop_writer_ = false;
       start_unix_us_ = wallClockUs();
+      start_steady_time_ = std::chrono::steady_clock::now();
       camera_chunk_index_ = 0;
       camera_chunk_size_ = 0;
       camera_chunk_name_.clear();
@@ -540,6 +563,7 @@ class DatasetRecorder {
       mode_.store(mode, std::memory_order_relaxed);
       record_lidar_streams_.store(record_lidar_streams,
                                   std::memory_order_relaxed);
+      timestamp_domain_ = timestamp_domain;
 
       for (size_t sensor = 0; sensor < imu_files_.size(); ++sensor) {
         imu_files_[sensor].open(
@@ -637,6 +661,53 @@ class DatasetRecorder {
              "solution_count,fix_count,float_count,decoder_errors,"
              "correction_error_code,navigation_error_code\n";
 
+      time_sync_file_.open(root_ / "time_sync.csv",
+                           std::ios::out | std::ios::trunc);
+      time_sync_file_.imbue(std::locale::classic());
+      if (!time_sync_file_.is_open()) {
+        closeFiles();
+        if (error != nullptr) {
+          *error = "cannot open time-sync status output file";
+        }
+        return false;
+      }
+      time_sync_file_
+          << "# Prism time-synchronization status snapshots\n"
+          << "sample_index,recording_elapsed_us,host_receive_unix_us,"
+             "rk_system_time_us,device_info_version,sensor_board_online,"
+             "sensor_board_time_synced,time_sync_provider,"
+             "time_sync_provider_name,imu_time_synced_mask,"
+             "sensor_board_error_flags\n";
+
+      rover_rtcm_data_file_.open(
+          root_ / "rover_rtcm.bin",
+          std::ios::out | std::ios::binary | std::ios::trunc);
+      rover_rtcm_index_file_.open(
+          root_ / "rover_rtcm.csv", std::ios::out | std::ios::trunc);
+      base_rtcm_data_file_.open(
+          root_ / "base_rtcm.bin",
+          std::ios::out | std::ios::binary | std::ios::trunc);
+      base_rtcm_index_file_.open(
+          root_ / "base_rtcm.csv", std::ios::out | std::ios::trunc);
+      rover_rtcm_index_file_.imbue(std::locale::classic());
+      base_rtcm_index_file_.imbue(std::locale::classic());
+      if (!rover_rtcm_data_file_.is_open() ||
+          !rover_rtcm_index_file_.is_open() ||
+          !base_rtcm_data_file_.is_open() ||
+          !base_rtcm_index_file_.is_open()) {
+        closeFiles();
+        if (error != nullptr) *error = "cannot open raw RTCM output files";
+        return false;
+      }
+      rover_rtcm_index_file_
+          << "# CRC-validated RTCM3 bytes from the rover receiver; NMEA is excluded\n"
+          << "batch_index,recording_elapsed_us,host_receive_unix_us,"
+             "byte_offset,byte_size,stream_sequence,agent_dropped_bytes\n";
+      base_rtcm_index_file_
+          << "# Raw CORS/base RTCM bytes successfully sent to the Agent\n"
+          << "batch_index,recording_elapsed_us,host_receive_unix_us,"
+             "byte_offset,byte_size\n";
+
       writeManifest(false);
       if (write_failed_) {
         closeFiles();
@@ -700,8 +771,8 @@ class DatasetRecorder {
           write_failed_) {
         return;
       }
-      if (!sample.timestamp_synced ||
-          !isPlausibleRkClockRealtimeUs(sample.timestamp_us)) {
+      if (!isValidSynchronizedTimestamp(sample.timestamp_synced,
+                                        sample.timestamp_us)) {
         ++unsynced_imu_samples_dropped_[sample.sensor_id];
         return;
       }
@@ -774,7 +845,7 @@ class DatasetRecorder {
       const uint64_t trigger_timestamp_us =
           metadata.trigger_time_ns / 1000ULL;
       if (metadata.trigger_time_ns == 0 ||
-          !isPlausibleRkClockRealtimeUs(trigger_timestamp_us) ||
+          !isValidTimestamp(trigger_timestamp_us) ||
           timestamp_us != trigger_timestamp_us) {
         ++dropped_frame_sets_;
         ++unsynced_camera_frame_sets_dropped_;
@@ -820,8 +891,8 @@ class DatasetRecorder {
         markWriteFailedNoThrow("LiDAR dataset batch is too large");
         return;
       }
-      if (!batch.timestamp_synced ||
-          !isPlausibleRkClockRealtimeUs(batch.timestamp_utc_us) ||
+      if (!isValidSynchronizedTimestamp(batch.timestamp_synced,
+                                        batch.timestamp_utc_us) ||
           (batch.tai_offset_applied && !batch.timestamp_synced)) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (active_.load(std::memory_order_relaxed) && session_open_ &&
@@ -895,8 +966,8 @@ class DatasetRecorder {
           write_failed_ || !lidar_imu_file_.is_open()) {
         return;
       }
-      if (!sample.timestamp_synced ||
-          !isPlausibleRkClockRealtimeUs(sample.timestamp_utc_us) ||
+      if (!isValidSynchronizedTimestamp(sample.timestamp_synced,
+                                        sample.timestamp_utc_us) ||
           (sample.tai_offset_applied && !sample.timestamp_synced)) {
         ++unsynced_lidar_imu_samples_dropped_;
         return;
@@ -920,6 +991,83 @@ class DatasetRecorder {
       ++lidar_imu_sample_count_;
     } catch (...) {
       markWriteFailedNoThrow("LiDAR IMU dataset write failed");
+    }
+  }
+
+  void appendRoverRtcm(const prism::RoverRtcmChunkView& chunk) {
+    try {
+      if (!active_.load(std::memory_order_acquire) || chunk.data == nullptr ||
+          chunk.data_size == 0U) {
+        return;
+      }
+      const auto received_at = std::chrono::steady_clock::now();
+      const uint64_t received_unix_us = wallClockUs();
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_ || !rover_rtcm_data_file_.is_open() ||
+          !rover_rtcm_index_file_.is_open()) {
+        return;
+      }
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+          received_at - start_steady_time_).count();
+      const uint64_t offset = rover_rtcm_byte_count_;
+      rover_rtcm_data_file_.write(
+          reinterpret_cast<const char*>(chunk.data),
+          static_cast<std::streamsize>(chunk.data_size));
+      rover_rtcm_index_file_
+          << rover_rtcm_batch_count_ << ','
+          << (elapsed > 0 ? static_cast<uint64_t>(elapsed) : 0U) << ','
+          << received_unix_us << ',' << offset << ',' << chunk.data_size
+          << ',' << chunk.sequence << ',' << chunk.dropped_bytes << '\n';
+      if (!rover_rtcm_data_file_.good() ||
+          !rover_rtcm_index_file_.good()) {
+        write_failed_ = true;
+        write_error_ = "rover RTCM dataset write failed";
+        return;
+      }
+      ++rover_rtcm_batch_count_;
+      rover_rtcm_byte_count_ += chunk.data_size;
+      rover_rtcm_agent_dropped_bytes_ =
+          std::max(rover_rtcm_agent_dropped_bytes_, chunk.dropped_bytes);
+    } catch (...) {
+      markWriteFailedNoThrow("rover RTCM dataset write failed");
+    }
+  }
+
+  void appendBaseRtcm(
+      const uint8_t* data, size_t size,
+      std::chrono::steady_clock::time_point received_at) {
+    try {
+      if (!active_.load(std::memory_order_acquire) || data == nullptr ||
+          size == 0U) {
+        return;
+      }
+      const uint64_t received_unix_us = wallClockUs();
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_ || !base_rtcm_data_file_.is_open() ||
+          !base_rtcm_index_file_.is_open()) {
+        return;
+      }
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+          received_at - start_steady_time_).count();
+      const uint64_t offset = base_rtcm_byte_count_;
+      base_rtcm_data_file_.write(
+          reinterpret_cast<const char*>(data),
+          static_cast<std::streamsize>(size));
+      base_rtcm_index_file_
+          << base_rtcm_batch_count_ << ','
+          << (elapsed > 0 ? static_cast<uint64_t>(elapsed) : 0U) << ','
+          << received_unix_us << ',' << offset << ',' << size << '\n';
+      if (!base_rtcm_data_file_.good() || !base_rtcm_index_file_.good()) {
+        write_failed_ = true;
+        write_error_ = "base RTCM dataset write failed";
+        return;
+      }
+      ++base_rtcm_batch_count_;
+      base_rtcm_byte_count_ += size;
+    } catch (...) {
+      markWriteFailedNoThrow("base RTCM dataset write failed");
     }
   }
 
@@ -1043,6 +1191,58 @@ class DatasetRecorder {
     }
   }
 
+  void appendTimeSync(const prism::DeviceInfo& info,
+                      TimeSyncProvider provider,
+                      uint64_t rk_system_time_us) {
+    try {
+      if (!active_.load(std::memory_order_acquire)) return;
+      const auto now = std::chrono::steady_clock::now();
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!active_.load(std::memory_order_relaxed) || !session_open_ ||
+          write_failed_ || !time_sync_file_.is_open()) {
+        return;
+      }
+
+      if (info.sensor_board_time_synced &&
+          provider != TimeSyncProvider::LegacyUnknown &&
+          datasetTimestampDomainForProvider(provider) != timestamp_domain_) {
+        write_failed_ = true;
+        write_error_ =
+            "sensor time domain changed during recording; restart recording";
+        return;
+      }
+
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+          now - start_steady_time_).count();
+      const uint64_t elapsed_us =
+          static_cast<uint64_t>(std::max<int64_t>(0, elapsed));
+      if (have_last_time_sync_provider_ &&
+          provider != last_time_sync_provider_) {
+        ++time_sync_transition_count_;
+      }
+
+      time_sync_file_
+          << time_sync_sample_count_ << ',' << elapsed_us << ','
+          << wallClockUs() << ',' << rk_system_time_us << ','
+          << info.info_version << ',' << (info.sensor_board_online ? 1 : 0)
+          << ',' << (info.sensor_board_time_synced ? 1 : 0) << ','
+          << static_cast<unsigned>(provider) << ','
+          << timeSyncProviderName(provider) << ','
+          << static_cast<unsigned>(info.imu_time_synced_mask) << ','
+          << info.sensor_board_error_flags << '\n';
+      if (!time_sync_file_.good()) {
+        write_failed_ = true;
+        write_error_ = "time-sync status dataset write failed";
+        return;
+      }
+      last_time_sync_provider_ = provider;
+      have_last_time_sync_provider_ = true;
+      ++time_sync_sample_count_;
+    } catch (...) {
+      markWriteFailedNoThrow("time-sync status dataset write failed");
+    }
+  }
+
   DatasetRecordingSummary stop() {
     active_.store(false, std::memory_order_release);
     {
@@ -1067,6 +1267,14 @@ class DatasetRecorder {
     summary.gps_rtk_sample_count = gps_rtk_sample_count_;
     summary.gps_rtk_navigation_sample_count =
         gps_rtk_navigation_sample_count_;
+    summary.rover_rtcm_batch_count = rover_rtcm_batch_count_;
+    summary.rover_rtcm_byte_count = rover_rtcm_byte_count_;
+    summary.rover_rtcm_agent_dropped_bytes =
+        rover_rtcm_agent_dropped_bytes_;
+    summary.base_rtcm_batch_count = base_rtcm_batch_count_;
+    summary.base_rtcm_byte_count = base_rtcm_byte_count_;
+    summary.time_sync_sample_count = time_sync_sample_count_;
+    summary.time_sync_transition_count = time_sync_transition_count_;
     summary.unsynced_imu_samples_dropped =
         unsynced_imu_samples_dropped_;
     summary.unsynced_camera_frame_sets_dropped =
@@ -1144,6 +1352,16 @@ class DatasetRecorder {
     // CLOCK_REALTIME values from well before the product release.
     constexpr uint64_t kMinimumRkClockRealtimeUs = 100000000000000ULL;
     return timestamp_us >= kMinimumRkClockRealtimeUs;
+  }
+
+  bool isValidTimestamp(uint64_t timestamp_us) const {
+    return timestamp_domain_ == DatasetTimestampDomain::SensorBoardBoot ||
+           isPlausibleRkClockRealtimeUs(timestamp_us);
+  }
+
+  bool isValidSynchronizedTimestamp(bool synchronized,
+                                    uint64_t timestamp_us) const {
+    return synchronized && isValidTimestamp(timestamp_us);
   }
 
   static void writeTumTimestamp(std::ostream& stream, uint64_t timestamp_us) {
@@ -1353,6 +1571,18 @@ class DatasetRecorder {
     if (has_lidar_streams && lidar_imu_sample_count_ == 0) {
       missing.push_back("synchronized LiDAR IMU samples");
     }
+    if (time_sync_sample_count_ == 0) {
+      missing.push_back("time-sync status snapshots");
+    }
+    if (rover_rtcm_agent_dropped_bytes_ != 0U) {
+      write_failed_ = true;
+      if (write_error_.empty()) {
+        write_error_ = "Agent dropped " +
+                       std::to_string(rover_rtcm_agent_dropped_bytes_) +
+                       " rover RTCM bytes before USB delivery";
+      }
+      return;
+    }
     if (missing.empty()) return;
 
     write_failed_ = true;
@@ -1387,8 +1617,16 @@ class DatasetRecorder {
              << "camera_index="
              << (imu_only ? "none" : "chunk-v2-with-actual-exposure")
              << "\n"
-             << "time_domain=rk-clock-realtime\n"
-             << "timestamp_epoch=unix\n"
+             << "time_domain="
+             << (timestamp_domain_ == DatasetTimestampDomain::UnixUtc
+                     ? "rk-clock-realtime"
+                     : "sensor-board-clock")
+             << "\n"
+             << "timestamp_epoch="
+             << (timestamp_domain_ == DatasetTimestampDomain::UnixUtc
+                     ? "unix"
+                     : "boot")
+             << "\n"
              << "timestamp_policy=strict-synchronized-sensor-time\n"
              << "alignment=common-device-time-domain\n"
              << "timestamp_resolution_us=1\n"
@@ -1404,6 +1642,11 @@ class DatasetRecorder {
              << (has_lidar_streams ? "tum-si-v2-with-time-source" : "none")
              << "\n"
              << "gps_rtk_storage=csv-v1\n"
+             << "rover_rtcm_storage=raw-rtcm3-v1\n"
+             << "rover_rtcm_index=csv-v1\n"
+             << "base_rtcm_storage=raw-rtcm-v1\n"
+             << "base_rtcm_index=csv-v1\n"
+             << "time_sync_storage=csv-v1\n"
              << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
              << "start_unix_us=" << start_unix_us_ << "\n"
              << "end_unix_us=" << recording_host_end_unix_us << "\n"
@@ -1431,6 +1674,15 @@ class DatasetRecorder {
              << "gps_rtk_samples=" << gps_rtk_sample_count_ << "\n"
              << "gps_rtk_navigation_samples="
              << gps_rtk_navigation_sample_count_ << "\n"
+             << "rover_rtcm_batches=" << rover_rtcm_batch_count_ << "\n"
+             << "rover_rtcm_bytes=" << rover_rtcm_byte_count_ << "\n"
+             << "rover_rtcm_agent_dropped_bytes="
+             << rover_rtcm_agent_dropped_bytes_ << "\n"
+             << "base_rtcm_batches=" << base_rtcm_batch_count_ << "\n"
+             << "base_rtcm_bytes=" << base_rtcm_byte_count_ << "\n"
+             << "time_sync_samples=" << time_sync_sample_count_ << "\n"
+             << "time_sync_provider_transitions="
+             << time_sync_transition_count_ << "\n"
              << "unsynced_lidar_imu_samples_dropped="
              << unsynced_lidar_imu_samples_dropped_ << "\n";
     for (size_t camera = 0; camera < image_counts_.size(); ++camera) {
@@ -1498,6 +1750,31 @@ class DatasetRecorder {
       if (!gps_rtk_file_.good()) write_failed_ = true;
       gps_rtk_file_.close();
     }
+    if (rover_rtcm_data_file_.is_open()) {
+      rover_rtcm_data_file_.flush();
+      if (!rover_rtcm_data_file_.good()) write_failed_ = true;
+      rover_rtcm_data_file_.close();
+    }
+    if (rover_rtcm_index_file_.is_open()) {
+      rover_rtcm_index_file_.flush();
+      if (!rover_rtcm_index_file_.good()) write_failed_ = true;
+      rover_rtcm_index_file_.close();
+    }
+    if (base_rtcm_data_file_.is_open()) {
+      base_rtcm_data_file_.flush();
+      if (!base_rtcm_data_file_.good()) write_failed_ = true;
+      base_rtcm_data_file_.close();
+    }
+    if (base_rtcm_index_file_.is_open()) {
+      base_rtcm_index_file_.flush();
+      if (!base_rtcm_index_file_.good()) write_failed_ = true;
+      base_rtcm_index_file_.close();
+    }
+    if (time_sync_file_.is_open()) {
+      time_sync_file_.flush();
+      if (!time_sync_file_.good()) write_failed_ = true;
+      time_sync_file_.close();
+    }
   }
 
   static constexpr uint64_t kCameraChunkTargetBytes =
@@ -1516,6 +1793,11 @@ class DatasetRecorder {
   std::ofstream lidar_chunk_file_;
   std::ofstream lidar_imu_file_;
   std::ofstream gps_rtk_file_;
+  std::ofstream rover_rtcm_data_file_;
+  std::ofstream rover_rtcm_index_file_;
+  std::ofstream base_rtcm_data_file_;
+  std::ofstream base_rtcm_index_file_;
+  std::ofstream time_sync_file_;
   std::filesystem::path root_;
   std::string camera_chunk_name_;
   uint64_t camera_chunk_size_ = 0;
@@ -1532,17 +1814,29 @@ class DatasetRecorder {
   uint64_t lidar_imu_sample_count_ = 0;
   uint64_t gps_rtk_sample_count_ = 0;
   uint64_t gps_rtk_navigation_sample_count_ = 0;
+  uint64_t rover_rtcm_batch_count_ = 0;
+  uint64_t rover_rtcm_byte_count_ = 0;
+  uint64_t rover_rtcm_agent_dropped_bytes_ = 0;
+  uint64_t base_rtcm_batch_count_ = 0;
+  uint64_t base_rtcm_byte_count_ = 0;
+  uint64_t time_sync_sample_count_ = 0;
+  uint64_t time_sync_transition_count_ = 0;
+  TimeSyncProvider last_time_sync_provider_ = TimeSyncProvider::Unsynced;
+  bool have_last_time_sync_provider_ = false;
   std::array<uint64_t, 2> unsynced_imu_samples_dropped_{};
   uint64_t unsynced_camera_frame_sets_dropped_ = 0;
   uint64_t unsynced_lidar_batches_dropped_ = 0;
   uint64_t unsynced_lidar_points_dropped_ = 0;
   uint64_t unsynced_lidar_imu_samples_dropped_ = 0;
   uint64_t start_unix_us_ = 0;
+  std::chrono::steady_clock::time_point start_steady_time_{};
   uint64_t dropped_frame_sets_ = 0;
   uint64_t queued_payload_bytes_ = 0;
   std::atomic<bool> active_{false};
   std::atomic<DatasetRecordingMode> mode_{DatasetRecordingMode::Full};
   std::atomic<bool> record_lidar_streams_{false};
+  DatasetTimestampDomain timestamp_domain_ =
+      DatasetTimestampDomain::SensorBoardBoot;
   bool session_open_ = false;
   bool stop_writer_ = false;
   bool write_failed_ = false;
@@ -3173,6 +3467,12 @@ class MainWindow : public QMainWindow {
           startCorsSession(configuration);
         };
     cors_panel_->on_disconnect = [this]() { stopCorsSession(); };
+    cors_panel_->on_gnss_refresh =
+        [this]() { startCameraEncodingOperation(std::nullopt, true); };
+    cors_panel_->on_gnss_apply =
+        [this](const prism::DeviceConfiguration& configuration) {
+          startCameraEncodingOperation(configuration, true);
+        };
     camera_exposure_panel_->on_refresh =
         [this]() {
           startCameraExposureOperation(std::nullopt, std::nullopt);
@@ -3183,10 +3483,10 @@ class MainWindow : public QMainWindow {
           startCameraExposureOperation(configuration, limits);
         };
     camera_encoding_panel_->on_refresh =
-        [this]() { startCameraEncodingOperation(std::nullopt); };
+        [this]() { startCameraEncodingOperation(std::nullopt, false); };
     camera_encoding_panel_->on_apply =
         [this](const prism::DeviceConfiguration& configuration) {
-          startCameraEncodingOperation(configuration);
+          startCameraEncodingOperation(configuration, false);
         };
     connect(log_button_, &QPushButton::clicked, this, [this]() {
       log_dialog_->show();
@@ -3417,14 +3717,14 @@ class MainWindow : public QMainWindow {
         dataset_lidar_imu_status_label_->text().contains(
             QStringLiteral("1/1"));
     auto* rtk_position =
-        cors_panel_->findChild<QLabel*>(QStringLiteral("rtkPosition"));
+        cors_panel_->findChild<QLabel*>(QStringLiteral("rtkRawPosition"));
     auto* rtk_confidence =
         cors_panel_->findChild<QLabel*>(QStringLiteral("rtkConfidence"));
     const bool rtk_rendered =
         events_dispatched && rtk_position != nullptr &&
         rtk_confidence != nullptr &&
         rtk_position->text().contains(QStringLiteral("31.230400000")) &&
-        rtk_position->text().contains(QStringLiteral("satellites=17")) &&
+        rtk_position->text().contains(QStringLiteral("Satellites: 17")) &&
         rtk_confidence->text().contains(QStringLiteral("932/1000"));
     const bool pages_available =
         imu_page_->isEnabled() && lidar_page_->isEnabled() &&
@@ -3632,7 +3932,21 @@ class MainWindow : public QMainWindow {
           latest_rtk_navigation_status_->solution_count ==
               navigation.solution_count &&
           latest_rtk_navigation_status_->solution_epoch_us ==
-              navigation.solution_epoch_us) {
+              navigation.solution_epoch_us &&
+          latest_rtk_navigation_status_->smoothed_solution_epoch_us ==
+              navigation.smoothed_solution_epoch_us &&
+          latest_rtk_navigation_status_->smoothing_flags ==
+              navigation.smoothing_flags &&
+          latest_rtk_navigation_status_->smoothing_reset_count ==
+              navigation.smoothing_reset_count &&
+          latest_rtk_navigation_status_->smoothing_gated_epoch_count ==
+              navigation.smoothing_gated_epoch_count &&
+          latest_rtk_navigation_status_->rover_observation_epochs ==
+              navigation.rover_observation_epochs &&
+          latest_rtk_navigation_status_->base_observation_epochs ==
+              navigation.base_observation_epochs &&
+          latest_rtk_navigation_status_->decoder_errors ==
+              navigation.decoder_errors) {
         return;
       }
       latest_rtk_navigation_status_ = navigation;
@@ -3661,12 +3975,12 @@ class MainWindow : public QMainWindow {
   }
 
   bool handleRtkNavigationFrame(const prism::Frame& frame) {
-    if (!prism_viewer::communication::isRtkNavigationFrame(frame)) {
+    if (!prism_viewer::communication::isViewerRtkNavigationFrame(frame)) {
       return false;
     }
     try {
       handleRtkNavigationStatus(
-          prism_viewer::communication::parseRtkNavigationStatus(frame));
+          prism_viewer::communication::parseViewerRtkNavigationStatus(frame));
     } catch (const std::exception& error) {
       appendLog(QStringLiteral("Invalid RTK navigation event: %1")
                     .arg(QString::fromUtf8(error.what())));
@@ -3694,6 +4008,29 @@ class MainWindow : public QMainWindow {
         break;
       }
     }
+    const auto now = std::chrono::steady_clock::now();
+    if (rtk_navigation_query_supported_.load(std::memory_order_acquire) &&
+        now >= next_idle_rtk_navigation_query_) {
+      next_idle_rtk_navigation_query_ = now + kRtkNavigationStatusPeriod;
+      try {
+        handleRtkNavigationStatus(
+            prism_viewer::communication::queryRtkNavigationStatus(client_));
+      } catch (const std::exception& error) {
+        rtk_navigation_query_supported_.store(false,
+                                              std::memory_order_release);
+        appendLog(QStringLiteral("Idle RTK navigation refresh failed: %1")
+                      .arg(QString::fromUtf8(error.what())));
+      }
+    }
+    if (now >= next_idle_gnss_timing_query_) {
+      next_idle_gnss_timing_query_ = now + std::chrono::milliseconds(100);
+      try {
+        updateGnssTimingStatus(client_.gnssTimingStatus());
+      } catch (const std::exception& error) {
+        appendLog(QStringLiteral("Idle GNSS timing refresh failed: %1")
+                      .arg(QString::fromUtf8(error.what())));
+      }
+    }
   }
 
   void queryInitialRtkNavigationStatus() {
@@ -3713,8 +4050,8 @@ class MainWindow : public QMainWindow {
       const QString message = QString::fromUtf8(error.what());
       if (cors_panel_ != nullptr) {
         cors_panel_->setNavigationUnavailable(
-            uiText("Complete GPS/RTK navigation requires a newer Agent: %1",
-                   "完整 GPS/RTK 导航信息需要更新 Agent：%1")
+            uiText("Viewer/Agent GPS/RTK protocol mismatch: %1",
+                   "Viewer/Agent GPS/RTK 协议不匹配：%1")
                 .arg(message));
       }
       appendLog(QStringLiteral("Complete RTK navigation unavailable: %1")
@@ -3739,6 +4076,11 @@ class MainWindow : public QMainWindow {
       return;
     }
 
+    cors_session_.setLiveGga(
+        latest_gnss_timing_status_.has_value()
+            ? prism_viewer::cors::corsGgaDataFromGnssStatus(
+                  *latest_gnss_timing_status_)
+            : std::optional<prism_viewer::cors::CorsGgaData>{});
     prism_viewer::cors::CorsCorrectionTransport transport;
     transport.begin = [this]() {
       return runCorsUsbCommand([this]() {
@@ -3749,10 +4091,12 @@ class MainWindow : public QMainWindow {
       });
     };
     transport.send = [this](const uint8_t* data, size_t size) {
-      return runCorsUsbCommand([this, data, size]() {
+      const auto received_at = std::chrono::steady_clock::now();
+      return runCorsUsbCommand([this, data, size, received_at]() {
         const auto status = prism_viewer::communication::sendRtkCorrections(
             client_, data, size, 3000);
         rememberRtkCorrectionStatus(status);
+        dataset_recorder_.appendBaseRtcm(data, size, received_at);
         return status;
       });
     };
@@ -3818,54 +4162,84 @@ class MainWindow : public QMainWindow {
   }
 
   void startCameraEncodingOperation(
-      std::optional<prism::DeviceConfiguration> requested) {
+      std::optional<prism::DeviceConfiguration> requested,
+      bool gnss_operation) {
     if (!client_.isOpen()) {
-      showOpenDeviceHint(uiText("Camera stream", "相机流"));
+      showOpenDeviceHint(gnss_operation
+                             ? uiText("GNSS input", "GNSS 输入")
+                             : uiText("Camera stream", "相机流"));
       return;
     }
     if (camera_encoding_operation_running_) return;
-    if (worker_running_ || time_sync_running_ || wifi_operation_running_ ||
+    if (time_sync_running_ || wifi_operation_running_ ||
         camera_exposure_operation_running_ || cors_session_.active() ||
         upgrade_running_ ||
-        client_.streamTransferActive()) {
+        (!gnss_operation &&
+         (worker_running_ || client_.streamTransferActive()))) {
       QMessageBox::warning(
           this,
-          uiText("Camera stream controls unavailable", "相机流控制不可用"),
-          uiText("Stop camera and IMU transfer and wait for the current "
-                 "device operation to finish before changing frame rate or "
-                 "JPEG quality.",
-                 "请先停止相机和 IMU 传输，并等待当前设备操作完成后再修改 "
-                 "相机帧率或 JPEG 质量。"));
+          uiText("Device settings unavailable", "设备设置不可用"),
+          uiText("Stop capture before changing frame rate or JPEG quality, "
+                 "or wait for the current device operation to finish. GNSS "
+                 "UART baud alone can be changed during capture.",
+                 "修改相机帧率或 JPEG 质量前请停止采集，或等待当前设备操作"
+                 "完成。仅修改 GNSS UART 波特率时可在采集中生效。"));
       return;
     }
 
     operation_controller_.join();
     camera_encoding_operation_running_ = true;
-    camera_encoding_panel_->setBusy(
-        true,
-        requested.has_value()
-            ? uiText("Saving persistent camera stream settings...",
-                     "正在保存持久化相机流设置……")
-            : uiText("Reading persistent camera stream settings...",
-                     "正在读取持久化相机流设置……"));
+    if (gnss_operation) {
+      cors_panel_->setConfigurationBusy(
+          true,
+          requested.has_value()
+              ? uiText("Saving GNSS input baud...",
+                       "正在保存 GNSS 输入波特率……")
+              : uiText("Reading GNSS input baud...",
+                       "正在读取 GNSS 输入波特率……"));
+    } else {
+      camera_encoding_panel_->setBusy(
+          true,
+          requested.has_value()
+              ? uiText("Saving persistent camera settings...",
+                       "正在保存持久化相机设置……")
+              : uiText("Reading persistent camera settings...",
+                       "正在读取持久化相机设置……"));
+    }
     refreshControls();
 
-    operation_controller_.start([this, requested]() {
+    operation_controller_.start([this, requested, gnss_operation]() {
       try {
-        prism::DeviceConfiguration configuration =
-            client_.deviceConfiguration();
+        prism::DeviceConfiguration configuration = withClientIo(
+            [this]() { return client_.deviceConfiguration(); });
         if (requested.has_value()) {
-          configuration.camera_fps = requested->camera_fps;
-          configuration.mjpeg_quality = requested->mjpeg_quality;
-          configuration = client_.saveDeviceConfiguration(
-              configuration, prism::kDeviceConfigFieldCameraFps |
-                                 prism::kDeviceConfigFieldMjpegQuality);
+          uint32_t field_mask = 0u;
+          if (gnss_operation) {
+            if (configuration.gnss_uart_baud != requested->gnss_uart_baud)
+              field_mask |= prism::kDeviceConfigFieldGnssUartBaud;
+            configuration.gnss_uart_baud = requested->gnss_uart_baud;
+          } else {
+            if (configuration.camera_fps != requested->camera_fps)
+              field_mask |= prism::kDeviceConfigFieldCameraFps;
+            if (configuration.mjpeg_quality != requested->mjpeg_quality)
+              field_mask |= prism::kDeviceConfigFieldMjpegQuality;
+            configuration.camera_fps = requested->camera_fps;
+            configuration.mjpeg_quality = requested->mjpeg_quality;
+          }
+          if (field_mask != 0u) {
+            configuration = withClientIo([this, configuration, field_mask]() {
+              return client_.saveDeviceConfiguration(
+                  configuration, field_mask);
+            });
+          }
         }
-        post([this, configuration, requested]() {
+        post([this, configuration, requested, gnss_operation]() {
           camera_encoding_operation_running_ = false;
           camera_encoding_panel_->setConfiguration(configuration);
+          cors_panel_->setDeviceConfiguration(configuration);
           camera_exposure_panel_->setCameraFps(configuration.camera_fps);
           camera_encoding_panel_->setBusy(false);
+          cors_panel_->setConfigurationBusy(false);
           if (latest_device_info_valid_) {
             latest_device_info_.camera_fps =
                 static_cast<uint16_t>(configuration.camera_fps);
@@ -3874,39 +4248,59 @@ class MainWindow : public QMainWindow {
             renderDeviceInfoStatus();
           }
           setStatusAppearance(false);
-          status_label_->setText(
-              requested.has_value()
-                  ? uiText("Camera settings saved: %1 FPS · JPEG %2",
-                           "相机设置已保存：%1 FPS · JPEG %2")
-                        .arg(configuration.camera_fps)
-                        .arg(configuration.mjpeg_quality)
-                  : uiText("Camera settings refreshed: %1 FPS · JPEG %2",
-                           "相机设置已刷新：%1 FPS · JPEG %2")
-                        .arg(configuration.camera_fps)
-                        .arg(configuration.mjpeg_quality));
+          if (gnss_operation) {
+            status_label_->setText(
+                requested.has_value()
+                    ? uiText("GNSS input baud saved: %1",
+                             "GNSS 输入波特率已保存：%1")
+                          .arg(configuration.gnss_uart_baud)
+                    : uiText("GNSS input baud refreshed: %1",
+                             "GNSS 输入波特率已刷新：%1")
+                          .arg(configuration.gnss_uart_baud));
+          } else {
+            status_label_->setText(
+                requested.has_value()
+                    ? uiText("Camera settings saved: %1 FPS · JPEG %2",
+                             "相机设置已保存：%1 FPS · JPEG %2")
+                          .arg(configuration.camera_fps)
+                          .arg(configuration.mjpeg_quality)
+                    : uiText("Camera settings refreshed: %1 FPS · JPEG %2",
+                             "相机设置已刷新：%1 FPS · JPEG %2")
+                          .arg(configuration.camera_fps)
+                          .arg(configuration.mjpeg_quality));
+          }
           appendLogLine(
               QDateTime::currentDateTime().toString(
                   QStringLiteral("HH:mm:ss.zzz ")) +
               QStringLiteral(
-                  "Camera stream settings %1 fps=%2 jpeg_quality=%3 "
-                  "generation=%4")
+                  "Device settings %1 fps=%2 jpeg_quality=%3 "
+                  "gnss_uart_baud=%4 generation=%5")
                   .arg(requested.has_value() ? QStringLiteral("saved")
                                              : QStringLiteral("refreshed"))
                   .arg(configuration.camera_fps)
                   .arg(configuration.mjpeg_quality)
+                  .arg(configuration.gnss_uart_baud)
                   .arg(configuration.generation));
           refreshControls();
         });
       } catch (const std::exception& ex) {
         const QString error = toQString(ex.what());
-        post([this, error]() {
+        post([this, error, gnss_operation]() {
           camera_encoding_operation_running_ = false;
           camera_encoding_panel_->setBusy(false);
-          camera_encoding_panel_->setError(error);
+          cors_panel_->setConfigurationBusy(false);
+          if (gnss_operation) {
+            cors_panel_->setConfigurationError(error);
+          } else {
+            camera_encoding_panel_->setError(error);
+          }
           setStatusAppearance(true);
           status_label_->setText(
-              uiText("Camera stream configuration failed: %1",
-                     "相机流配置失败：%1")
+              (gnss_operation
+                   ? uiText("GNSS input configuration failed: %1",
+                            "GNSS 输入配置失败：%1")
+                   : uiText("Camera stream configuration failed: %1",
+                            "相机流配置失败：%1"))
                   .arg(error));
           appendLogLine(
               QDateTime::currentDateTime().toString(
@@ -4228,11 +4622,11 @@ class MainWindow : public QMainWindow {
     }
     refreshControls();
 
-    if (automatic_time_sync_pending_) {
+    if (automatic_device_open_pending_) {
       if (devices_.empty()) {
         host_time_sync_label_->setText(
-            uiText("Automatic time sync: waiting for a Prism device",
-                   "自动时间同步：正在等待 Prism 设备"));
+            uiText("Automatic open: waiting for a Prism device",
+                   "自动打开：正在等待 Prism 设备"));
         host_time_sync_label_->setStyleSheet(QStringLiteral(
             "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
             "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
@@ -4240,26 +4634,26 @@ class MainWindow : public QMainWindow {
                  !automatic_device_open_scheduled_) {
         automatic_device_open_scheduled_ = true;
         host_time_sync_label_->setText(
-            uiText("Automatic time sync: opening the detected Prism device...",
-                   "自动时间同步：正在打开检测到的 Prism 设备……"));
+            uiText("Automatic open: opening the detected Prism device...",
+                   "自动打开：正在打开检测到的 Prism 设备……"));
         host_time_sync_label_->setStyleSheet(QStringLiteral(
             "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
             "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
         QTimer::singleShot(0, this, [this]() {
           automatic_device_open_scheduled_ = false;
-          if (!automatic_time_sync_pending_ || client_.isOpen() ||
+          if (!automatic_device_open_pending_ || client_.isOpen() ||
               worker_running_ || devices_.size() != 1u) {
             return;
           }
           device_selector_->setCurrentIndex(0);
           appendLog(QStringLiteral(
-              "Startup automatic time sync selected the only detected device"));
+              "Startup automatic open selected the only detected device"));
           openDevice();
         });
       } else if (devices_.size() > 1u) {
         host_time_sync_label_->setText(
-            uiText("Automatic time sync: select and open one device",
-                   "自动时间同步：请选择并打开一个设备"));
+            uiText("Automatic open: select and open one device",
+                   "自动打开：请选择并打开一个设备"));
         host_time_sync_label_->setStyleSheet(QStringLiteral(
             "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
             "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
@@ -4279,6 +4673,7 @@ class MainWindow : public QMainWindow {
       return;
     }
 
+    bool gps_time_authoritative = false;
     setStatusAppearance(false);
     rtk_navigation_query_supported_.store(true, std::memory_order_release);
     status_label_->setText(uiText("Opening USB device", "正在打开 USB 设备"));
@@ -4290,8 +4685,12 @@ class MainWindow : public QMainWindow {
       const auto& versions = opened.versions;
       const auto& device_info = opened.device_info;
       const auto time_sync_provider = opened.time_sync_provider;
+      const auto& gnss_timing = opened.gnss_timing;
       const auto& configuration = opened.configuration;
       const auto& network = opened.network;
+      gps_time_authoritative =
+          time_sync_provider == TimeSyncProvider::Gps &&
+          device_info.sensor_board_time_synced;
       const QString serial = wideToQString(opened.serial_number);
       appendLog(QStringLiteral("Device serial=%1 path=%2")
                     .arg(serial.isEmpty() ? QStringLiteral("(not reported)") : serial)
@@ -4323,8 +4722,10 @@ class MainWindow : public QMainWindow {
               .arg(QString::fromLatin1(
                   timeSyncProviderName(time_sync_provider))));
       updateDeviceInfo(device_info, time_sync_provider);
+      if (gnss_timing.has_value()) updateGnssTimingStatus(*gnss_timing);
       updateDeviceVersions(versions);
       camera_encoding_panel_->setConfiguration(configuration);
+      cors_panel_->setDeviceConfiguration(configuration);
       camera_exposure_panel_->setCameraFps(configuration.camera_fps);
       camera_exposure_panel_->setConfiguration(
           opened.exposure, opened.exposure_limits);
@@ -4352,9 +4753,24 @@ class MainWindow : public QMainWindow {
     }
     refreshControls();
     if (client_.isOpen()) {
-      if (automatic_time_sync_pending_) {
-        automatic_time_sync_pending_ = false;
-        startHostTimeSync(true);
+      if (automatic_device_open_pending_) {
+        automatic_device_open_pending_ = false;
+        if (gps_time_authoritative) {
+          showGpsAuthoritativeTimeSync();
+        } else {
+          host_time_sync_label_->setText(
+              uiText("Host/device clock: unchanged; use Set Device Time to synchronize",
+                     "主机/设备时钟：未修改；如需校时请点击“校准设备时间”"));
+          host_time_sync_label_->setToolTip(
+              uiText("Opening a device never writes its clock automatically.",
+                     "打开设备时不会自动写入设备时间。"));
+          host_time_sync_label_->setStyleSheet(QStringLiteral(
+              "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
+              "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+          appendLog(QStringLiteral(
+              "Device opened without automatic Host time synchronization"));
+        }
+        startWifiHotspotOperation(std::nullopt);
       } else {
         startWifiHotspotOperation(std::nullopt);
       }
@@ -4386,6 +4802,7 @@ class MainWindow : public QMainWindow {
     }
     latest_device_info_valid_ = false;
     latest_time_sync_provider_ = TimeSyncProvider::Unsynced;
+    latest_gnss_timing_status_.reset();
     latest_device_versions_valid_ = false;
     latest_rk_heartbeat_time_us_ = 0;
     {
@@ -4432,7 +4849,9 @@ class MainWindow : public QMainWindow {
 
     try {
       const auto status = readDeviceInfo(client_);
+      const auto gnss_timing = client_.gnssTimingStatus();
       updateDeviceInfo(status.info, status.time_sync_provider);
+      updateGnssTimingStatus(gnss_timing);
       appendLog(QStringLiteral("DeviceInfo refreshed; time-sync-provider=%1")
                     .arg(QString::fromLatin1(
                         timeSyncProviderName(status.time_sync_provider))));
@@ -4523,9 +4942,41 @@ class MainWindow : public QMainWindow {
     operation_controller_.start([this]() { workerMain(); });
   }
 
+  bool gpsTimeIsAuthoritative() const {
+    return latest_device_info_valid_ &&
+           latest_time_sync_provider_ == TimeSyncProvider::Gps &&
+           latest_device_info_.sensor_board_time_synced;
+  }
+
+  void showGpsAuthoritativeTimeSync() {
+    host_time_sync_label_->setText(
+        uiText("GPS is the authoritative time source; Host time sync is disabled",
+               "GPS 是权威时间源；已禁用主机校时"));
+    host_time_sync_label_->setToolTip(
+        uiText("Sensor Board is locked to external GNSS NMEA/PPS. RK follows "
+               "Sensor Board PPS, so Viewer will not overwrite time from the Host.",
+               "Sensor Board 已锁定外部 GNSS NMEA/PPS，RK 跟随 Sensor Board PPS；"
+               "Viewer 不会再用主机时间覆盖该时间源。"));
+    host_time_sync_label_->setStyleSheet(QStringLiteral(
+        "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+        "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
+    setStatusAppearance(false);
+    status_label_->setText(
+        uiText("GPS time source active; Host synchronization skipped",
+               "GPS 时间源已生效；已跳过主机校时"));
+    appendLog(QStringLiteral(
+        "Host time synchronization skipped: external GPS is authoritative"));
+    refreshControls();
+  }
+
   void startHostTimeSync(bool automatic = false) {
     if (!client_.isOpen()) {
       showOpenDeviceHint(uiText("Time synchronization", "时间同步"));
+      return;
+    }
+    if (gpsTimeIsAuthoritative()) {
+      showGpsAuthoritativeTimeSync();
+      if (automatic) startWifiHotspotOperation(std::nullopt);
       return;
     }
     if (worker_running_ || time_sync_running_ ||
@@ -4543,10 +4994,10 @@ class MainWindow : public QMainWindow {
     time_sync_running_ = true;
     host_time_sync_label_->setText(
         automatic
-            ? uiText("Automatic time sync: measuring and setting RK system time, PHC and RTC...",
-                     "自动时间同步：正在测量并设置 RK 系统时间、以太网 PHC 和 RTC……")
-            : uiText("RK clock: measuring offset before setting system time, PHC and RTC...",
-                     "RK 时钟：正在测量偏差，随后设置系统时间、以太网 PHC 和 RTC……"));
+            ? uiText("Automatic time sync: sending Host UTC to Sensor Board; RK follows board PPS...",
+                     "自动时间同步：正在将主机 UTC 交给 Sensor Board，RK 随板端 PPS 同步……")
+            : uiText("Measuring Host offset before scheduling Sensor Board UTC/PPS...",
+                     "正在测量主机偏差，随后调度 Sensor Board UTC/PPS……"));
     host_time_sync_label_->setStyleSheet(QStringLiteral(
         "background: #eff8ff; color: #175cd3; border: 1px solid #b2ddff;"
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
@@ -4555,15 +5006,15 @@ class MainWindow : public QMainWindow {
         automatic
             ? uiText("Automatically synchronizing the device clock before capture",
                      "正在采集前自动同步设备时钟")
-            : uiText("Setting RK system time, Ethernet PHC and RTC while streams are idle",
-                     "正在空闲状态下设置 RK 系统时间、以太网 PHC 和 RTC"));
+            : uiText("Synchronizing RK from Sensor Board PPS while streams are idle",
+                     "正在空闲状态下让 RK 从 Sensor Board PPS 同步"));
     appendLog(automatic
                   ? QStringLiteral(
-                        "Startup automatic RK system-time + Ethernet-PHC + "
-                        "RTC synchronization started (host authoritative, streams idle)")
+                        "Startup Host -> SensorBoard -> RK -> Ethernet-PHC "
+                        "synchronization started (streams idle; RTC optional)")
                   : QStringLiteral(
-                        "RK system-time + Ethernet-PHC + RTC synchronization "
-                        "started (host authoritative, streams idle)"));
+                        "Host -> SensorBoard -> RK -> Ethernet-PHC "
+                        "synchronization started (streams idle; RTC optional)"));
     refreshControls();
 
     operation_controller_.start([this, automatic]() {
@@ -4594,14 +5045,17 @@ class MainWindow : public QMainWindow {
                   .arg(result.ptp_hardware_clock_set
                            ? QStringLiteral("OK")
                            : QStringLiteral("failed"))
-                  .arg(toQString(result.rtc_device))
+                  .arg(result.hardware_clock_set
+                           ? toQString(result.rtc_device)
+                           : uiText("not installed (optional)",
+                                    "未安装（可选）"))
                   .arg(result.correction_passes));
           host_time_sync_label_->setToolTip(
-              uiText("The host clock was used as the authority. RK "
-                     "CLOCK_REALTIME, the Ethernet PHC and the listed hardware "
-                     "RTC were written, then the residual offset was measured again.",
-                     "以主机时间为基准，已写入 RK CLOCK_REALTIME、以太网 PHC 和所列硬件 RTC，"
-                     "随后重新测量了剩余偏差。"));
+              uiText("Host UTC was scheduled in Sensor Board. Sensor Board generated "
+                     "PPS/UTC for RK; chrony synchronized CLOCK_REALTIME, phc2sys "
+                     "aligned Ethernet PHC, and the optional RTC was reported separately.",
+                     "主机 UTC 已调度到 Sensor Board；板端生成 PPS/UTC 给 RK，chrony 同步 "
+                     "CLOCK_REALTIME，phc2sys 对齐以太网 PHC；可选 RTC 状态单独显示。"));
           host_time_sync_label_->setStyleSheet(QStringLiteral(
               "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
               "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
@@ -4610,8 +5064,8 @@ class MainWindow : public QMainWindow {
               automatic
                   ? uiText("Automatic device time synchronization succeeded",
                            "设备时间自动同步成功")
-                  : uiText("RK system time, Ethernet PHC and RTC synchronized",
-                           "RK 系统时间、以太网 PHC 和 RTC 已同步"));
+                  : uiText("RK synchronized from Sensor Board; PHC aligned",
+                           "RK 已从 Sensor Board 同步，PHC 已对齐"));
           appendLogLine(
               QDateTime::currentDateTime().toString(
                   QStringLiteral("HH:mm:ss.zzz ")) +
@@ -4622,7 +5076,9 @@ class MainWindow : public QMainWindow {
                   .arg(result.applied_correction_us)
                   .arg(result.after.offset_us)
                   .arg(result.ptp_hardware_clock_set ? 1 : 0)
-                  .arg(toQString(result.rtc_device))
+                  .arg(result.hardware_clock_set
+                           ? toQString(result.rtc_device)
+                           : QStringLiteral("not-present"))
                   .arg(result.correction_passes)
                   .arg(result.verified ? 1 : 0));
           time_sync_running_ = false;
@@ -4761,6 +5217,16 @@ class MainWindow : public QMainWindow {
         QFileInfo::exists(
             output_directory.filePath(QStringLiteral("gps_rtk.csv"))) ||
         QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("rover_rtcm.bin"))) ||
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("rover_rtcm.csv"))) ||
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("base_rtcm.bin"))) ||
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("base_rtcm.csv"))) ||
+        QFileInfo::exists(
+            output_directory.filePath(QStringLiteral("time_sync.csv"))) ||
+        QFileInfo::exists(
             output_directory.filePath(QStringLiteral("dataset.info"))) ||
         !output_directory.entryList(
              {QStringLiteral("camera-data-*.bin"),
@@ -4809,33 +5275,40 @@ class MainWindow : public QMainWindow {
         requested_lidar_model_.load(std::memory_order_acquire));
     const bool record_lidar_streams =
         lidar_model != prism::LidarModel::None;
+    const DatasetTimestampDomain timestamp_domain =
+        datasetTimestampDomainForProvider(latest_time_sync_provider_);
     std::string error;
     if (!dataset_recorder_.start(toFilesystemPath(selected_directory),
                                  overwrite, mode, record_lidar_streams,
-                                 &error)) {
+                                 timestamp_domain, &error)) {
       QMessageBox::critical(
           this, uiText("Dataset recording failed", "数据集录制失败"),
           uiText("Unable to start recording: %1", "无法开始录制：%1")
               .arg(toQString(error)));
       return;
     }
+    dataset_recorder_.appendTimeSync(
+        latest_device_info_, latest_time_sync_provider_,
+        latest_rk_heartbeat_time_us_);
     recorded_dataset_root_ = selected_directory;
     if (mode == DatasetRecordingMode::ImuOnly) {
       imu_record_status_label_->setText(
           record_lidar_streams
-              ? uiText("Recording onboard IMU0/IMU1 + LiDAR IMU + GPS/RTK",
-                       "正在录制板载 IMU0/IMU1 + 雷达 IMU + GPS/RTK")
-              : uiText("Recording onboard IMU0/IMU1 + GPS/RTK",
-                       "正在录制板载 IMU0/IMU1 + GPS/RTK"));
+              ? uiText("Recording onboard IMU0/IMU1 + LiDAR IMU + GPS/RTK "
+                       "+ time sync",
+                       "正在录制板载 IMU0/IMU1 + 雷达 IMU + GPS/RTK + 时间同步")
+              : uiText("Recording onboard IMU0/IMU1 + GPS/RTK + time sync",
+                       "正在录制板载 IMU0/IMU1 + GPS/RTK + 时间同步"));
     } else {
       imu_record_status_label_->setText(
           record_lidar_streams
               ? uiText("Recording 4 cameras + onboard IMU0/IMU1 + "
-                       "LiDAR points + LiDAR IMU + GPS/RTK",
+                       "LiDAR points + LiDAR IMU + GPS/RTK + time sync",
                        "正在录制四路相机 + 板载 IMU0/IMU1 + 雷达点云 + "
-                       "雷达 IMU + GPS/RTK")
-              : uiText("Recording 4 cameras + onboard IMU0/IMU1 + GPS/RTK",
-                       "正在录制四路相机 + 板载 IMU0/IMU1 + GPS/RTK"));
+                       "雷达 IMU + GPS/RTK + 时间同步")
+              : uiText("Recording 4 cameras + onboard IMU0/IMU1 + GPS/RTK "
+                       "+ time sync",
+                       "正在录制四路相机 + 板载 IMU0/IMU1 + GPS/RTK + 时间同步"));
     }
     imu_record_status_label_->setToolTip(selected_directory);
     imu_record_status_label_->setStyleSheet(QStringLiteral(
@@ -4859,23 +5332,29 @@ class MainWindow : public QMainWindow {
       if (summary.mode == DatasetRecordingMode::ImuOnly) {
         imu_record_status_label_->setText(
             uiText("Saved IMU only: onboard %1/%2, LiDAR %3 samples, "
-                   "GPS/RTK %4 snapshots (%5 navigation), unsynced dropped %6",
+                   "GPS/RTK %4 snapshots (%5 navigation), time sync %6 "
+                   "snapshots (%7 switches), unsynced dropped %8",
                    "仅 IMU 已保存：板载 %1/%2，雷达 %3 个样本，GPS/RTK %4 "
-                   "个快照（%5 个导航解），未同步丢弃 %6")
+                   "个快照（%5 个导航解），时间同步 %6 个快照（%7 次切换），"
+                   "未同步丢弃 %8")
                 .arg(summary.sample_count[0])
                 .arg(summary.sample_count[1])
                 .arg(summary.lidar_imu_sample_count)
                 .arg(summary.gps_rtk_sample_count)
                 .arg(summary.gps_rtk_navigation_sample_count)
+                .arg(summary.time_sync_sample_count)
+                .arg(summary.time_sync_transition_count)
                 .arg(summary.unsyncedDropCount()));
       } else {
         imu_record_status_label_->setText(
             uiText("Saved: onboard IMU %1/%2, images %3x4, LiDAR %4 "
                    "batches + %5 IMU samples, GPS/RTK %6 snapshots "
-                   "(%7 navigation), dropped sets %8, unsynced dropped %9",
+                   "(%7 navigation), time sync %8 snapshots (%9 switches), "
+                   "dropped sets %10, unsynced dropped %11",
                    "已保存：板载 IMU %1/%2，图像 %3×4，雷达 %4 批点云 + "
                    "%5 个 IMU 样本，GPS/RTK %6 个快照（%7 个导航解），"
-                   "丢弃帧集 %8，未同步丢弃 %9")
+                   "时间同步 %8 个快照（%9 次切换），丢弃帧集 %10，"
+                   "未同步丢弃 %11")
                 .arg(summary.sample_count[0])
                 .arg(summary.sample_count[1])
                 .arg(*std::min_element(summary.image_count.begin(),
@@ -4884,6 +5363,8 @@ class MainWindow : public QMainWindow {
                 .arg(summary.lidar_imu_sample_count)
                 .arg(summary.gps_rtk_sample_count)
                 .arg(summary.gps_rtk_navigation_sample_count)
+                .arg(summary.time_sync_sample_count)
+                .arg(summary.time_sync_transition_count)
                 .arg(summary.dropped_frame_sets)
                 .arg(summary.unsyncedDropCount()));
       }
@@ -4897,7 +5378,8 @@ class MainWindow : public QMainWindow {
                     "dropped_lidar_batches=%12 dropped_lidar_points=%13 "
                     "lidar_imu_samples=%14 unsynced_drops="
                     "imu0:%15/imu1:%16 camera:%17 lidar:%18/%19 "
-                    "lidar_imu:%20 gps_rtk=%21 navigation=%22")
+                    "lidar_imu:%20 gps_rtk=%21 navigation=%22 "
+                    "time_sync=%23 transitions=%24")
                     .arg(summary.mode == DatasetRecordingMode::ImuOnly
                              ? QStringLiteral("imu-only")
                              : QStringLiteral("full"))
@@ -4921,7 +5403,17 @@ class MainWindow : public QMainWindow {
                     .arg(summary.unsynced_lidar_points_dropped)
                     .arg(summary.unsynced_lidar_imu_samples_dropped)
                     .arg(summary.gps_rtk_sample_count)
-                    .arg(summary.gps_rtk_navigation_sample_count));
+                    .arg(summary.gps_rtk_navigation_sample_count)
+                    .arg(summary.time_sync_sample_count)
+                    .arg(summary.time_sync_transition_count));
+      appendLog(QStringLiteral(
+                    "Raw RTCM saved: rover=%1 batches/%2 bytes, "
+                    "Agent dropped=%3 bytes; base=%4 batches/%5 bytes")
+                    .arg(summary.rover_rtcm_batch_count)
+                    .arg(summary.rover_rtcm_byte_count)
+                    .arg(summary.rover_rtcm_agent_dropped_bytes)
+                    .arg(summary.base_rtcm_batch_count)
+                    .arg(summary.base_rtcm_byte_count));
       loadRecordedDataset(recorded_dataset_root_, false);
     } else {
       imu_record_status_label_->setText(
@@ -5095,6 +5587,7 @@ class MainWindow : public QMainWindow {
       for (auto& samples : pending_imu_plot_samples_) samples.clear();
     }
     latest_device_info_valid_ = false;
+    latest_gnss_timing_status_.reset();
     latest_rk_heartbeat_time_us_ = 0;
     if (imu_alarm_label_ != nullptr) {
       imu_alarm_label_->setText(
@@ -5209,6 +5702,9 @@ class MainWindow : public QMainWindow {
     if (cors_panel_ != nullptr) {
       cors_panel_->setEnabled(device_open);
       cors_panel_->setDeviceOpen(device_open);
+      cors_panel_->setControlsLocked(
+          time_syncing || wifi_busy || exposure_busy || encoding_busy ||
+          lidar_network_busy || upgrading);
     }
     if (device_info_panel_ != nullptr) {
       device_info_panel_->setDeviceOpen(device_open);
@@ -5239,9 +5735,15 @@ class MainWindow : public QMainWindow {
         !exposure_busy && !encoding_busy);
     start_button_->setEnabled(!busy && device_open);
     stop_button_->setEnabled(running);
+    const bool gps_time_authoritative = gpsTimeIsAuthoritative();
     host_time_sync_button_->setEnabled(
         !busy && device_open && !cors_active &&
-        !client_.streamTransferActive());
+        !client_.streamTransferActive() && !gps_time_authoritative);
+    host_time_sync_button_->setToolTip(
+        gps_time_authoritative
+            ? uiText("Disabled while external GPS is the authoritative time source",
+                     "外部 GPS 作为权威时间源时禁用")
+            : QString());
     system_upgrade_button_->setEnabled(
         !busy && device_open && !cors_active);
     const bool imu_recording = dataset_recorder_.isActive();
@@ -5548,6 +6050,9 @@ class MainWindow : public QMainWindow {
   void renderDeviceInfoStatus() {
     if (!latest_device_info_valid_) return;
     const auto& info = latest_device_info_;
+    const bool external_time_synced =
+        latest_gnss_timing_status_.has_value() &&
+        latest_gnss_timing_status_->time_synced;
     auto imu_text = [&info](size_t sensor) {
       const uint8_t bit = static_cast<uint8_t>(1u << sensor);
       if ((info.imu_present_mask & bit) == 0u)
@@ -5568,9 +6073,6 @@ class MainWindow : public QMainWindow {
                     .toString(
                         QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"));
     }
-    const QString provider =
-        timeSyncProviderText(latest_time_sync_provider_);
-
     QString text;
     QString style;
     if (info.sensor_board_error_flags != 0u) {
@@ -5580,41 +6082,48 @@ class MainWindow : public QMainWindow {
                     info.sensor_board_error_code))
               : toQString(info.sensor_board_error);
       text = uiText(
-                 "sensor-board transfer error: %1 | flags=0x%2 | "
-                 "provider: %3 | RK %4",
-                 "sensor-board 传输错误：%1 | 标志=0x%2 | 提供方：%3 | RK %4")
+                 "sensor-board transfer error: %1 | flags=0x%2 | RK %3",
+                 "sensor-board 传输错误：%1 | 标志=0x%2 | RK %3")
                  .arg(detail)
                  .arg(info.sensor_board_error_flags, 8, 16,
                       QLatin1Char('0'))
-                 .arg(provider)
                  .arg(rk_time);
       style = QStringLiteral(
           "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
     } else if (!info.sensor_board_online) {
-      text = uiText("Time sync: sensor-board offline | provider: %1 | RK %2 | "
-                    "IMU0 %3 | IMU1 %4",
-                    "时间同步：sensor-board 离线 | 提供方：%1 | RK %2 | "
-                    "IMU0 %3 | IMU1 %4")
-                 .arg(provider, rk_time, imu_text(0), imu_text(1));
+      text = uiText("Time sync: sensor-board offline | RK %1 | "
+                    "IMU0 %2 | IMU1 %3",
+                    "时间同步：sensor-board 离线 | RK %1 | "
+                    "IMU0 %2 | IMU1 %3")
+                 .arg(rk_time, imu_text(0), imu_text(1));
       style = QStringLiteral(
           "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
     } else if (!info.sensor_board_time_synced) {
-      text = uiText("Time sync: UNSYNCED | provider: %1 | RK %2 | "
-                    "waiting for GPS/NMEA + PPS | IMU0 %3 | IMU1 %4",
-                    "时间同步：未同步 | 提供方：%1 | RK %2 | "
-                    "等待 GPS/NMEA + PPS | IMU0 %3 | IMU1 %4")
-                 .arg(provider, rk_time, imu_text(0), imu_text(1));
+      text = uiText("Time sync: UNSYNCED | RK %1 | "
+                    "waiting for an external time source | IMU0 %2 | IMU1 %3",
+                    "时间同步：未同步 | RK %1 | "
+                    "等待外部时间源 | IMU0 %2 | IMU1 %3")
+                 .arg(rk_time, imu_text(0), imu_text(1));
+      style = QStringLiteral(
+          "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
+          "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
+    } else if (!external_time_synced) {
+      text = uiText("Sensor time: SYNCED | external time: NOT SYNCED | "
+                    "RK %1 | IMU0 %2 | IMU1 %3",
+                    "传感器时间：已同步 | 外部授时：未同步 | "
+                    "RK %1 | IMU0 %2 | IMU1 %3")
+                 .arg(rk_time, imu_text(0), imu_text(1));
       style = QStringLiteral(
           "background: #fffaeb; color: #b54708; border: 1px solid #fedf89;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
     } else {
-      text = uiText("Time sync: SYNCED | provider: %1 | RK %2 | "
-                    "IMU0 %3 | IMU1 %4",
-                    "时间同步：已同步 | 提供方：%1 | RK %2 | "
-                    "IMU0 %3 | IMU1 %4")
-                 .arg(provider, rk_time, imu_text(0), imu_text(1));
+      text = uiText("Sensor time: SYNCED | external time: SYNCED | "
+                    "RK %1 | IMU0 %2 | IMU1 %3",
+                    "传感器时间：已同步 | 外部授时：已同步 | "
+                    "RK %1 | IMU0 %2 | IMU1 %3")
+                 .arg(rk_time, imu_text(0), imu_text(1));
       style = QStringLiteral(
           "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
           "border-radius: 6px; padding: 7px 10px; font-weight: 600;");
@@ -5625,7 +6134,7 @@ class MainWindow : public QMainWindow {
         QStringLiteral(
             "DeviceInfo: product=%1 USB=%2 IMUs=%3 mask=0x%4 "
             "cameras=%5 mask=0x%6 IMU-fps=%7 camera-fps=%8 "
-            "sensor-board-error=0x%9 time-sync-provider=%10")
+            "sensor-board-error=0x%9")
             .arg(toQString(info.product_serial))
             .arg(QString::fromLatin1(
                 prism_runtime::usbLinkSpeedName(info.usb_speed)))
@@ -5636,8 +6145,7 @@ class MainWindow : public QMainWindow {
             .arg(info.imu_fps)
             .arg(info.camera_fps)
             .arg(info.sensor_board_error_flags, 8, 16,
-                 QLatin1Char('0'))
-            .arg(provider));
+                 QLatin1Char('0')));
   }
 
   void updateDeviceInfo(const prism::DeviceInfo& info,
@@ -5646,10 +6154,13 @@ class MainWindow : public QMainWindow {
       latest_device_info_ = info;
       latest_time_sync_provider_ = time_sync_provider;
       latest_device_info_valid_ = true;
+      dataset_recorder_.appendTimeSync(
+          info, time_sync_provider, latest_rk_heartbeat_time_us_);
       if (device_info_panel_ != nullptr) {
         device_info_panel_->setInfo(info, time_sync_provider);
       }
       renderDeviceInfoStatus();
+      refreshControls();
     });
   }
 
@@ -5663,9 +6174,22 @@ class MainWindow : public QMainWindow {
     });
   }
 
+  void updateGnssTimingStatus(const prism::GnssTimingStatus& status) {
+    post([this, status]() {
+      latest_gnss_timing_status_ = status;
+      cors_session_.setLiveGga(
+          prism_viewer::cors::corsGgaDataFromGnssStatus(status));
+      if (cors_panel_ != nullptr) cors_panel_->setGnssTimingStatus(status);
+      renderDeviceInfoStatus();
+    });
+  }
+
   void updateHeartbeat(const prism::HeartbeatStatus& heartbeat) {
     post([this, heartbeat]() {
       latest_rk_heartbeat_time_us_ = heartbeat.rk_system_time_us;
+      if (cors_panel_ != nullptr) {
+        cors_panel_->setDeviceTimeUs(heartbeat.rk_system_time_us);
+      }
       renderDeviceInfoStatus();
     });
   }
@@ -6370,6 +6894,10 @@ class MainWindow : public QMainWindow {
                        describeTimestampValidation(validation.lidar_imu),
                        describeTimestampValidation(validation.gps_rtk))
                   .arg(validation.gps_rtk_navigation_samples);
+    report += QStringLiteral(
+                  "Time sync: %1 snapshots (provider transitions %2)\n")
+                  .arg(validation.time_sync_samples)
+                  .arg(validation.time_sync_provider_transitions);
     if (!validation.issues.empty()) report += QLatin1Char('\n');
     for (const auto& issue : validation.issues) {
       const QString severity =
@@ -7357,6 +7885,8 @@ class MainWindow : public QMainWindow {
           capture_device_info = info;
           capture_device_info_at = std::chrono::steady_clock::now();
           updateDeviceInfo(info, status.time_sync_provider);
+          updateGnssTimingStatus(withClientIo(
+              [this]() { return client_.gnssTimingStatus(); }));
           sensor_board_link_ready = info.sensor_board_online;
         } catch (const std::exception&) {
         }
@@ -7672,6 +8202,10 @@ class MainWindow : public QMainWindow {
             }
             dataset_recorder_.appendLidarImu(sample);
           });
+      prism_runtime::RoverRtcmStream rover_rtcm_stream(
+          client_, [this](const prism::RoverRtcmChunkView& chunk) {
+            dataset_recorder_.appendRoverRtcm(chunk);
+          });
       try {
         withClientIo([&imu_stream]() { imu_stream.start(); });
       } catch (...) {
@@ -7713,6 +8247,9 @@ class MainWindow : public QMainWindow {
           throw;
         }
       }
+      withClientIo([&rover_rtcm_stream]() { rover_rtcm_stream.start(); });
+      appendLog(QStringLiteral(
+          "Rover RTCM stream started; only CRC-valid RTCM3 is recorded"));
       updateStatus(uiText("Running", "运行中"));
 
       const auto capture_started_at = std::chrono::steady_clock::now();
@@ -7867,6 +8404,8 @@ class MainWindow : public QMainWindow {
               capture_device_info = info;
               capture_device_info_at = std::chrono::steady_clock::now();
               updateDeviceInfo(info, status.time_sync_provider);
+              updateGnssTimingStatus(withClientIo(
+                  [this]() { return client_.gnssTimingStatus(); }));
               if (!info.sensor_board_online) {
                 appendLog(QStringLiteral(
                     "DeviceInfo reports sensor-board offline; stopping camera "
@@ -7929,6 +8468,9 @@ class MainWindow : public QMainWindow {
           if (lidar_stream.handleFrame(frame)) {
             continue;
           }
+          if (rover_rtcm_stream.handleFrame(frame)) {
+            continue;
+          }
           if (handleRtkNavigationFrame(frame)) {
             continue;
           }
@@ -7979,6 +8521,12 @@ class MainWindow : public QMainWindow {
         capture_error = std::current_exception();
       }
 
+      std::exception_ptr rover_rtcm_stop_error;
+      try {
+        withClientIo([&rover_rtcm_stream]() { rover_rtcm_stream.stop(); });
+      } catch (...) {
+        rover_rtcm_stop_error = std::current_exception();
+      }
       std::exception_ptr lidar_stop_error;
       try {
         withClientIo([&lidar_stream]() { lidar_stream.stop(); });
@@ -7995,6 +8543,15 @@ class MainWindow : public QMainWindow {
         stop_error = std::current_exception();
       }
       if (capture_error) {
+        if (rover_rtcm_stop_error) {
+          try {
+            std::rethrow_exception(rover_rtcm_stop_error);
+          } catch (const std::exception& ex) {
+            appendLog(QStringLiteral(
+                          "Capture error cleanup could not confirm rover RTCM stop: %1")
+                          .arg(ex.what()));
+          }
+        }
         if (lidar_stop_error) {
           try {
             std::rethrow_exception(lidar_stop_error);
@@ -8015,6 +8572,9 @@ class MainWindow : public QMainWindow {
           }
         }
         std::rethrow_exception(capture_error);
+      }
+      if (rover_rtcm_stop_error) {
+        std::rethrow_exception(rover_rtcm_stop_error);
       }
       if (lidar_stop_error) std::rethrow_exception(lidar_stop_error);
       if (stop_error) std::rethrow_exception(stop_error);
@@ -8056,6 +8616,7 @@ class MainWindow : public QMainWindow {
                             "device before retrying"));
         post([this]() {
           latest_device_info_valid_ = false;
+          latest_gnss_timing_status_.reset();
           latest_device_versions_valid_ = false;
           latest_rk_heartbeat_time_us_ = 0;
           device_info_panel_->setDeviceOpen(false);
@@ -8202,6 +8763,8 @@ class MainWindow : public QMainWindow {
   std::optional<prism_viewer::communication::RtkNavigationStatus>
       latest_rtk_navigation_status_;
   std::atomic<uint64_t> cors_usb_command_time_us_{0};
+  std::chrono::steady_clock::time_point next_idle_rtk_navigation_query_{};
+  std::chrono::steady_clock::time_point next_idle_gnss_timing_query_{};
   std::array<std::thread, 2> camera_preview_workers_;
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> worker_running_{false};
@@ -8211,7 +8774,7 @@ class MainWindow : public QMainWindow {
   std::atomic<bool> camera_exposure_operation_running_{false};
   std::atomic<bool> camera_encoding_operation_running_{false};
   std::atomic<bool> lidar_network_operation_running_{false};
-  bool automatic_time_sync_pending_ = true;
+  bool automatic_device_open_pending_ = true;
   bool automatic_device_open_scheduled_ = false;
   std::atomic<bool> camera_preview_enabled_{false};
   std::atomic<bool> imu_ui_enabled_{false};
@@ -8252,6 +8815,7 @@ class MainWindow : public QMainWindow {
   TemperatureUnit temperature_unit_ =
       prism_viewer::imu_units::kDefaultTemperatureUnit;
   prism::DeviceInfo latest_device_info_;
+  std::optional<prism::GnssTimingStatus> latest_gnss_timing_status_;
   TimeSyncProvider latest_time_sync_provider_ =
       TimeSyncProvider::Unsynced;
   prism_viewer::cors::CorsSessionStatus latest_cors_status_;
@@ -8352,10 +8916,24 @@ int runViewerApplication(int argc, char** argv) {
             test_root, true,
             test_imu_only ? DatasetRecordingMode::ImuOnly
                           : DatasetRecordingMode::Full,
-            true, &error)) {
+            true, DatasetTimestampDomain::UnixUtc, &error)) {
       std::cerr << "dataset recorder start failed: " << error << "\n";
       return 10;
     }
+    prism::DeviceInfo time_sync_info;
+    time_sync_info.info_version = 4u;
+    time_sync_info.sensor_board_online = true;
+    time_sync_info.sensor_board_time_synced = true;
+    time_sync_info.imu_time_synced_mask = 0x03u;
+    recorder.appendTimeSync(
+        time_sync_info, communication::TimeSyncProvider::Gps,
+        1780000000000000ULL);
+    recorder.appendTimeSync(
+        time_sync_info, communication::TimeSyncProvider::RkPtp,
+        1780000001000000ULL);
+    recorder.appendTimeSync(
+        time_sync_info, communication::TimeSyncProvider::Gps,
+        1780000002000000ULL);
     bool in_progress_manifest_ok = false;
     {
       std::ifstream in_progress_manifest(test_root / "dataset.info");
@@ -8485,6 +9063,20 @@ int runViewerApplication(int argc, char** argv) {
     rtk_navigation.fix_count = 6u;
     rtk_navigation.float_count = 1u;
     recorder.appendGpsRtk(rtk_correction, rtk_navigation);
+    const std::array<uint8_t, 6> rover_rtcm = {
+        0xd3u, 0x00u, 0x00u, 0x47u, 0xeau, 0x4bu};
+    prism::RoverRtcmChunkView rover_rtcm_chunk;
+    rover_rtcm_chunk.version = 1u;
+    rover_rtcm_chunk.sequence = 1u;
+    rover_rtcm_chunk.flags = 0x01u;
+    rover_rtcm_chunk.dropped_bytes = 0u;
+    rover_rtcm_chunk.data = rover_rtcm.data();
+    rover_rtcm_chunk.data_size = rover_rtcm.size();
+    recorder.appendRoverRtcm(rover_rtcm_chunk);
+    const std::array<uint8_t, 8> base_rtcm = {
+        0x66u, 0x59u, 0x40u, 0x00u, 0xd3u, 0x00u, 0x00u, 0x00u};
+    recorder.appendBaseRtcm(base_rtcm.data(), base_rtcm.size(),
+                            std::chrono::steady_clock::now());
     const DatasetRecordingSummary summary = recorder.stop();
     std::array<std::vector<DatasetImageEntry>, 4> loaded_images;
     bool browser_load_ok = true;
@@ -8518,6 +9110,35 @@ int runViewerApplication(int argc, char** argv) {
       }
       return std::string();
     };
+    const auto firstCsvDataLine = [](const std::filesystem::path& path) {
+      std::ifstream input(path);
+      bool header_seen = false;
+      for (std::string line; std::getline(input, line);) {
+        if (line.empty() || line[0] == '#') continue;
+        if (!header_seen) {
+          header_seen = true;
+          continue;
+        }
+        return line;
+      }
+      return std::string();
+    };
+    const auto binaryEquals = [](const std::filesystem::path& path,
+                                 const auto& expected) {
+      std::ifstream input(path, std::ios::in | std::ios::binary);
+      const std::vector<uint8_t> actual(
+          (std::istreambuf_iterator<char>(input)),
+          std::istreambuf_iterator<char>());
+      return !input.bad() && actual.size() == expected.size() &&
+             std::equal(actual.begin(), actual.end(), expected.begin());
+    };
+    const bool raw_rtcm_files_ok =
+        binaryEquals(test_root / "rover_rtcm.bin", rover_rtcm) &&
+        binaryEquals(test_root / "base_rtcm.bin", base_rtcm) &&
+        firstCsvDataLine(test_root / "rover_rtcm.csv").find(
+            ",0,6,1,0") != std::string::npos &&
+        firstCsvDataLine(test_root / "base_rtcm.csv").find(
+            ",0,8") != std::string::npos;
     bool lidar_v6_source_ok = test_imu_only;
     if (!test_imu_only) {
       std::istringstream parser(firstDataLine(test_root / "lidar.tum"));
@@ -8572,6 +9193,31 @@ int runViewerApplication(int argc, char** argv) {
         lidar_imu_values[0] == "1780000000.000800" &&
         lidar_imu_timestamp_synced == 1u &&
         lidar_imu_tai_offset_applied == 1u;
+    std::vector<std::string> time_sync_rows;
+    std::string time_sync_header;
+    {
+      std::ifstream input(test_root / "time_sync.csv");
+      for (std::string line; std::getline(input, line);) {
+        if (line.empty() || line.front() == '#') continue;
+        if (time_sync_header.empty()) {
+          time_sync_header = line;
+        } else {
+          time_sync_rows.push_back(line);
+        }
+      }
+    }
+    const bool time_sync_file_ok =
+        time_sync_header ==
+            "sample_index,recording_elapsed_us,host_receive_unix_us,"
+            "rk_system_time_us,device_info_version,sensor_board_online,"
+            "sensor_board_time_synced,time_sync_provider,"
+            "time_sync_provider_name,imu_time_synced_mask,"
+            "sensor_board_error_flags" &&
+        time_sync_rows.size() == 3u &&
+        time_sync_rows[0].find(",1,1,2,GPS,3,0") != std::string::npos &&
+        time_sync_rows[1].find(",1,1,1,Host via Sensor Board,3,0") !=
+            std::string::npos &&
+        time_sync_rows[2].find(",1,1,2,GPS,3,0") != std::string::npos;
     browser_load_ok =
         browser_load_ok && loaded_imu0.rows == 1 &&
         loaded_imu0.first_timestamp_us == 1780000000000000ULL &&
@@ -8580,7 +9226,15 @@ int runViewerApplication(int argc, char** argv) {
         loaded_lidar_imu.rows == 1 &&
         loaded_lidar_imu.first_timestamp_us == 1780000000000800ULL &&
         loaded_gps_rtk.rows == 1 && summary.gps_rtk_sample_count == 1 &&
-        summary.gps_rtk_navigation_sample_count == 1;
+        summary.gps_rtk_navigation_sample_count == 1 &&
+        summary.rover_rtcm_batch_count == 1u &&
+        summary.rover_rtcm_byte_count == rover_rtcm.size() &&
+        summary.rover_rtcm_agent_dropped_bytes == 0u &&
+        summary.base_rtcm_batch_count == 1u &&
+        summary.base_rtcm_byte_count == base_rtcm.size() &&
+        raw_rtcm_files_ok &&
+        summary.time_sync_sample_count == 3u &&
+        summary.time_sync_transition_count == 2u && time_sync_file_ok;
     bool auxiliary_streams_ok = true;
     if (test_imu_only) {
       auxiliary_streams_ok = loaded_lidar.rows == 0 &&
@@ -8598,10 +9252,10 @@ int runViewerApplication(int argc, char** argv) {
             !std::filesystem::exists(
                 test_root / ("cam" + std::to_string(camera) + ".tum"));
       }
-      for (const auto& entry : std::filesystem::directory_iterator(test_root)) {
-        auxiliary_streams_ok =
-            auxiliary_streams_ok && entry.path().extension() != ".bin";
-      }
+      auxiliary_streams_ok =
+          auxiliary_streams_ok &&
+          !std::filesystem::exists(test_root / "camera-data-0000.bin") &&
+          !std::filesystem::exists(test_root / "lidar-data-0000.bin");
     } else {
       auxiliary_streams_ok =
           loaded_lidar.rows == 1 &&
@@ -8618,6 +9272,11 @@ int runViewerApplication(int argc, char** argv) {
     bool manifest_epoch_ok = false;
     bool manifest_alignment_ok = false;
     bool manifest_gps_rtk_ok = false;
+    bool manifest_rover_rtcm_ok = false;
+    bool manifest_base_rtcm_ok = false;
+    bool manifest_time_sync_ok = false;
+    bool manifest_time_sync_count_ok = false;
+    bool manifest_time_sync_transition_ok = false;
     std::array<bool, 6> manifest_unsynced_drop_fields{};
     const std::array<std::string, 6> expected_unsynced_drop_fields = {
         "unsynced_imu0_samples_dropped=1",
@@ -8643,6 +9302,19 @@ int runViewerApplication(int argc, char** argv) {
                               line == "alignment=common-device-time-domain";
       manifest_gps_rtk_ok =
           manifest_gps_rtk_ok || line == "gps_rtk_storage=csv-v1";
+      manifest_rover_rtcm_ok =
+          manifest_rover_rtcm_ok ||
+          line == "rover_rtcm_storage=raw-rtcm3-v1";
+      manifest_base_rtcm_ok =
+          manifest_base_rtcm_ok ||
+          line == "base_rtcm_storage=raw-rtcm-v1";
+      manifest_time_sync_ok =
+          manifest_time_sync_ok || line == "time_sync_storage=csv-v1";
+      manifest_time_sync_count_ok =
+          manifest_time_sync_count_ok || line == "time_sync_samples=3";
+      manifest_time_sync_transition_ok =
+          manifest_time_sync_transition_ok ||
+          line == "time_sync_provider_transitions=2";
       for (size_t field = 0; field < expected_unsynced_drop_fields.size();
            ++field) {
         manifest_unsynced_drop_fields[field] =
@@ -8664,6 +9336,14 @@ int runViewerApplication(int argc, char** argv) {
         recorded_validation.gps_rtk_present &&
         recorded_validation.gps_rtk.rows == 1u &&
         recorded_validation.gps_rtk_navigation_samples == 1u;
+    const bool recorded_raw_rtcm_ok =
+        recorded_validation.rover_rtcm_present &&
+        recorded_validation.rover_rtcm_batches == 1u &&
+        recorded_validation.rover_rtcm_bytes == rover_rtcm.size() &&
+        recorded_validation.rover_rtcm_agent_dropped_bytes == 0u &&
+        recorded_validation.base_rtcm_present &&
+        recorded_validation.base_rtcm_batches == 1u &&
+        recorded_validation.base_rtcm_bytes == base_rtcm.size();
 
     // Exercise the complementary file set as well. A capture started without
     // LiDAR must not leave an empty point index, LiDAR IMU stream, or manifest
@@ -8676,9 +9356,11 @@ int runViewerApplication(int argc, char** argv) {
         no_lidar_root, true,
         test_imu_only ? DatasetRecordingMode::ImuOnly
                       : DatasetRecordingMode::Full,
-        false, &no_lidar_error);
+        false, DatasetTimestampDomain::UnixUtc, &no_lidar_error);
     DatasetRecordingSummary no_lidar_summary;
     if (no_lidar_ok) {
+      no_lidar_recorder.appendTimeSync(
+          time_sync_info, communication::TimeSyncProvider::RkPtp, 0u);
       no_lidar_recorder.appendImu(imu0);
       no_lidar_recorder.appendImu(imu1);
       no_lidar_recorder.appendFrameSet(
@@ -8745,8 +9427,10 @@ int runViewerApplication(int argc, char** argv) {
     std::string single_imu_error;
     bool single_imu_ok = single_imu_recorder.start(
         single_imu_root, true, DatasetRecordingMode::ImuOnly, false,
-        &single_imu_error);
+        DatasetTimestampDomain::UnixUtc, &single_imu_error);
     if (single_imu_ok) {
+      single_imu_recorder.appendTimeSync(
+          time_sync_info, communication::TimeSyncProvider::RkPtp, 0u);
       single_imu_recorder.appendImu(imu0);
       single_imu_recorder.appendImu(unsynced_imu1);
       const DatasetRecordingSummary single_imu_summary =
@@ -8770,8 +9454,12 @@ int runViewerApplication(int argc, char** argv) {
     std::string unsynced_only_error;
     bool unsynced_only_fails = unsynced_only_recorder.start(
         unsynced_only_root, true, DatasetRecordingMode::ImuOnly, false,
-        &unsynced_only_error);
+        DatasetTimestampDomain::UnixUtc, &unsynced_only_error);
     if (unsynced_only_fails) {
+      time_sync_info.sensor_board_time_synced = false;
+      time_sync_info.imu_time_synced_mask = 0u;
+      unsynced_only_recorder.appendTimeSync(
+          time_sync_info, communication::TimeSyncProvider::Unsynced, 0u);
       unsynced_only_recorder.appendImu(unsynced_imu0);
       unsynced_only_recorder.appendImu(unsynced_imu1);
       const DatasetRecordingSummary unsynced_only_summary =
@@ -8792,19 +9480,78 @@ int runViewerApplication(int argc, char** argv) {
               std::string::npos &&
           incomplete_manifest_ok;
     }
+
+    // Without external PPS/NMEA, the Sensor Board boot timeline is still a
+    // valid common sensor time domain. Small boot-relative timestamps must be
+    // recorded, validated, and kept distinct from Unix UTC datasets.
+    const std::filesystem::path internal_time_root =
+        test_root / "sensor-board-boot-time";
+    DatasetRecorder internal_time_recorder;
+    std::string internal_time_error;
+    bool internal_time_ok = internal_time_recorder.start(
+        internal_time_root, true, DatasetRecordingMode::ImuOnly, false,
+        DatasetTimestampDomain::SensorBoardBoot, &internal_time_error);
+    if (internal_time_ok) {
+      time_sync_info.sensor_board_time_synced = true;
+      time_sync_info.imu_time_synced_mask = 0x03u;
+      internal_time_recorder.appendTimeSync(
+          time_sync_info,
+          communication::TimeSyncProvider::SensorBoardInternal, 1000000u);
+      prism::ImuSample internal_imu = imu0;
+      internal_imu.timestamp_us = 1000000u;
+      internal_time_recorder.appendImu(internal_imu);
+      const DatasetRecordingSummary internal_summary =
+          internal_time_recorder.stop();
+      const DatasetValidationResult internal_validation =
+          validatePrismDataset(internal_time_root);
+      internal_time_ok =
+          internal_summary.success && internal_summary.sample_count[0] == 1u &&
+          internal_validation.valid &&
+          internal_validation.time_domain == "sensor-board-clock" &&
+          internal_validation.timestamp_epoch == "boot" &&
+          internal_validation.onboard_imus[0].first_timestamp_us == 1000000u;
+    }
+
+    const std::filesystem::path domain_change_root =
+        test_root / "time-domain-change";
+    DatasetRecorder domain_change_recorder;
+    std::string domain_change_error;
+    bool domain_change_fails = domain_change_recorder.start(
+        domain_change_root, true, DatasetRecordingMode::ImuOnly, false,
+        DatasetTimestampDomain::SensorBoardBoot, &domain_change_error);
+    if (domain_change_fails) {
+      domain_change_recorder.appendTimeSync(
+          time_sync_info,
+          communication::TimeSyncProvider::SensorBoardInternal, 1000000u);
+      domain_change_recorder.appendTimeSync(
+          time_sync_info, communication::TimeSyncProvider::Gps,
+          1780000000000000ULL);
+      const DatasetRecordingSummary domain_change_summary =
+          domain_change_recorder.stop();
+      domain_change_fails =
+          !domain_change_summary.success &&
+          domain_change_summary.error.find("time domain changed") !=
+              std::string::npos;
+    }
     const bool success = summary.success && mode_ok && manifest_mode_ok &&
                          manifest_complete_ok &&
                          manifest_time_domain_ok && manifest_epoch_ok &&
                          manifest_alignment_ok && manifest_gps_rtk_ok &&
+                         manifest_rover_rtcm_ok && manifest_base_rtcm_ok &&
+                         manifest_time_sync_ok &&
+                         manifest_time_sync_count_ok &&
+                         manifest_time_sync_transition_ok &&
                          manifest_unsynced_drops_ok &&
                          strict_time_drop_counts_ok && lidar_v6_source_ok &&
                          lidar_imu_v6_source_ok && writer_queue_order_ok &&
                          single_imu_ok && unsynced_only_fails &&
+                         internal_time_ok && domain_change_fails &&
                          in_progress_manifest_ok &&
                          summary.sample_count[0] == 1 &&
                          summary.sample_count[1] == 1 && browser_load_ok &&
                          auxiliary_streams_ok && no_lidar_ok &&
-                         recorded_validation_ok && recorded_gps_rtk_ok;
+                         recorded_validation_ok && recorded_gps_rtk_ok &&
+                         recorded_raw_rtcm_ok;
     std::cout << (test_imu_only ? "imu_only_recorder_self_test="
                                 : "dataset_recorder_self_test=")
               << (success ? "PASS" : "FAIL")
@@ -8825,6 +9572,10 @@ int runViewerApplication(int argc, char** argv) {
               << (manifest_alignment_ok ? "PASS" : "FAIL")
               << " gps_rtk="
               << (recorded_gps_rtk_ok ? "PASS" : "FAIL")
+              << " raw_rtcm="
+              << (recorded_raw_rtcm_ok ? "PASS" : "FAIL")
+              << " time_sync="
+              << (time_sync_file_ok ? "PASS" : "FAIL")
               << " unsynced_drops="
               << (strict_time_drop_counts_ok ? "PASS" : "FAIL")
               << " lidar_v6_source="

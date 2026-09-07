@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
   prism::DeviceConfiguration loaded;
   loaded.camera_fps = 20;
   loaded.mjpeg_quality = 92;
+  loaded.gnss_uart_baud = 921600;
   loaded.generation = 7;
   loaded.persisted = true;
   panel.setDeviceOpen(true);
@@ -51,6 +52,9 @@ int main(int argc, char** argv) {
           "loaded camera FPS is selected");
   require(quality->value() == 92 && slider->value() == 92,
           "loaded JPEG quality is selected");
+  require(panel.findChild<QWidget*>(QStringLiteral("gnssUartBaudCombo")) ==
+              nullptr,
+          "GNSS UART controls do not belong in the camera panel");
   require(!apply->isEnabled(), "unchanged settings cannot be saved");
 
   prism::DeviceConfiguration requested;
@@ -75,6 +79,7 @@ int main(int argc, char** argv) {
   require(apply_called && requested.camera_fps == 17u &&
               requested.mjpeg_quality == 84u,
           "quality-only changes retain the selected FPS");
+  panel.setConfiguration(requested);
 
   bool refresh_called = false;
   panel.on_refresh = [&]() { refresh_called = true; };

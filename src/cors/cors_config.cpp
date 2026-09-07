@@ -3,6 +3,7 @@
 #include <QtCore/QLocale>
 #include <QtCore/QUrl>
 
+#include <algorithm>
 #include <cmath>
 
 namespace prism_viewer::cors {
@@ -186,22 +187,64 @@ QString validateCorsConfiguration(
 
 QByteArray buildNmeaGga(const QDateTime& utc, double latitude_degrees,
                         double longitude_degrees, double altitude_meters) {
-  const QTime utc_time = utc.toUTC().time();
+  CorsGgaData data;
+  data.utc = utc.toUTC().time();
+  data.latitude_degrees = latitude_degrees;
+  data.longitude_degrees = longitude_degrees;
+  data.altitude_meters = altitude_meters;
+  return buildNmeaGga(data);
+}
+
+std::optional<CorsGgaData> corsGgaDataFromGnssStatus(
+    const prism::GnssTimingStatus& status, uint32_t maximum_age_ms) {
+  if (!status.nmea_seen || !status.nmea_fix_valid ||
+      !status.nmea_position_valid || status.nmea_age_ms > maximum_age_ms ||
+      status.utc_ms_of_day >= 24u * 60u * 60u * 1000u) {
+    return std::nullopt;
+  }
+  CorsGgaData data;
+  data.utc = QTime::fromMSecsSinceStartOfDay(
+      static_cast<int>(status.utc_ms_of_day));
+  data.latitude_degrees =
+      static_cast<double>(status.latitude_e7) / 10000000.0;
+  data.longitude_degrees =
+      static_cast<double>(status.longitude_e7) / 10000000.0;
+  data.altitude_meters = static_cast<double>(status.altitude_mm) / 1000.0;
+  data.geoid_separation_meters =
+      static_cast<double>(status.geoid_separation_mm) / 1000.0;
+  data.fix_quality = status.nmea_fix_quality;
+  data.satellites = status.satellites;
+  data.hdop = status.nmea_dop_valid && status.hdop_milli > 0u
+                  ? static_cast<double>(status.hdop_milli) / 1000.0
+                  : 1.0;
+  return data;
+}
+
+QByteArray buildNmeaGga(const CorsGgaData& data) {
+  const QTime utc_time = data.utc.isValid() ? data.utc : QTime(0, 0);
   const QString time =
       QStringLiteral("%1.%2")
           .arg(utc_time.toString(QStringLiteral("hhmmss")))
           .arg(utc_time.msec() / 10, 2, 10, QLatin1Char('0'));
   const QChar latitude_hemisphere =
-      latitude_degrees < 0.0 ? QLatin1Char('S') : QLatin1Char('N');
+      data.latitude_degrees < 0.0 ? QLatin1Char('S') : QLatin1Char('N');
   const QChar longitude_hemisphere =
-      longitude_degrees < 0.0 ? QLatin1Char('W') : QLatin1Char('E');
+      data.longitude_degrees < 0.0 ? QLatin1Char('W') : QLatin1Char('E');
+  const int fix_quality = std::clamp(data.fix_quality, 0, 9);
+  const int satellites = std::clamp(data.satellites, 0, 99);
+  const double hdop =
+      std::isfinite(data.hdop) && data.hdop > 0.0 ? data.hdop : 1.0;
   const QString fields =
-      QStringLiteral("GPGGA,%1,%2,%3,%4,%5,1,12,1.0,%6,M,0.0,M,,")
-          .arg(time, coordinateField(latitude_degrees, true),
+      QStringLiteral("GPGGA,%1,%2,%3,%4,%5,%6,%7,%8,%9,M,%10,M,,")
+          .arg(time, coordinateField(data.latitude_degrees, true),
                QString(latitude_hemisphere),
-               coordinateField(longitude_degrees, false),
-               QString(longitude_hemisphere),
-               QLocale::c().toString(altitude_meters, 'f', 2));
+               coordinateField(data.longitude_degrees, false),
+               QString(longitude_hemisphere))
+          .arg(fix_quality)
+          .arg(satellites, 2, 10, QLatin1Char('0'))
+          .arg(QLocale::c().toString(hdop, 'f', 2),
+               QLocale::c().toString(data.altitude_meters, 'f', 3),
+               QLocale::c().toString(data.geoid_separation_meters, 'f', 3));
   return withNmeaChecksum(fields.toLatin1());
 }
 
@@ -266,6 +309,16 @@ NtripResponseInspection inspectNtripResponse(const QByteArray& bytes) {
     return result;
   }
   const int possible_body = line_end + 2;
+  // NTRIP v1 casters are allowed to return only the ICY status line and then
+  // wait for a standalone rover GGA before producing correction data.  Do
+  // not deadlock waiting for either an HTTP-style blank line or the first
+  // RTCM byte in that case.
+  if (icy_ok && bytes.size() == possible_body) {
+    result.complete = true;
+    result.accepted = true;
+    result.body_offset = possible_body;
+    return result;
+  }
   if (bytes.size() > possible_body &&
       static_cast<quint8>(bytes.at(possible_body)) == 0xd3u) {
     result.complete = true;

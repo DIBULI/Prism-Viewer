@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 1.0.0 LANGUAGES CXX)
+project(prism_viewer VERSION 1.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -350,6 +350,15 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(sdk-runtime-test tests/sdk_runtime_test.cpp)
+  target_compile_features(sdk-runtime-test PRIVATE cxx_std_17)
+  target_link_libraries(sdk-runtime-test PRIVATE prism-viewer-sdk)
+  if(WIN32)
+    target_compile_definitions(sdk-runtime-test PRIVATE
+      PRISM_TEST_SDK_RUNTIME="${PRISM_USB_SDK_RUNTIME}")
+  endif()
+  add_test(NAME sdk-runtime COMMAND sdk-runtime-test)
+
   add_executable(app-theme-test
     tests/app_theme_test.cpp
   )
@@ -375,14 +384,43 @@ if(BUILD_TESTING)
   )
   target_include_directories(cors-config-test PRIVATE src)
   target_compile_features(cors-config-test PRIVATE cxx_std_17)
-  target_link_libraries(cors-config-test PRIVATE ${QT_PACKAGE}::Core)
+  target_link_libraries(cors-config-test PRIVATE
+    prism-viewer-sdk
+    ${QT_PACKAGE}::Core
+  )
   if(MSVC)
     target_compile_options(cors-config-test PRIVATE /W4 /permissive- /utf-8)
   else()
     target_compile_options(cors-config-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME cors-config COMMAND cors-config-test)
+
+  add_executable(cors-session-test
+    src/communication/prism_runtime.cpp
+    src/communication/rtk_corrections.cpp
+    src/cors/cors_config.cpp
+    src/cors/cors_session.cpp
+    tests/cors_session_test.cpp
+  )
+  target_include_directories(cors-session-test PRIVATE src)
+  target_compile_features(cors-session-test PRIVATE cxx_std_17)
+  target_link_libraries(cors-session-test PRIVATE
+    prism-viewer-sdk
+    ${QT_PACKAGE}::Core
+    ${QT_PACKAGE}::Network
+    Threads::Threads
+  )
+  if(MSVC)
+    target_compile_options(
+      cors-session-test PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(
+      cors-session-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME cors-session COMMAND cors-session-test)
+
   add_executable(rtk-corrections-test
+    src/communication/prism_runtime.cpp
     src/communication/rtk_corrections.cpp
     tests/rtk_corrections_test.cpp
   )
@@ -584,6 +622,7 @@ if(BUILD_TESTING)
   endif()
 
   add_executable(cors-panel-test
+    src/communication/prism_runtime.cpp
     src/common/ui_text.cpp
     src/communication/rtk_corrections.cpp
     src/cors/cors_config.cpp

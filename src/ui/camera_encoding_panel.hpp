@@ -29,6 +29,7 @@ class CameraEncodingPanel final : public QWidget {
   void setBusy(bool busy, const QString& message = {});
   void setConfiguration(const prism::DeviceConfiguration& configuration);
   void setError(const QString& error);
+  bool cameraSettingsDirty() const;
 
   std::function<void()> on_refresh;
   std::function<void(const prism::DeviceConfiguration&)> on_apply;

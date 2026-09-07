@@ -3,7 +3,12 @@
 #include <QtCore/QByteArray>
 #include <QtCore/QDateTime>
 #include <QtCore/QString>
+#include <QtCore/QTime>
 #include <QtCore/QVector>
+
+#include <optional>
+
+#include "prism/usb/gnss_timing.hpp"
 
 namespace prism_viewer::cors {
 
@@ -42,6 +47,17 @@ struct CorsConfiguration {
   double altitude_meters = 0.0;
 };
 
+struct CorsGgaData {
+  QTime utc;
+  double latitude_degrees = 0.0;
+  double longitude_degrees = 0.0;
+  double altitude_meters = 0.0;
+  double geoid_separation_meters = 0.0;
+  int fix_quality = 1;
+  int satellites = 12;
+  double hdop = 1.0;
+};
+
 struct CorsEndpointAddress {
   CorsEndpoint endpoint;
   QString mountpoint;
@@ -56,6 +72,9 @@ CorsEndpointAddress parseCorsEndpointAddress(
     const QString& address, quint16 default_port);
 
 QString validateCorsConfiguration(const CorsConfiguration& configuration);
+std::optional<CorsGgaData> corsGgaDataFromGnssStatus(
+    const prism::GnssTimingStatus& status, uint32_t maximum_age_ms = 2000u);
+QByteArray buildNmeaGga(const CorsGgaData& data);
 QByteArray buildNmeaGga(const QDateTime& utc, double latitude_degrees,
                         double longitude_degrees, double altitude_meters);
 QByteArray buildNtripRequest(const CorsConfiguration& configuration,

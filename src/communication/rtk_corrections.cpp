@@ -1,29 +1,24 @@
 #include "communication/rtk_corrections.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace prism_viewer::communication {
 namespace {
 
-constexpr uint16_t kProtocolVersion = 1u;
-constexpr size_t kBeginPayloadSize = 8u;
-constexpr size_t kStatusPayloadSize = 88u;
-constexpr size_t kNavigationStatusPayloadSize = 168u;
-constexpr size_t kMaximumChunkSize = 16u * 1024u;
+constexpr uint16_t kCorrectionProtocolVersion = 2u;
+constexpr uint16_t kNavigationProtocolVersion = 2u;
+constexpr size_t kStatusPayloadSize = 96u;
+constexpr size_t kNavigationStatusPayloadSize = 248u;
 constexpr uint32_t kKnownFlags = 0x7fu;
-constexpr uint32_t kKnownNavigationFlags = 0x0fu;
+constexpr uint32_t kKnownNavigationFlags = 0x1fu;
+constexpr uint32_t kKnownSmoothingFlags = 0x7fu;
 
-constexpr auto kBeginFrame = static_cast<prism::FrameType>(0x17);
-constexpr auto kDataFrame = static_cast<prism::FrameType>(0x18);
-constexpr auto kEndFrame = static_cast<prism::FrameType>(0x19);
-constexpr auto kStatusFrame = static_cast<prism::FrameType>(0x1a);
 constexpr auto kStatusResponseFrame =
     static_cast<prism::FrameType>(0x95);
-constexpr auto kNavigationStatusFrame = static_cast<prism::FrameType>(0x1b);
 constexpr auto kNavigationStatusResponseFrame =
     static_cast<prism::FrameType>(0x96);
 constexpr auto kNavigationEventFrame = static_cast<prism::FrameType>(0x97);
@@ -58,32 +53,44 @@ double readLeDouble(const std::vector<uint8_t>& bytes, size_t offset) {
   return value;
 }
 
-void appendLe16(std::vector<uint8_t>* bytes, uint16_t value) {
-  bytes->push_back(static_cast<uint8_t>(value & 0xffu));
-  bytes->push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
+bool validSolution(RtkSolution solution) {
+  return solution >= RtkSolution::None && solution <= RtkSolution::Ppp;
 }
 
-void appendLe32(std::vector<uint8_t>* bytes, uint32_t value) {
-  for (size_t index = 0; index < 4u; ++index) {
-    bytes->push_back(
-        static_cast<uint8_t>((value >> (index * 8u)) & 0xffu));
-  }
+bool validPosition(double latitude, double longitude, double height,
+                   double east_std, double north_std, double up_std) {
+  return std::isfinite(latitude) && std::isfinite(longitude) &&
+         std::isfinite(height) && std::isfinite(east_std) &&
+         std::isfinite(north_std) && std::isfinite(up_std) &&
+         latitude >= -90.0 && latitude <= 90.0 && longitude >= -180.0 &&
+         longitude <= 180.0 && east_std >= 0.0 && north_std >= 0.0 &&
+         up_std >= 0.0;
 }
 
-prism::Frame sendCommand(prism_runtime::Client& client,
-                         prism::FrameType type,
-                         const std::vector<uint8_t>& payload,
-                         uint32_t timeout_ms) {
-#ifdef _WIN32
-  (void)client;
-  (void)type;
-  (void)payload;
-  (void)timeout_ms;
-  throw std::runtime_error(
-      "CORS forwarding requires the Windows Host SDK 1.1.0 runtime");
-#else
-  return client.command(type, payload, timeout_ms);
-#endif
+std::string describeRtkNavigationProtocolMismatch(
+    const prism::Frame& frame) {
+  const std::string received_version =
+      frame.payload.size() >= 2u
+          ? std::to_string(readLe16(frame.payload, 0))
+          : std::string("unavailable");
+  const std::string declared_size =
+      frame.payload.size() >= 4u
+          ? std::to_string(readLe16(frame.payload, 2))
+          : std::string("unavailable");
+  return "RTK navigation protocol mismatch: received frame type=" +
+         std::to_string(static_cast<unsigned int>(frame.type)) +
+         ", payload=" + std::to_string(frame.payload.size()) +
+         " bytes, version=" + received_version +
+         ", declared size=" + declared_size +
+         "; Viewer expects response/event type=" +
+         std::to_string(static_cast<unsigned int>(
+             kNavigationStatusResponseFrame)) +
+         "/" +
+         std::to_string(static_cast<unsigned int>(kNavigationEventFrame)) +
+         ", payload=" + std::to_string(kNavigationStatusPayloadSize) +
+         " bytes, version=" +
+         std::to_string(kNavigationProtocolVersion) +
+         ". Update Viewer and Agent as a matched pair.";
 }
 
 }  // namespace
@@ -91,7 +98,7 @@ prism::Frame sendCommand(prism_runtime::Client& client,
 RtkCorrectionStatus parseRtkCorrectionStatus(const prism::Frame& frame) {
   if (frame.type != kStatusResponseFrame ||
       frame.payload.size() != kStatusPayloadSize ||
-      readLe16(frame.payload, 0) != kProtocolVersion ||
+      readLe16(frame.payload, 0) != kCorrectionProtocolVersion ||
       readLe16(frame.payload, 2) != kStatusPayloadSize) {
     throw std::runtime_error("not an RTK correction status response");
   }
@@ -123,6 +130,12 @@ RtkCorrectionStatus parseRtkCorrectionStatus(const prism::Frame& frame) {
   status.fix_count = readLe64(frame.payload, 64);
   status.float_count = readLe64(frame.payload, 72);
   status.decoder_errors = readLe64(frame.payload, 80);
+  status.correction_format =
+      static_cast<RtkCorrectionFormat>(readLe16(frame.payload, 88));
+  if (status.correction_format < RtkCorrectionFormat::Unknown ||
+      status.correction_format > RtkCorrectionFormat::Unsupported) {
+    throw std::runtime_error("invalid RTK correction format");
+  }
   status.running = (status.flags & (1u << 0u)) != 0u;
   status.rover_connected = (status.flags & (1u << 1u)) != 0u;
   status.base_connected = (status.flags & (1u << 2u)) != 0u;
@@ -137,50 +150,33 @@ RtkCorrectionStatus parseRtkCorrectionStatus(const prism::Frame& frame) {
 }
 
 RtkCorrectionStatus beginRtkCorrections(prism_runtime::Client& client) {
-  std::vector<uint8_t> payload;
-  payload.reserve(kBeginPayloadSize);
-  appendLe16(&payload, kProtocolVersion);
-  appendLe16(&payload, static_cast<uint16_t>(kBeginPayloadSize));
-  appendLe32(&payload, 0u);
-  return parseRtkCorrectionStatus(
-      sendCommand(client, kBeginFrame, payload, 3000));
+  return client.beginRtkCorrections();
 }
 
 RtkCorrectionStatus sendRtkCorrections(prism_runtime::Client& client,
-                                       const uint8_t* data, size_t size,
-                                       uint32_t timeout_ms) {
+                                     const uint8_t* data, size_t size,
+                                     uint32_t timeout_ms) {
   if (data == nullptr || size == 0u) {
     throw std::invalid_argument("RTK correction data must not be empty");
   }
-  RtkCorrectionStatus status;
-  size_t offset = 0u;
-  while (offset < size) {
-    const size_t chunk = std::min(kMaximumChunkSize, size - offset);
-    const std::vector<uint8_t> payload(data + offset, data + offset + chunk);
-    status = parseRtkCorrectionStatus(
-        sendCommand(client, kDataFrame, payload, timeout_ms));
-    offset += chunk;
-  }
-  return status;
+  return client.sendRtkCorrections(data, size, timeout_ms);
 }
 
 RtkCorrectionStatus endRtkCorrections(prism_runtime::Client& client) {
-  return parseRtkCorrectionStatus(
-      sendCommand(client, kEndFrame, {}, 3000));
+  return client.endRtkCorrections();
 }
 
-RtkCorrectionStatus queryRtkCorrectionStatus(
-    prism_runtime::Client& client) {
-  return parseRtkCorrectionStatus(
-      sendCommand(client, kStatusFrame, {}, 3000));
+RtkCorrectionStatus queryRtkCorrectionStatus(prism_runtime::Client& client) {
+  return client.rtkCorrectionStatus();
 }
 
-RtkNavigationStatus parseRtkNavigationStatus(const prism::Frame& frame) {
-  if (!isRtkNavigationFrame(frame) ||
+RtkNavigationStatus parseViewerRtkNavigationStatus(const prism::Frame& frame) {
+  if (!prism_viewer::communication::isViewerRtkNavigationFrame(frame) ||
       frame.payload.size() != kNavigationStatusPayloadSize ||
-      readLe16(frame.payload, 0) != kProtocolVersion ||
+      readLe16(frame.payload, 0) != kNavigationProtocolVersion ||
       readLe16(frame.payload, 2) != kNavigationStatusPayloadSize) {
-    throw std::runtime_error("not an RTK navigation response or event");
+    throw std::runtime_error(
+        describeRtkNavigationProtocolMismatch(frame));
   }
 
   RtkNavigationStatus status;
@@ -220,56 +216,92 @@ RtkNavigationStatus parseRtkNavigationStatus(const prism::Frame& frame) {
   status.rover_observation_epochs = readLe64(frame.payload, 144);
   status.base_observation_epochs = readLe64(frame.payload, 152);
   status.decoder_errors = readLe64(frame.payload, 160);
+  status.smoothing_flags = readLe32(frame.payload, 168);
+  status.smoothed_solution =
+      static_cast<RtkSolution>(readLe16(frame.payload, 172));
+  if (readLe16(frame.payload, 174) != 0u) {
+    throw std::runtime_error("RTK smoothing reserved field is non-zero");
+  }
+  status.smoothed_solution_epoch_us =
+      static_cast<int64_t>(readLe64(frame.payload, 176));
+  status.smoothed_latitude_deg = readLeDouble(frame.payload, 184);
+  status.smoothed_longitude_deg = readLeDouble(frame.payload, 192);
+  status.smoothed_ellipsoidal_height_m = readLeDouble(frame.payload, 200);
+  status.smoothed_east_std_m = readLeDouble(frame.payload, 208);
+  status.smoothed_north_std_m = readLeDouble(frame.payload, 216);
+  status.smoothed_up_std_m = readLeDouble(frame.payload, 224);
+  status.smoothing_reset_count = readLe64(frame.payload, 232);
+  status.smoothing_gated_epoch_count = readLe64(frame.payload, 240);
   status.solution_valid = (status.flags & (1u << 0u)) != 0u;
   status.base_position_valid = (status.flags & (1u << 1u)) != 0u;
   status.confidence_valid = (status.flags & (1u << 2u)) != 0u;
   status.position_jump_valid = (status.flags & (1u << 3u)) != 0u;
+  status.smoothed_position_valid = (status.flags & (1u << 4u)) != 0u;
 
   if (status.base_source < RtkBaseSource::None ||
       status.base_source > RtkBaseSource::Ntrip ||
-      status.solution < RtkSolution::None ||
-      status.solution > RtkSolution::Ppp ||
+      !validSolution(status.solution) ||
+      !validSolution(status.smoothed_solution) ||
       status.confidence < RtkConfidence::Unavailable ||
       status.confidence > RtkConfidence::High ||
-      status.confidence_score > 1000u) {
+      status.confidence_score > 1000u ||
+      (status.smoothing_flags & ~kKnownSmoothingFlags) != 0u ||
+      (status.smoothing_flags & RtkSmoothingDynamicsEnabled) == 0u) {
     throw std::runtime_error("invalid RTK navigation enum or confidence");
   }
   if (status.solution_valid) {
-    const bool finite =
-        std::isfinite(status.latitude_deg) &&
-        std::isfinite(status.longitude_deg) &&
-        std::isfinite(status.ellipsoidal_height_m) &&
-        std::isfinite(status.east_std_m) &&
-        std::isfinite(status.north_std_m) &&
-        std::isfinite(status.up_std_m) &&
-        std::isfinite(status.differential_age_s) &&
-        std::isfinite(status.ambiguity_ratio) &&
-        (!status.position_jump_valid || std::isfinite(status.position_jump_m));
-    if (!finite || status.solution == RtkSolution::None ||
-        status.solution_epoch_us <= 0 || status.latitude_deg < -90.0 ||
-        status.latitude_deg > 90.0 || status.longitude_deg < -180.0 ||
-        status.longitude_deg > 180.0 || status.east_std_m < 0.0 ||
-        status.north_std_m < 0.0 || status.up_std_m < 0.0 ||
+    if (status.solution == RtkSolution::None ||
+        status.solution_epoch_us <= 0 ||
+        !validPosition(status.latitude_deg, status.longitude_deg,
+                       status.ellipsoidal_height_m, status.east_std_m,
+                       status.north_std_m, status.up_std_m) ||
+        !std::isfinite(status.differential_age_s) ||
+        !std::isfinite(status.ambiguity_ratio) ||
         status.differential_age_s < 0.0 || status.ambiguity_ratio < 0.0) {
       throw std::runtime_error("invalid RTK navigation solution values");
     }
+    if (status.position_jump_valid &&
+        (!std::isfinite(status.position_jump_m) ||
+         status.position_jump_m < 0.0)) {
+      throw std::runtime_error("invalid RTK position jump");
+    }
+  } else if (status.solution != RtkSolution::None) {
+    throw std::runtime_error("RTK raw solution validity is inconsistent");
+  }
+  if (status.smoothed_position_valid) {
+    if (status.smoothed_solution == RtkSolution::None ||
+        status.smoothed_solution_epoch_us <= 0 ||
+        !validPosition(status.smoothed_latitude_deg,
+                       status.smoothed_longitude_deg,
+                       status.smoothed_ellipsoidal_height_m,
+                       status.smoothed_east_std_m,
+                       status.smoothed_north_std_m,
+                       status.smoothed_up_std_m)) {
+      throw std::runtime_error("invalid smoothed RTK navigation values");
+    }
+  } else if (status.smoothed_solution != RtkSolution::None ||
+             status.smoothed_solution_epoch_us != 0) {
+    throw std::runtime_error("RTK smoothed solution validity is inconsistent");
   }
   if (status.confidence_valid &&
       status.confidence == RtkConfidence::Unavailable) {
     throw std::runtime_error("RTK confidence validity is inconsistent");
   }
+  if ((status.smoothing_flags & RtkSmoothingJumpGated) != 0u &&
+      (status.smoothing_flags & RtkSmoothingResetPositionJump) == 0u) {
+    throw std::runtime_error("RTK smoothing gate flags are inconsistent");
+  }
   return status;
 }
 
-bool isRtkNavigationFrame(const prism::Frame& frame) noexcept {
+bool isViewerRtkNavigationFrame(const prism::Frame& frame) noexcept {
   return frame.type == kNavigationStatusResponseFrame ||
          frame.type == kNavigationEventFrame;
 }
 
 RtkNavigationStatus queryRtkNavigationStatus(
     prism_runtime::Client& client) {
-  return parseRtkNavigationStatus(
-      sendCommand(client, kNavigationStatusFrame, {}, 3000));
+  return client.rtkNavigationStatus();
 }
 
 const char* rtkSolutionName(RtkSolution solution) {
@@ -290,6 +322,16 @@ const char* rtkBaseSourceName(RtkBaseSource source) {
     case RtkBaseSource::HostCors: return "Host CORS";
     case RtkBaseSource::LocalSocket: return "local socket";
     case RtkBaseSource::Ntrip: return "Agent NTRIP";
+  }
+  return "unknown";
+}
+
+const char* rtkCorrectionFormatName(RtkCorrectionFormat format) {
+  switch (format) {
+    case RtkCorrectionFormat::Unknown: return "unknown";
+    case RtkCorrectionFormat::Rtcm2: return "RTCM 2.x";
+    case RtkCorrectionFormat::Rtcm3: return "RTCM 3.x";
+    case RtkCorrectionFormat::Unsupported: return "unsupported";
   }
   return "unknown";
 }

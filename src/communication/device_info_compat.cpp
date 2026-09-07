@@ -73,12 +73,22 @@ DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame) {
 
   const uint16_t version = readLe16(frame.payload, 0u);
   if (version == kLegacyDeviceInfoVersion) {
+    prism::Frame normalized = frame;
+    normalized.payload[0] =
+        static_cast<uint8_t>(kTimeSourceDeviceInfoVersion);
+    normalized.payload[1] = 0u;
+    const uint32_t flags = readLe32(normalized.payload, 4u);
+    normalized.payload[kTimeSyncSourceOffset] =
+        (flags & kSensorBoardTimeSynced) != 0u
+            ? static_cast<uint8_t>(TimeSyncProvider::RkPtp)
+            : static_cast<uint8_t>(TimeSyncProvider::SensorBoardInternal);
+    normalized.payload[255] = 0u;
     DeviceInfoStatus status;
-    status.info = prism::parseDeviceInfo(frame);
+    status.info = prism::parseDeviceInfo(normalized);
     status.time_sync_provider =
         status.info.sensor_board_time_synced
             ? TimeSyncProvider::LegacyUnknown
-            : TimeSyncProvider::Unsynced;
+            : TimeSyncProvider::SensorBoardInternal;
     return status;
   }
   if (version != kTimeSourceDeviceInfoVersion) {
@@ -161,9 +171,9 @@ DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame) {
   info.wifi.error = fixedString(payload, 194u, 60u);
   status.time_sync_provider =
       static_cast<TimeSyncProvider>(provider_value);
+  info.sensor_board_time_sync_source =
+      static_cast<prism::SensorBoardTimeSyncSource>(provider_value);
 
-  const bool provider_is_synced =
-      status.time_sync_provider != TimeSyncProvider::Unsynced;
   if ((info.imu_present_mask & ~0x03u) != 0u ||
       (info.imu_receiving_mask & ~0x03u) != 0u ||
       (info.imu_time_synced_mask & ~0x03u) != 0u ||
@@ -174,8 +184,10 @@ DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame) {
       info.detected_camera_count != popcount8(info.camera_present_mask) ||
       (info.usb3_connected !=
        (info.usb_speed >= prism::UsbLinkSpeed::UsbSuperSpeed)) ||
-      info.sensor_board_time_synced != provider_is_synced ||
-      (info.imu_fps != 500u && info.imu_fps != 1000u) ||
+      (info.sensor_board_time_synced && !info.sensor_board_online) ||
+      (!info.sensor_board_time_synced &&
+       status.time_sync_provider != TimeSyncProvider::SensorBoardInternal) ||
+      info.imu_fps != prism::kOnboardImuRateHz ||
       !prism::isCameraFpsSupported(info.camera_fps)) {
     throw std::runtime_error("inconsistent DeviceInfo payload");
   }
@@ -199,10 +211,14 @@ DeviceInfoStatus readDeviceInfo(prism_runtime::Client& client) {
 #ifdef _WIN32
   DeviceInfoStatus status;
   status.info = client.deviceInfo();
-  status.time_sync_provider =
-      status.info.sensor_board_time_synced
-          ? TimeSyncProvider::LegacyUnknown
-          : TimeSyncProvider::Unsynced;
+  status.time_sync_provider = status.info.info_version >=
+                                      kTimeSourceDeviceInfoVersion
+                                  ? static_cast<TimeSyncProvider>(
+                                        status.info
+                                            .sensor_board_time_sync_source)
+                                  : status.info.sensor_board_time_synced
+                                        ? TimeSyncProvider::LegacyUnknown
+                                        : TimeSyncProvider::SensorBoardInternal;
   return status;
 #else
   DeviceInfoStatus status = parseCompatibleDeviceInfo(
@@ -215,8 +231,9 @@ DeviceInfoStatus readDeviceInfo(prism_runtime::Client& client) {
 
 const char* timeSyncProviderName(TimeSyncProvider provider) {
   switch (provider) {
-    case TimeSyncProvider::Unsynced: return "none";
-    case TimeSyncProvider::RkPtp: return "RK (PTP)";
+    case TimeSyncProvider::SensorBoardInternal:
+      return "Sensor Board internal";
+    case TimeSyncProvider::RkPtp: return "Host via Sensor Board";
     case TimeSyncProvider::Gps: return "GPS";
     case TimeSyncProvider::LegacyUnknown: return "unknown (legacy DeviceInfo)";
   }

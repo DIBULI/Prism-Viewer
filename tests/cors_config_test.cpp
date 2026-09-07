@@ -81,7 +81,7 @@ int main() {
                    configuration.longitude_degrees,
                    configuration.altitude_meters);
   ok &= require(gga.startsWith("$GPGGA,123456.00,3113.82400,N,"
-                               "12128.42200,E,1,12,1.0,12.50,M"),
+                               "12128.42200,E,1,12,1.00,12.500,M"),
                 "Generated GGA fields are incorrect");
   const int star = gga.indexOf('*');
   ok &= require(star > 1, "Generated GGA checksum delimiter is missing");
@@ -90,6 +90,34 @@ int main() {
     ok &= require(gga.mid(star + 1).toUInt(nullptr, 16) == expected,
                   "Generated GGA checksum is incorrect");
   }
+
+  prism::GnssTimingStatus timing;
+  timing.nmea_seen = true;
+  timing.nmea_fix_valid = true;
+  timing.nmea_dop_valid = true;
+  timing.nmea_position_valid = true;
+  timing.nmea_fix_quality = 4;
+  timing.satellites = 14;
+  timing.hdop_milli = 1300;
+  timing.nmea_age_ms = 100;
+  timing.latitude_e7 = 311394098;
+  timing.longitude_e7 = 1215650333;
+  timing.altitude_mm = 14858;
+  timing.geoid_separation_mm = 12160;
+  timing.utc_ms_of_day = 18u * 3600000u + 39u * 60000u + 55400u;
+  const auto live_gga_data = corsGgaDataFromGnssStatus(timing);
+  ok &= require(live_gga_data.has_value(),
+                "Fresh device GNSS status was rejected for CORS GGA");
+  if (live_gga_data.has_value()) {
+    const QByteArray live_gga = buildNmeaGga(*live_gga_data);
+    ok &= require(
+        live_gga.startsWith("$GPGGA,183955.40,3108.36459,N,"
+                            "12133.90200,E,4,14,1.30,14.858,M,12.160,M,,"),
+        "Device GNSS fields were not preserved in CORS GGA");
+  }
+  timing.nmea_age_ms = 2001;
+  ok &= require(!corsGgaDataFromGnssStatus(timing).has_value(),
+                "Stale device GNSS status was accepted for CORS GGA");
 
   CorsEndpoint endpoint = provider->endpoints.front();
   endpoint.port = 8002;
@@ -111,6 +139,11 @@ int main() {
                     accepted.body_offset ==
                         response.indexOf("\r\n\r\n") + 4,
                 "Valid ICY response was not accepted");
+  const QByteArray bare_icy("ICY 200 OK\r\n");
+  const auto bare_icy_accepted = inspectNtripResponse(bare_icy);
+  ok &= require(bare_icy_accepted.complete && bare_icy_accepted.accepted &&
+                    bare_icy_accepted.body_offset == bare_icy.size(),
+                "Bare NTRIP v1 ICY response was not accepted");
   const auto rejected =
       inspectNtripResponse(QByteArray("HTTP/1.1 401 Unauthorized\r\n\r\n"));
   ok &= require(rejected.complete && !rejected.accepted &&

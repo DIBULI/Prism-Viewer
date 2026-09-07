@@ -11,6 +11,7 @@ namespace prism_runtime {
 using Client = prism::Client;
 using ImuStream = prism::ImuStream;
 using LidarStream = prism::LidarStream;
+using RoverRtcmStream = prism::RoverRtcmStream;
 
 inline prism::SystemUpgradePackageInfo inspectSystemUpgradePackage(
     const std::string& path) {
@@ -75,6 +76,15 @@ class Client {
   prism::ExposureLimits setCameraExposureLimits(
       const prism::ExposureLimits& limits,
       uint32_t field_mask = prism::kExposureLimitsFieldAll);
+  prism::GnssTimingStatus gnssTimingStatus();
+  prism::RtkCorrectionStatus beginRtkCorrections();
+  prism::RtkCorrectionStatus sendRtkCorrections(
+      const uint8_t* data, size_t size, uint32_t timeout_ms = 3000);
+  prism::RtkCorrectionStatus endRtkCorrections();
+  prism::RtkCorrectionStatus rtkCorrectionStatus();
+  prism::RtkNavigationStatus rtkNavigationStatus();
+  prism::RoverRtcmStatus startRoverRtcm();
+  prism::RoverRtcmStatus stopRoverRtcm();
   prism::VideoStatus startVideo1280x1024(uint32_t fps = 0);
   void stopVideo();
   void sendVideoAck(uint32_t last_frame_id);
@@ -92,6 +102,7 @@ class Client {
  private:
   friend class ImuStream;
   friend class LidarStream;
+  friend class RoverRtcmStream;
   const prism::RuntimeApi* api_ = nullptr;
   prism::Client* handle_ = nullptr;
 };
@@ -125,6 +136,21 @@ class LidarStream {
   Client* client_;
   prism::LidarPointBatchHandler point_handler_;
   prism::LidarImuSampleHandler imu_handler_;
+  bool active_ = false;
+};
+
+class RoverRtcmStream {
+ public:
+  RoverRtcmStream(Client& client, prism::RoverRtcmHandler handler);
+  ~RoverRtcmStream();
+  void start();
+  void stop();
+  bool active() const noexcept;
+  bool handleFrame(const prism::Frame& frame);
+
+ private:
+  Client* client_;
+  prism::RoverRtcmHandler handler_;
   bool active_ = false;
 };
 

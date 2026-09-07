@@ -49,7 +49,10 @@ void writeBytes(const std::filesystem::path& path,
 
 void createImuOnlyDataset(const std::filesystem::path& root,
                           const std::string& imu0_rows,
-                          const std::string& imu1_rows) {
+                          const std::string& imu1_rows,
+                          const std::string& time_domain =
+                              "rk-clock-realtime",
+                          const std::string& timestamp_epoch = "unix") {
   const auto rows = [](const std::string& text) {
     uint64_t count = 0;
     std::istringstream input(text);
@@ -67,8 +70,8 @@ void createImuOnlyDataset(const std::filesystem::path& root,
             "camera_index=none\n"
             "lidar_storage=none\n"
             "lidar_imu_storage=none\n"
-            "time_domain=rk-clock-realtime\n"
-            "timestamp_epoch=unix\n"
+            "time_domain=" + time_domain + "\n" +
+            "timestamp_epoch=" + timestamp_epoch + "\n" +
             "alignment=common-device-time-domain\n"
             "imu0_samples=" + std::to_string(rows(imu0_rows)) + "\n" +
             "imu1_samples=" + std::to_string(rows(imu1_rows)) + "\n" +
@@ -135,6 +138,23 @@ int main() {
     if (!valid.valid || valid.warningCount() != 0u ||
         valid.onboard_imus[0].median_interval_us != 1000u) {
       throw std::runtime_error("valid IMU-only dataset was rejected");
+    }
+
+    const std::string boot_time_imu =
+        "# sensor-board boot timeline\n"
+        "1.000000 0 0 9.8 0 0 0\n"
+        "1.001000 0 0 9.8 0 0 0\n";
+    const auto boot_time_root = root / "sensor-board-boot-time";
+    createImuOnlyDataset(boot_time_root, boot_time_imu,
+                         "# empty IMU1\n", "sensor-board-clock", "boot");
+    const auto boot_time =
+        prism_viewer::dataset::validatePrismDataset(boot_time_root);
+    if (!boot_time.valid ||
+        boot_time.time_domain != "sensor-board-clock" ||
+        boot_time.timestamp_epoch != "boot" ||
+        boot_time.onboard_imus[0].first_timestamp_us != 1000000u) {
+      throw std::runtime_error(
+          "valid Sensor Board boot-time dataset was rejected");
     }
 
     const auto single_imu_root = root / "single-synced-imu";

@@ -29,7 +29,8 @@ void put32(std::vector<uint8_t>* data, size_t offset, uint32_t value) {
   }
 }
 
-prism::Frame validFrame(uint16_t version, TimeSyncProvider provider) {
+prism::Frame validFrame(uint16_t version, TimeSyncProvider provider,
+                        bool internally_synced = true) {
   prism::Frame frame;
   frame.type = prism::FrameType::DeviceInfoResponse;
   frame.payload.assign(prism::kDeviceInfoPayloadSize, 0u);
@@ -37,7 +38,7 @@ prism::Frame validFrame(uint16_t version, TimeSyncProvider provider) {
   put16(&frame.payload, 2u, prism::kDeviceInfoPayloadSize);
 
   uint32_t flags = (1u << 0u) | (1u << 1u);
-  if (provider != TimeSyncProvider::Unsynced) {
+  if (internally_synced) {
     flags |= (1u << 2u);
   }
   put32(&frame.payload, 4u, flags);
@@ -47,12 +48,10 @@ prism::Frame validFrame(uint16_t version, TimeSyncProvider provider) {
   frame.payload[10] = 4u;
   frame.payload[11] = 0x03u;
   frame.payload[12] = 0x03u;
-  frame.payload[13] =
-      provider == TimeSyncProvider::Unsynced ? 0u : 0x03u;
+  frame.payload[13] = internally_synced ? 0x03u : 0u;
   frame.payload[15] = 0x0fu;
   frame.payload[16] = 0x0fu;
-  put16(&frame.payload, 20u,
-        version == 3u ? prism::kOnboardImuRateHz : 1000u);
+  put16(&frame.payload, 20u, prism::kOnboardImuRateHz);
   put16(&frame.payload, 22u, 30u);
   if (version == 4u) {
     frame.payload[254] = static_cast<uint8_t>(provider);
@@ -84,9 +83,10 @@ int main() {
   require(status.info.sensor_board_time_synced);
 
   status =
-      parseCompatibleDeviceInfo(validFrame(4u, TimeSyncProvider::Unsynced));
-  require(status.time_sync_provider == TimeSyncProvider::Unsynced);
-  require(!status.info.sensor_board_time_synced);
+      parseCompatibleDeviceInfo(
+          validFrame(4u, TimeSyncProvider::SensorBoardInternal));
+  require(status.time_sync_provider == TimeSyncProvider::SensorBoardInternal);
+  require(status.info.sensor_board_time_synced);
 
   status =
       parseCompatibleDeviceInfo(validFrame(3u, TimeSyncProvider::RkPtp));
@@ -94,8 +94,10 @@ int main() {
   require(status.info.sensor_board_time_synced);
 
   status =
-      parseCompatibleDeviceInfo(validFrame(3u, TimeSyncProvider::Unsynced));
-  require(status.time_sync_provider == TimeSyncProvider::Unsynced);
+      parseCompatibleDeviceInfo(
+          validFrame(3u, TimeSyncProvider::SensorBoardInternal, false));
+  require(status.time_sync_provider == TimeSyncProvider::SensorBoardInternal);
+  require(!status.info.sensor_board_time_synced);
 
   auto invalid = validFrame(4u, TimeSyncProvider::Gps);
   invalid.payload[254] = 3u;

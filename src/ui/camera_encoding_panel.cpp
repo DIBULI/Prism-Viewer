@@ -123,11 +123,9 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
   group_layout->addWidget(quality_hint_label_);
 
   auto* explanation = new QLabel(
-      uiText("Frame rate and JPEG quality are stored on the device. Changes "
-             "take effect when the camera pipeline starts next time, so "
-             "capture must be stopped before saving.",
-             "相机帧率和 JPEG 质量会保存在设备上，并在下一次启动相机管线时"
-             "生效，因此保存前必须停止采集。"),
+      uiText("Frame rate and JPEG quality are stored on the device and can "
+             "be changed while capture is stopped.",
+             "相机帧率和 JPEG 质量会保存在设备上，并可在停止采集后修改。"),
       group);
   explanation->setWordWrap(true);
   explanation->setStyleSheet(QStringLiteral("color: #667085;"));
@@ -176,7 +174,6 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
             quality_slider_->setValue(value);
             refreshView();
           });
-
   clear();
 }
 
@@ -244,6 +241,10 @@ void CameraEncodingPanel::setError(const QString& error) {
 }
 
 bool CameraEncodingPanel::isDirty() const {
+  return cameraSettingsDirty();
+}
+
+bool CameraEncodingPanel::cameraSettingsDirty() const {
   return has_configuration_ &&
          (static_cast<uint32_t>(fps_spin_->value()) !=
               configuration_.camera_fps ||
@@ -296,7 +297,7 @@ void CameraEncodingPanel::refreshView() {
     setMessage(uiText("Camera stream settings have not been read",
                       "尚未读取相机流设置"),
                true, false);
-  } else if (capture_active_) {
+  } else if (capture_active_ && cameraSettingsDirty()) {
     setMessage(uiText("Stop capture before changing frame rate or JPEG quality",
                       "请停止采集后再修改相机帧率或 JPEG 质量"),
                true, false);
@@ -305,21 +306,21 @@ void CameraEncodingPanel::refreshView() {
                       "相机流设置有尚未保存的修改"),
                true, false);
   } else {
-    setMessage(uiText("Persistent settings loaded: %1 FPS · JPEG %2",
-                      "已读取持久化设置：%1 FPS · JPEG %2")
+    setMessage(uiText("Persistent camera settings: %1 FPS · JPEG %2",
+                      "持久化相机设置：%1 FPS · JPEG %2")
                    .arg(configuration_.camera_fps)
                    .arg(configuration_.mjpeg_quality),
                false, false);
   }
 
   const bool can_edit = device_open_ && has_configuration_ && !busy_ &&
-                        !controls_locked_ && !capture_active_;
-  fps_spin_->setEnabled(can_edit);
-  quality_slider_->setEnabled(can_edit);
-  quality_spin_->setEnabled(can_edit);
+                        !controls_locked_;
+  fps_spin_->setEnabled(can_edit && !capture_active_);
+  quality_slider_->setEnabled(can_edit && !capture_active_);
+  quality_spin_->setEnabled(can_edit && !capture_active_);
   refresh_button_->setEnabled(device_open_ && !busy_ && !controls_locked_ &&
                               !capture_active_);
-  apply_button_->setEnabled(can_edit && isDirty());
+  apply_button_->setEnabled(can_edit && isDirty() && !capture_active_);
 }
 
 }  // namespace prism_viewer::ui

@@ -122,6 +122,31 @@ prism::ExposureLimits Client::setCameraExposureLimits(
     const prism::ExposureLimits& limits, uint32_t field_mask) {
   return api_->set_camera_exposure_limits(handle_, limits, field_mask);
 }
+prism::GnssTimingStatus Client::gnssTimingStatus() {
+  return api_->gnss_timing_status(handle_);
+}
+prism::RtkCorrectionStatus Client::beginRtkCorrections() {
+  return api_->begin_rtk_corrections(handle_);
+}
+prism::RtkCorrectionStatus Client::sendRtkCorrections(
+    const uint8_t* data, size_t size, uint32_t timeout_ms) {
+  return api_->send_rtk_corrections(handle_, data, size, timeout_ms);
+}
+prism::RtkCorrectionStatus Client::endRtkCorrections() {
+  return api_->end_rtk_corrections(handle_);
+}
+prism::RtkCorrectionStatus Client::rtkCorrectionStatus() {
+  return api_->rtk_correction_status(handle_);
+}
+prism::RtkNavigationStatus Client::rtkNavigationStatus() {
+  return api_->rtk_navigation_status(handle_);
+}
+prism::RoverRtcmStatus Client::startRoverRtcm() {
+  return api_->start_rover_rtcm(handle_);
+}
+prism::RoverRtcmStatus Client::stopRoverRtcm() {
+  return api_->stop_rover_rtcm(handle_);
+}
 prism::VideoStatus Client::startVideo1280x1024(uint32_t fps) {
   return api_->start_video(handle_, fps);
 }
@@ -236,6 +261,43 @@ bool LidarStream::handleFrame(const prism::Frame& f) {
     return true;
   }
   return false;
+}
+
+RoverRtcmStream::RoverRtcmStream(
+    Client& c, prism::RoverRtcmHandler handler)
+    : client_(&c), handler_(std::move(handler)) {}
+RoverRtcmStream::~RoverRtcmStream() {
+  try {
+    stop();
+  } catch (...) {
+  }
+}
+void RoverRtcmStream::start() {
+  if (active_) return;
+  if (client_ == nullptr || !client_->isOpen() || !handler_) {
+    throw std::runtime_error("rover RTCM stream is not ready");
+  }
+  const prism::RoverRtcmStatus status = client_->startRoverRtcm();
+  if (!status.enabled) {
+    throw std::runtime_error("agent did not enable rover RTCM stream");
+  }
+  active_ = true;
+}
+void RoverRtcmStream::stop() {
+  if (!active_) return;
+  active_ = false;
+  if (client_ != nullptr && client_->isOpen()) {
+    const prism::RoverRtcmStatus status = client_->stopRoverRtcm();
+    if (status.enabled) {
+      throw std::runtime_error("agent did not stop rover RTCM stream");
+    }
+  }
+}
+bool RoverRtcmStream::active() const noexcept { return active_; }
+bool RoverRtcmStream::handleFrame(const prism::Frame& f) {
+  if (f.type != prism::FrameType::RoverRtcm) return false;
+  if (active_) handler_(client_->api_->parse_rover_rtcm_chunk_view(f));
+  return true;
 }
 
 prism::SystemUpgradePackageInfo inspectSystemUpgradePackage(

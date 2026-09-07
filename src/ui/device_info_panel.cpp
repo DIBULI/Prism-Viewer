@@ -49,10 +49,10 @@ QString maskText(uint8_t value) {
 QString timeSyncProviderText(
     communication::TimeSyncProvider provider) {
   switch (provider) {
-    case communication::TimeSyncProvider::Unsynced:
-      return uiText("None (unsynchronized)", "无（未同步）");
+    case communication::TimeSyncProvider::SensorBoardInternal:
+      return uiText("Sensor Board internal", "Sensor Board 内部时钟");
     case communication::TimeSyncProvider::RkPtp:
-      return uiText("RK (PTP)", "RK（PTP）");
+      return uiText("Host via Sensor Board", "主机经 Sensor Board");
     case communication::TimeSyncProvider::Gps:
       return QStringLiteral("GPS");
     case communication::TimeSyncProvider::LegacyUnknown:
@@ -303,6 +303,9 @@ void DeviceInfoPanel::refreshView() {
        yesNo(info_.sensor_board_online)},
       {QStringLiteral("sensor-board"), uiText("Time synchronized", "时间已同步"),
        yesNo(info_.sensor_board_time_synced)},
+      {QStringLiteral("sensor-board"),
+       uiText("External time synchronized", "外部授时已同步"),
+       yesNo(time_sync_provider_ == communication::TimeSyncProvider::Gps)},
       {QStringLiteral("sensor-board"),
        uiText("Time sync provider", "时间同步提供方"),
        timeSyncProviderText(time_sync_provider_)},

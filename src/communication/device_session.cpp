@@ -28,6 +28,7 @@ OpenedDevice DeviceSession::open(size_t device_index) {
     opened.configuration = client_.deviceConfiguration();
     opened.exposure = client_.cameraExposure();
     opened.exposure_limits = client_.cameraExposureLimits();
+    opened.gnss_timing = client_.gnssTimingStatus();
     opened.network = client_.networkInfo();
     opened.serial_number = client_.serialNumber();
     opened.path = client_.path();
