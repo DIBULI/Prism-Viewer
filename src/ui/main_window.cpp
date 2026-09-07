@@ -3020,6 +3020,29 @@ class MainWindow : public QMainWindow {
         QStringLiteral("datasetPlaybackPositionLabel"));
     dataset_frame_label_ = new QLabel(
         uiText("Frame: -", "帧：-"), dataset_page_);
+    dataset_frame_label_->setObjectName(
+        QStringLiteral("datasetFrameLabel"));
+    dataset_frame_label_->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    dataset_frame_label_->setSizePolicy(
+        QSizePolicy::Ignored, QSizePolicy::Preferred);
+    dataset_frame_label_->setMinimumWidth(0);
+    auto* dataset_frame_jump_label = new QLabel(
+        uiText("Go to frame", "跳到帧"), dataset_page_);
+    dataset_frame_jump_spin_ = new QSpinBox(dataset_page_);
+    dataset_frame_jump_spin_->setObjectName(
+        QStringLiteral("datasetFrameJumpSpin"));
+    dataset_frame_jump_spin_->setRange(1, 1);
+    dataset_frame_jump_spin_->setKeyboardTracking(false);
+    dataset_frame_jump_spin_->setEnabled(false);
+    dataset_frame_jump_spin_->setToolTip(uiText(
+        "Enter a 1-based camera frame number",
+        "输入从 1 开始的相机帧号"));
+    dataset_frame_jump_button_ = new QPushButton(
+        uiText("Go", "跳转"), dataset_page_);
+    dataset_frame_jump_button_->setObjectName(
+        QStringLiteral("datasetFrameJumpButton"));
+    dataset_frame_jump_button_->setEnabled(false);
     dataset_frame_slider_ = new QSlider(Qt::Horizontal, dataset_page_);
     dataset_frame_slider_->setObjectName(QStringLiteral("datasetFrameSlider"));
     dataset_frame_slider_->setEnabled(false);
@@ -3033,9 +3056,15 @@ class MainWindow : public QMainWindow {
     dataset_navigation->addSpacing(8);
     dataset_navigation->addWidget(dataset_playback_position_label_);
     dataset_navigation->addSpacing(8);
-    dataset_navigation->addWidget(dataset_frame_label_);
-    dataset_navigation->addWidget(dataset_frame_slider_, 1);
+    dataset_navigation->addWidget(dataset_frame_jump_label);
+    dataset_navigation->addWidget(dataset_frame_jump_spin_);
+    dataset_navigation->addWidget(dataset_frame_jump_button_);
     dataset_layout->addLayout(dataset_navigation);
+    dataset_layout->addWidget(dataset_frame_label_);
+    // Keep the progress control on its own row. The frame label includes the
+    // per-camera exposure values, whose digit count changes between frames;
+    // sharing a row made Qt resize the slider whenever that text changed.
+    dataset_layout->addWidget(dataset_frame_slider_);
     dataset_playback_timer_ = new QTimer(this);
     dataset_playback_timer_->setSingleShot(true);
     dataset_playback_timer_->setTimerType(Qt::PreciseTimer);
@@ -3585,6 +3614,18 @@ class MainWindow : public QMainWindow {
                 dataset_frame_slider_->setValue(dataset_current_frame_ + 1);
               }
             });
+    const auto jump_to_dataset_frame = [this]() {
+      if (dataset_frame_count_ == 0u) return;
+      const int frame = dataset_frame_jump_spin_->value() - 1;
+      if (frame < 0 || static_cast<size_t>(frame) >= dataset_frame_count_) {
+        return;
+      }
+      dataset_frame_slider_->setValue(frame);
+    };
+    connect(dataset_frame_jump_button_, &QPushButton::clicked, this,
+            jump_to_dataset_frame);
+    connect(dataset_frame_jump_spin_, &QSpinBox::editingFinished, this,
+            jump_to_dataset_frame);
     connect(dataset_playback_speed_selector_,
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int index) {
@@ -3664,13 +3705,13 @@ class MainWindow : public QMainWindow {
                                   QString* report) {
     loadRecordedDataset(directory, false);
     const bool streams_loaded =
-        dataset_frame_count_ == 1u &&
+        dataset_frame_count_ == 2u &&
         dataset_playback_data_.onboard_imus[0].size() == 1u &&
         dataset_playback_data_.onboard_imus[1].size() == 1u &&
         dataset_playback_data_.lidar_batches.size() == 1u &&
         dataset_playback_data_.lidar_imu_samples.size() == 1u &&
         dataset_playback_data_.gps_rtk_samples.size() == 1u &&
-        dataset_playback_data_.timeline.size() == 6u;
+        dataset_playback_data_.timeline.size() == 7u;
 
     bool events_dispatched = streams_loaded;
     if (events_dispatched) {
@@ -3682,6 +3723,24 @@ class MainWindow : public QMainWindow {
       }
       dataset_playback_cursor_ = dataset_playback_data_.timeline.size();
       updateDatasetPlaybackPositionLabel();
+    }
+
+    bool frame_jump_ok = streams_loaded &&
+                         dataset_frame_jump_spin_->minimum() == 1 &&
+                         dataset_frame_jump_spin_->maximum() == 2 &&
+                         dataset_frame_jump_spin_->isEnabled() &&
+                         dataset_frame_jump_button_->isEnabled();
+    if (frame_jump_ok) {
+      dataset_frame_jump_spin_->setValue(1);
+      dataset_frame_jump_button_->click();
+      frame_jump_ok = dataset_current_frame_ == 0 &&
+                      dataset_frame_slider_->value() == 0 &&
+                      dataset_frame_jump_spin_->value() == 1;
+      dataset_frame_jump_spin_->setValue(2);
+      dataset_frame_jump_button_->click();
+      frame_jump_ok = frame_jump_ok && dataset_current_frame_ == 1 &&
+                      dataset_frame_slider_->value() == 1 &&
+                      dataset_frame_jump_spin_->value() == 2;
     }
 
     const bool imu_rendered =
@@ -3742,11 +3801,12 @@ class MainWindow : public QMainWindow {
     }
     const bool success = streams_loaded && events_dispatched && imu_rendered &&
                          lidar_rendered && overview_rendered && rtk_rendered &&
-                         pages_available && tab_switch_ok;
+                         pages_available && tab_switch_ok && frame_jump_ok;
     if (report != nullptr) {
       *report = QStringLiteral(
                     "streams=%1 dispatch=%2 imu=%3 lidar=%4 overview=%5 "
-                    "rtk=%6 pages=%7 events=%8 points=%9 tab_switch=%10")
+                    "rtk=%6 pages=%7 frame_jump=%8 events=%9 points=%10 "
+                    "tab_switch=%11")
                     .arg(streams_loaded ? QStringLiteral("PASS")
                                         : QStringLiteral("FAIL"))
                     .arg(events_dispatched ? QStringLiteral("PASS")
@@ -3761,6 +3821,8 @@ class MainWindow : public QMainWindow {
                                       : QStringLiteral("FAIL"))
                     .arg(pages_available ? QStringLiteral("PASS")
                                          : QStringLiteral("FAIL"))
+                    .arg(frame_jump_ok ? QStringLiteral("PASS")
+                                       : QStringLiteral("FAIL"))
                     .arg(dataset_playback_data_.timeline.size())
                     .arg(dataset_playback_lidar_points_)
                     .arg(tab_switch_ok ? QStringLiteral("PASS")
@@ -6279,6 +6341,8 @@ class MainWindow : public QMainWindow {
         dataset_playback_active_ ? uiText("Pause", "暂停")
                                  : uiText("Play", "播放"));
     dataset_playback_speed_selector_->setEnabled(can_play);
+    dataset_frame_jump_spin_->setEnabled(has_frames);
+    dataset_frame_jump_button_->setEnabled(has_frames);
   }
 
   void updateDatasetPlaybackPositionLabel() {
@@ -7311,12 +7375,18 @@ class MainWindow : public QMainWindow {
 
     if (has_cameras && dataset_frame_count_ != 0) {
       const QSignalBlocker blocker(dataset_frame_slider_);
-      dataset_frame_slider_->setRange(
-          0, static_cast<int>(std::min<size_t>(
-                 dataset_frame_count_ - 1,
-                 static_cast<size_t>(std::numeric_limits<int>::max()))));
+      const int maximum_display_frame = static_cast<int>(std::min<size_t>(
+          dataset_frame_count_,
+          static_cast<size_t>(std::numeric_limits<int>::max())));
+      const int maximum_frame = maximum_display_frame - 1;
+      dataset_frame_slider_->setRange(0, maximum_frame);
       dataset_frame_slider_->setValue(0);
       dataset_frame_slider_->setEnabled(true);
+      {
+        const QSignalBlocker jump_blocker(dataset_frame_jump_spin_);
+        dataset_frame_jump_spin_->setRange(1, maximum_display_frame);
+        dataset_frame_jump_spin_->setValue(1);
+      }
       showDatasetFrame(0);
       seekDatasetPlaybackToTimestamp(
           dataset_camera_entries_[0][0].timestamp_us);
@@ -7325,6 +7395,13 @@ class MainWindow : public QMainWindow {
       dataset_frame_slider_->setRange(0, 0);
       dataset_frame_slider_->setValue(0);
       dataset_frame_slider_->setEnabled(false);
+      {
+        const QSignalBlocker jump_blocker(dataset_frame_jump_spin_);
+        dataset_frame_jump_spin_->setRange(1, 1);
+        dataset_frame_jump_spin_->setValue(1);
+      }
+      dataset_frame_jump_spin_->setEnabled(false);
+      dataset_frame_jump_button_->setEnabled(false);
       dataset_frame_label_->setText(uiText("Frame: -", "帧：-"));
       for (auto* image_label : dataset_image_labels_) {
         image_label->clearImage(
@@ -7358,6 +7435,10 @@ class MainWindow : public QMainWindow {
   void showDatasetFrame(int frame) {
     if (frame < 0 || static_cast<size_t>(frame) >= dataset_frame_count_) return;
     dataset_current_frame_ = frame;
+    {
+      const QSignalBlocker blocker(dataset_frame_jump_spin_);
+      dataset_frame_jump_spin_->setValue(frame + 1);
+    }
     for (size_t camera = 0; camera < dataset_images_.size(); ++camera) {
       const auto& entry = dataset_camera_entries_[camera][frame];
       QImage image = loadDatasetImage(entry);
@@ -8719,6 +8800,8 @@ class MainWindow : public QMainWindow {
   QPushButton* dataset_next_frame_button_ = nullptr;
   QComboBox* dataset_playback_speed_selector_ = nullptr;
   QLabel* dataset_playback_position_label_ = nullptr;
+  QSpinBox* dataset_frame_jump_spin_ = nullptr;
+  QPushButton* dataset_frame_jump_button_ = nullptr;
   QSlider* dataset_frame_slider_ = nullptr;
   QTimer* dataset_playback_timer_ = nullptr;
   QButtonGroup* dataset_imu_selector_group_ = nullptr;
@@ -8997,6 +9080,12 @@ int runViewerApplication(int argc, char** argv) {
     recorder.appendFrameSet(6, 0, unsynced_metadata, jpeg);
     recorder.appendFrameSet(
         7, 1780000000000500ULL, metadata, jpeg);
+    prism::VideoMeta second_metadata = metadata;
+    second_metadata.host_frame_id = 8;
+    second_metadata.trigger_time_ns = 1780000000033833000ULL;
+    second_metadata.exposure_us = {50u, 10000u, 500000u, 995000u};
+    recorder.appendFrameSet(
+        8, 1780000000033833ULL, second_metadata, jpeg);
     prism::LidarPointBatch lidar;
     lidar.model = prism::LidarModel::Mid360S;
     lidar.device_type = 35u;
@@ -9104,11 +9193,16 @@ int runViewerApplication(int argc, char** argv) {
             browser_load_ok &&
             loadDatasetImageIndex(
                 test_root, camera, &loaded_images[camera], &error) &&
-            loaded_images[camera].size() == 1 &&
+            loaded_images[camera].size() == 2 &&
             loaded_images[camera][0].timestamp_us == 1780000000000500ULL &&
             loaded_images[camera][0].exposure_us ==
                 metadata.exposure_us[camera] &&
-            !loadDatasetImage(loaded_images[camera][0]).isNull();
+            !loadDatasetImage(loaded_images[camera][0]).isNull() &&
+            loaded_images[camera][1].timestamp_us ==
+                1780000000033833ULL &&
+            loaded_images[camera][1].exposure_us ==
+                second_metadata.exposure_us[camera] &&
+            !loadDatasetImage(loaded_images[camera][1]).isNull();
       }
     }
     const TumFileSummary loaded_imu0 =
@@ -9282,7 +9376,7 @@ int runViewerApplication(int argc, char** argv) {
           summary.lidar_point_count == 2 &&
           summary.lidar_imu_sample_count == 1 &&
           std::all_of(summary.image_count.begin(), summary.image_count.end(),
-                      [](uint64_t count) { return count == 1; });
+                      [](uint64_t count) { return count == 2; });
     }
     bool manifest_mode_ok = false;
     bool manifest_complete_ok = false;
@@ -9652,6 +9746,12 @@ int runViewerApplication(int argc, char** argv) {
     const auto* dataset_playback_position =
         window.findChild<QLabel*>(
             QStringLiteral("datasetPlaybackPositionLabel"));
+    const auto* dataset_frame_slider = window.findChild<QSlider*>(
+        QStringLiteral("datasetFrameSlider"));
+    const auto* dataset_frame_jump_spin = window.findChild<QSpinBox*>(
+        QStringLiteral("datasetFrameJumpSpin"));
+    const auto* dataset_frame_jump_button = window.findChild<QPushButton*>(
+        QStringLiteral("datasetFrameJumpButton"));
     const auto* lidar_imu_playback =
         window.findChild<QLabel*>(QStringLiteral("lidarImuPlaybackLabel"));
     const auto* dataset_metadata_toggle = window.findChild<QPushButton*>(
@@ -9662,8 +9762,14 @@ int runViewerApplication(int argc, char** argv) {
         dataset_playback_button != nullptr &&
         dataset_playback_speed != nullptr &&
         dataset_playback_position != nullptr &&
+        dataset_frame_slider != nullptr &&
+        dataset_frame_jump_spin != nullptr &&
+        dataset_frame_jump_button != nullptr &&
         lidar_imu_playback != nullptr && dataset_metadata_toggle != nullptr &&
         dataset_metadata_details != nullptr &&
+        !dataset_frame_slider->isEnabled() &&
+        !dataset_frame_jump_spin->isEnabled() &&
+        !dataset_frame_jump_button->isEnabled() &&
         !dataset_metadata_toggle->isChecked() &&
         !dataset_metadata_details->isVisible();
     const bool success = window.isVisible() &&
@@ -9699,6 +9805,14 @@ int runViewerApplication(int argc, char** argv) {
     const auto* dataset_playback_position =
         window.findChild<QLabel*>(
             QStringLiteral("datasetPlaybackPositionLabel"));
+    auto* dataset_frame_label = window.findChild<QLabel*>(
+        QStringLiteral("datasetFrameLabel"));
+    auto* dataset_frame_slider = window.findChild<QSlider*>(
+        QStringLiteral("datasetFrameSlider"));
+    auto* dataset_frame_jump_spin = window.findChild<QSpinBox*>(
+        QStringLiteral("datasetFrameJumpSpin"));
+    auto* dataset_frame_jump_button = window.findChild<QPushButton*>(
+        QStringLiteral("datasetFrameJumpButton"));
     const auto* lidar_imu_playback =
         window.findChild<QLabel*>(QStringLiteral("lidarImuPlaybackLabel"));
     auto* main_tabs =
@@ -9745,6 +9859,10 @@ int runViewerApplication(int argc, char** argv) {
         dataset_playback_button != nullptr &&
         dataset_playback_speed != nullptr &&
         dataset_playback_position != nullptr &&
+        dataset_frame_label != nullptr &&
+        dataset_frame_slider != nullptr &&
+        dataset_frame_jump_spin != nullptr &&
+        dataset_frame_jump_button != nullptr &&
         lidar_imu_playback != nullptr &&
         dataset_metadata_toggle != nullptr &&
         dataset_metadata_details != nullptr &&
@@ -9752,7 +9870,11 @@ int runViewerApplication(int argc, char** argv) {
         !dataset_metadata_details->isVisible() &&
         dataset_playback_speed->count() == 6 &&
         dataset_playback_speed->currentData().toDouble() > 0.0 &&
-        !dataset_playback_button->isEnabled();
+        !dataset_playback_button->isEnabled() &&
+        dataset_frame_jump_spin->minimum() == 1 &&
+        dataset_frame_jump_spin->maximum() == 1 &&
+        !dataset_frame_jump_spin->isEnabled() &&
+        !dataset_frame_jump_button->isEnabled();
     bool imu_layout_ok =
         main_tabs != nullptr && imu_page != nullptr &&
         imu_splitter != nullptr &&
@@ -9834,6 +9956,9 @@ int runViewerApplication(int argc, char** argv) {
                         lidar_sizes[1] > lidar_sizes[0] &&
                         lidar_cloud->height() >= lidar_sidebar->height() - 2;
     }
+    bool dataset_frame_layout_ok =
+        main_tabs != nullptr && dataset_page != nullptr &&
+        dataset_frame_label != nullptr && dataset_frame_slider != nullptr;
     bool dataset_overview_ok =
         main_tabs != nullptr && dataset_page != nullptr &&
         dataset_sensor_tabs != nullptr && dataset_camera_preview != nullptr &&
@@ -9851,6 +9976,17 @@ int runViewerApplication(int argc, char** argv) {
         !dataset_sensor_tabs->isAncestorOf(dataset_metadata_toggle);
     if (dataset_overview_ok) {
       main_tabs->setCurrentWidget(dataset_page);
+      app.processEvents();
+      const int slider_width_before = dataset_frame_slider->width();
+      const QString frame_text_before = dataset_frame_label->text();
+      dataset_frame_label->setText(QStringLiteral(
+          "Frame 999999/999999 | 2099-12-31 23:59:59.999 UTC | "
+          "exposure [50, 10000, 500000, 995000] us"));
+      app.processEvents();
+      dataset_frame_layout_ok =
+          dataset_frame_layout_ok && slider_width_before > 0 &&
+          dataset_frame_slider->width() == slider_width_before;
+      dataset_frame_label->setText(frame_text_before);
       app.processEvents();
       const int screenshot_arg = command_line.indexOf(
           QStringLiteral("--dataset-tab-screenshots"));
@@ -9901,7 +10037,8 @@ int runViewerApplication(int argc, char** argv) {
     const bool imu_window_ok =
         window.runImuPlotWindowSelfTest(&imu_window_report);
     const bool success = playback_controls_ok && imu_layout_ok &&
-        lidar_layout_ok && dataset_overview_ok && imu_window_ok &&
+        lidar_layout_ok && dataset_frame_layout_ok && dataset_overview_ok &&
+        imu_window_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
         minimum.height() <= kMaximumMainWindowMinimumHeight;
     std::cout << "main_window_layout_self_test="
@@ -9920,6 +10057,8 @@ int runViewerApplication(int argc, char** argv) {
               << (lidar_layout_ok ? "PASS" : "FAIL")
               << " dataset_tabs="
               << (dataset_overview_ok ? "PASS" : "FAIL")
+              << " dataset_frame_slider="
+              << (dataset_frame_layout_ok ? "PASS" : "FAIL")
               << " imu_10s_window="
               << (imu_window_ok ? "PASS" : "FAIL")
               << " " << imu_window_report.toStdString() << "\n";

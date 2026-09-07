@@ -73,8 +73,8 @@ The package contains:
 - public headers under `include/prism`;
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
   `GetProcAddress` (the import `.lib` is deliberately not used);
-- architecture-matched `libprism_usb_sdk.a` on Linux x86-64 and arm64,
-  linked into the Viewer executable;
+- the unified Ubuntu 20.04-baseline `libprism_usb_sdk.so` on Linux x86-64;
+- `libprism_usb_sdk.a` on Linux arm64, linked into the Viewer executable;
 - `libprism_usb_sdk.dylib` plus its relocatable `libusb` runtime on Apple
   Silicon macOS, linked from the app's `Contents/Frameworks` directory.
 
@@ -184,17 +184,17 @@ git push origin v1.1.0
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
 Qt libraries and plugins, compiler runtime libraries, and recursively linked
-third-party libraries. In particular, the Linux archive carries OpenSSL,
-libusb, and the Qt XCB, JPEG, and SQLite plugins, so users do not need to
+third-party libraries. The Linux x86-64 SDK statically embeds OpenSSL and the
+ARM64 package carries the matching OpenSSL runtime; both packages include
+libusb and the Qt XCB, JPEG, and SQLite plugins. Users therefore do not need to
 install those packages separately. Linux still relies on the target system's
-kernel, glibc, and hardware/display drivers; bundling those components would
-reduce compatibility rather than improve it. Windows and Linux archives
-contain a SHA-256 file manifest, and CI checks every packaged Linux binary in
-a minimal Ubuntu image before publishing a release.
+kernel, glibc, and hardware/display drivers. Windows and Linux archives contain
+a SHA-256 file manifest, and CI checks every packaged Linux binary in a minimal
+Ubuntu image before publishing a release.
 
 Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 2.31 or newer. CI extracts each tar archive and starts the packaged Viewer in
-Ubuntu 20.04, Ubuntu 22.04, and Ubuntu 24.04 containers before publishing it:
+Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
 tar -xzf Prism-Viewer-1.1.0-linux-x64.tar.gz
@@ -220,8 +220,20 @@ glibc and display drivers come from the host.
 
 - [Viewer 1.1.0 release notes](docs/release-notes/v1.1.0.md)
 
+- [Prism Viewer 1.0.1 update notes](docs/update/v1.0.1.md)
+- [Prism Viewer 1.0.1 更新说明](docs/update/v1.0.1.zh-CN.md)
+- [Prism Viewer 1.0.0 update notes](docs/update/v1.0.0.md)
+- [Prism Viewer 1.0.0 更新说明](docs/update/v1.0.0.zh-CN.md)
 - [Prism Viewer 1.0.0 中文用户操作手册](docs/Prism-Viewer-1.0.0-用户操作手册.pdf)
 - [操作手册生成与截图打码脚本](docs/manual/README.md)
 - [Code structure](ARCHITECTURE.md)
 - [Dataset directory structure and format](docs/dataset-format.md)
 - [ROS1/ROS2 bag export](docs/rosbag-export.md)
+
+## Recorded dataset playback
+
+When browsing a local dataset, the frame progress slider occupies an
+independent full-width row, so changing per-frame exposure text does not resize
+it. Use **Go to frame** to enter a 1-based frame number and jump directly to
+that camera frame while keeping camera, onboard-IMU, LiDAR, and LiDAR-IMU
+playback aligned to its timestamp.
