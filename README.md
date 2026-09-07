@@ -11,21 +11,28 @@ system upgrade, CORS/NTRIP correction forwarding for RK-side RTK, synchronized
 camera/onboard-IMU/LiDAR/LiDAR-IMU dataset playback
 at 0.25x through 8x, and ROS1/ROS2 bag export. IMU display units
 are independent from the fixed SI units used by datasets and ROS bags. New v6
-recordings use RK `CLOCK_REALTIME` with a Unix epoch as the
-common device time domain for camera, onboard IMU, LiDAR point batches, and
-LiDAR IMU. Absolute UTC accuracy is not required for stream alignment;
+recordings declare either Unix time (`rk-clock-realtime`) or Sensor Board
+boot time (`sensor-board-clock`) as the common device time domain for camera,
+onboard IMU, LiDAR point batches, and LiDAR IMU. The Sensor Board is the master
+clock; absolute UTC accuracy is not required for stream alignment;
 unsynchronized callbacks remain available for live preview but are never
 written as measurement timestamps.
 
 At startup, the Viewer scans for Prism USB devices. When exactly one device is
-present it opens that device and automatically synchronizes RK
-`CLOCK_REALTIME`, the Ethernet PHC, and the hardware RTC from the host clock
-before capture is enabled. The clock status strip reports progress and the
-final result. With multiple devices, select one and click **Open Device**; the
-same one-time automatic synchronization runs after the first successful open.
-If it fails, capture remains available and **Set Device Time** can retry it.
+present it opens that device automatically, but opening a device never changes
+its clock. With multiple devices, select one and click **Open Device**. The
+clock status strip reports the time source observed from the device. Use
+**Set Device Time** explicitly while streams are idle if Host-based time
+synchronization is required; the action remains disabled while external GPS is
+the authoritative time source.
 
 ## CORS / RTK
+
+GPS/GNSS and RTK position details have separate scrollable tabs. GPS shows
+receiver fix, satellites/DOP, position, UTC, and basic PPS timing. RTK shows
+raw and independently smoothed positions, solution age against device time,
+and precision. Positions include latitude/longitude, ellipsoidal height and local ENU in
+metres relative to the first valid fix.
 
 Open a USB device, then use the **CORS / RTK** tab to configure and start an
 NTRIP correction session. China Mobile CORS is currently registered as the
@@ -38,7 +45,9 @@ NTRIP correction session. China Mobile CORS is currently registered as the
 - WGS84 port 8002 and CGCS2000 port 8001;
 - the RTCM33_GRCEJ, RTCM33_GRCEpro, RTCM33_GRCE, RTCM33_GRC, and RTCM30_GR
   mountpoints;
-- periodic GGA generated from the manually entered approximate rover position.
+- device GNSS position, UTC, fix quality, satellite count, HDOP, altitude, and
+  geoid separation are used to generate a live GGA every second; manual rover
+  coordinates are not accepted.
 
 The stable `cors/serviceProvider` setting and provider catalog are the
 extension point for adding Qianxun and other providers later. Caster RTCM is
@@ -52,7 +61,14 @@ Passwords are never written to Viewer logs. They are session-only unless
 in the current user's local Qt settings.
 
 The Viewer does not compile Host SDK sources. The matching binary SDK is
-pinned as the `third_party/Prism-SDK` Git submodule:
+pinned as the `third_party/Prism-SDK` Git submodule.
+
+Viewer 1.1.0 uses Prism SDK **v1.1.0**, commit
+`fa9f5feef3f326c1538817c3474d3047fe226a81` (Runtime API 12), on every
+platform. It requires Agent 1.1.0. The build's `sdk-runtime` test checks the
+actual linked/loaded library against the headers, including GNSS, RTK and raw
+RTCM bindings; it does not connect to a device or change its clock.
+The package contains:
 
 - public headers under `include/prism`;
 - `prism_usb_sdk.dll` on Windows, loaded at runtime with `LoadLibraryW` and
@@ -76,13 +92,25 @@ For an existing checkout, initialize the pinned SDK with:
 git submodule update --init --recursive
 ```
 
+## Local Datasets
+
+Recorded **Camera**, **IMU**, and **LiDAR** previews have separate tabs; each
+uses the full preview area. Play/pause, speed and the timeline are shared.
+Switching tabs does not restart playback or clear recorded IMU/point-cloud
+history. IMU-only datasets open on the IMU tab. **Show Metadata** expands
+details only when needed.
+
+Datasets can include GNSS/RTK snapshots, raw rover/base RTCM streams and
+time-source transitions for offline analysis. See [dataset format](docs/dataset-format.md)
+and [ROS bag export](docs/rosbag-export.md) for file and topic details.
+
 ## Build
 
 Install Qt Widgets, Qt Charts, Qt Network, and Qt SQL/SQLite. On Ubuntu/Debian:
 
 ```sh
 sudo apt install build-essential cmake qtbase5-dev libqt5charts5-dev \
-  libqt5sql5-sqlite
+  libqt5sql5-sqlite pkg-config libusb-1.0-0-dev libssl-dev
 ./scripts/build_linux.sh
 ./build-linux/prism-viewer
 ```
@@ -150,8 +178,8 @@ additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
@@ -169,12 +197,12 @@ Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 Ubuntu 20.04, Ubuntu 22.04, and Ubuntu 24.04 containers before publishing it:
 
 ```sh
-tar -xzf Prism-Viewer-1.0.0-linux-x64.tar.gz
-./Prism-Viewer-1.0.0-linux-x64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.1.0-linux-x64.tar.gz
+./Prism-Viewer-1.1.0-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-tar -xzf Prism-Viewer-1.0.0-linux-arm64.tar.gz
-./Prism-Viewer-1.0.0-linux-arm64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.1.0-linux-arm64.tar.gz
+./Prism-Viewer-1.1.0-linux-arm64/bin/prism-viewer
 ```
 
 The Windows x64 release supports Windows 10 version 1809 or newer and Windows
@@ -182,12 +210,15 @@ The Windows x64 release supports Windows 10 version 1809 or newer and Windows
 macOS 13.0 and supports macOS 13 Ventura, macOS 14 Sonoma, and macOS 15
 Sequoia on Apple Silicon; Intel Macs and macOS 12 or earlier are not supported.
 
-The Linux Viewer links the Prism SDK implementation statically, so it no
-longer needs `libprism_usb_sdk.so`. Qt still loads platform, image, and SQL
-plugins dynamically; the tar archive therefore includes Qt, OpenSSL, libusb,
-and their recursive runtime dependencies under private runtime paths.
+Local Linux builds link the Prism SDK statically by default. The release
+workflow uses the bundled Ubuntu-20.04-compatible shared SDK for x64 and the
+static SDK for arm64. These are not fully static executables: Qt plugins,
+libusb and other required runtime dependencies are bundled privately, while
+glibc and display drivers come from the host.
 
 ## Documentation
+
+- [Viewer 1.1.0 release notes](docs/release-notes/v1.1.0.md)
 
 - [Prism Viewer 1.0.0 中文用户操作手册](docs/Prism-Viewer-1.0.0-用户操作手册.pdf)
 - [操作手册生成与截图打码脚本](docs/manual/README.md)

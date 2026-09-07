@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+
 concurrency:
   group: prism-viewer-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -51,7 +54,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "5992b255f93c1cbef52bf227fc354ee6fe1f7621225fbc6d5d88a4981e3b8cb1"
+          $expected = "7e7156adabf56b4d6f5407c11c86704d6ca87ac80afaddb6357d876a97bdbc9e"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -109,7 +112,7 @@ jobs:
             (Join-Path $stage "bin")
 
           $package = Join-Path $env:RUNNER_TEMP `
-            "Prism-Viewer-1.0.0-windows-x64"
+            "Prism-Viewer-1.1.0-windows-x64"
           New-Item -ItemType Directory -Path $package | Out-Null
           Copy-Item (Join-Path $stage "bin\*") $package -Recurse
 
@@ -145,14 +148,14 @@ jobs:
           Pop-Location
 
           Compress-Archive -Path $package `
-            -DestinationPath "Prism-Viewer-1.0.0-windows-x64.zip"
+            -DestinationPath "Prism-Viewer-1.1.0-windows-x64.zip"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-1.0.0-windows-x64
+          name: prism-viewer-1.1.0-windows-x64
           if-no-files-found: error
-          path: Prism-Viewer-1.0.0-windows-x64.zip
+          path: Prism-Viewer-1.1.0-windows-x64.zip
 
   linux:
     name: linux-${{ matrix.package_arch }}
@@ -167,14 +170,14 @@ jobs:
             runner: ubuntu-22.04
             sdk_arch: linux-x64
             sdk_linkage: shared
-            sdk_runtime: runtime/ros/ubuntu-20.04-x86_64/lib/libprism_usb_sdk.so
-            sdk_sha256: 917665c9e8204e3c117ab6e60ecdfff263f36e46ecd12d89b406f4f8cffe548f
+            sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
+            sdk_sha256: 7edce8226754e8ef2036a00db6909f58ce37a6a9775dd5c12fcf0b4e6f40db98
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: 45dde324e5bff5285de24944741ae67b425a4b8d6f50a788200a78c0655086a8
+            sdk_sha256: b0e4e193ba28e0036b480e4bb0d92fc530548255613b06681f6b86d9062e1ecb
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -191,6 +194,11 @@ jobs:
       - name: Install Ubuntu 20.04 build dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
+          sed -i \
+            -e 's|http://archive.ubuntu.com/ubuntu|http://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
+            -e 's|http://security.ubuntu.com/ubuntu|http://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
+            -e 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' \
+            /etc/apt/sources.list
           apt-get update
           apt-get install -y --no-install-recommends \
             binutils \
@@ -248,7 +256,8 @@ jobs:
             grep -Fq 'elf64-littleaarch64' <<<"$object_headers"
           else
             file "$sdk" | tee /dev/stderr | grep -Fq 'ELF 64-bit LSB shared object, x86-64'
-            objdump -T "$sdk" | grep -Fq 'cameraExposureLimits'
+            objdump -T "$sdk" > "$RUNNER_TEMP/prism-sdk-symbols.txt"
+            grep -Fq 'cameraExposureLimits' "$RUNNER_TEMP/prism-sdk-symbols.txt"
           fi
 
       - name: Configure and build Viewer
@@ -273,7 +282,7 @@ jobs:
       - name: Package Viewer
         run: |
           stage="$RUNNER_TEMP/prism-viewer-stage"
-          package="$RUNNER_TEMP/Prism-Viewer-1.0.0-linux-$LINUX_PACKAGE_ARCH"
+          package="$RUNNER_TEMP/Prism-Viewer-1.1.0-linux-$LINUX_PACKAGE_ARCH"
           cmake --install build-linux-ci --prefix "$stage"
           mkdir -p "$package/lib"
           cp -a "$stage"/. "$package"/
@@ -423,8 +432,8 @@ jobs:
 
           sdk_commit="$(git -C third_party/Prism-SDK rev-parse HEAD)"
           {
-            echo "Prism Viewer version: 1.0.0"
-            echo "Prism SDK version: 1.0.0"
+            echo "Prism Viewer version: 1.1.0"
+            echo "Prism SDK version: 1.1.0"
             echo "Prism SDK commit: $sdk_commit"
             echo "Prism SDK linkage: $LINUX_SDK_LINKAGE"
             echo "Prism SDK source: third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
@@ -440,15 +449,15 @@ jobs:
           ) > "$checksum_manifest"
           mv "$checksum_manifest" "$package/SHA256SUMS.txt"
           tar -C "$RUNNER_TEMP" -czf \
-            "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-linux-$LINUX_PACKAGE_ARCH.tar.gz" \
+            "$GITHUB_WORKSPACE/Prism-Viewer-1.1.0-linux-$LINUX_PACKAGE_ARCH.tar.gz" \
             "$(basename "$package")"
 
       - name: Upload Linux package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-1.0.0-linux-${{ matrix.package_arch }}
+          name: prism-viewer-1.1.0-linux-${{ matrix.package_arch }}
           if-no-files-found: error
-          path: Prism-Viewer-1.0.0-linux-${{ matrix.package_arch }}.tar.gz
+          path: Prism-Viewer-1.1.0-linux-${{ matrix.package_arch }}.tar.gz
 
   linux-smoke:
     name: linux-${{ matrix.package_arch }}-ubuntu-${{ matrix.ubuntu }}
@@ -480,7 +489,7 @@ jobs:
       - name: Download Linux package
         uses: actions/download-artifact@v8
         with:
-          name: prism-viewer-1.0.0-linux-${{ matrix.package_arch }}
+          name: prism-viewer-1.1.0-linux-${{ matrix.package_arch }}
           path: package-download
 
       - name: Verify packaged dependencies and start Viewer
@@ -490,9 +499,9 @@ jobs:
         run: |
           mkdir package-root
           tar -xzf \
-            "package-download/Prism-Viewer-1.0.0-linux-$PACKAGE_ARCH.tar.gz" \
+            "package-download/Prism-Viewer-1.1.0-linux-$PACKAGE_ARCH.tar.gz" \
             -C package-root
-          package="$PWD/package-root/Prism-Viewer-1.0.0-linux-$PACKAGE_ARCH"
+          package="$PWD/package-root/Prism-Viewer-1.1.0-linux-$PACKAGE_ARCH"
           test -x "$package/bin/prism-viewer"
           docker run --rm \
             -e QT_QPA_PLATFORM=offscreen \
@@ -605,8 +614,8 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="070f33890c47d54189a0ac13726ed9ff4dceff798ea93090995950853ecd7de5"
-          libusb_expected="6f65716831f5072bbae4286903c1efce7588ecdbf9d9d4df01122a30cded3b01"
+          sdk_expected="b10cf271eb267a7f6740f949263eb6cede5b485fe783941287a6dbc9f755a5e5"
+          libusb_expected="30cfce3b736acdd5e3e4d276614d7ef917b42d8eddada4932561198bdd4ae414"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
           if [ "$sdk_actual" != "$sdk_expected" ]; then
@@ -715,15 +724,15 @@ jobs:
             "$RUNNER_TEMP/macos-package-smoke"
 
           ditto -c -k --sequesterRsrc --keepParent "$app" \
-            "$GITHUB_WORKSPACE/Prism-Viewer-1.0.0-macos-arm64.zip"
-          unzip -t Prism-Viewer-1.0.0-macos-arm64.zip
+            "$GITHUB_WORKSPACE/Prism-Viewer-1.1.0-macos-arm64.zip"
+          unzip -t Prism-Viewer-1.1.0-macos-arm64.zip
 
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
-          name: prism-viewer-1.0.0-macos-arm64
+          name: prism-viewer-1.1.0-macos-arm64
           if-no-files-found: error
-          path: Prism-Viewer-1.0.0-macos-arm64.zip
+          path: Prism-Viewer-1.1.0-macos-arm64.zip
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
@@ -732,10 +741,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out release notes
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Download release packages
         uses: actions/download-artifact@v8
         with:
-          pattern: prism-viewer-1.0.0-*
+          pattern: prism-viewer-1.1.0-*
           path: release-assets
           merge-multiple: true
 
@@ -753,5 +767,5 @@ jobs:
             gh release create "$RELEASE_TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
-              --generate-notes
+              --notes-file docs/release-notes/v1.1.0.md
           fi

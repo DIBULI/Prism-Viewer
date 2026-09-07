@@ -89,7 +89,9 @@ rm -rf "${build_dir}/CMakeFiles"
 
 "${cmake_bin}" "${cmake_args[@]}"
 "${cmake_bin}" --build "${build_dir}" --parallel
-"${ctest_bin}" --test-dir "${build_dir}" --output-on-failure
+QT_QPA_PLATFORM=offscreen \
+QT_PLUGIN_PATH="${qt_prefix}/share/qt/plugins" \
+  "${ctest_bin}" --test-dir "${build_dir}" --output-on-failure
 
 "${cmake_bin}" -E remove_directory "${stage_dir}"
 "${cmake_bin}" --install "${build_dir}" --prefix "${stage_dir}"
