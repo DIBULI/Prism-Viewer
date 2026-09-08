@@ -63,7 +63,7 @@ in the current user's local Qt settings.
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
-Viewer 1.1.0 uses Prism SDK **v1.1.0**, commit
+Viewer 1.1.1 uses Prism SDK **v1.1.0**, commit
 `01af764ebc55d049b501b1dd2a356d7379f1e2e5` (Runtime API 12), on every
 platform. It requires Agent 1.1.0. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
@@ -181,8 +181,8 @@ additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
 ```sh
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.1.1
+git push origin v1.1.1
 ```
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
@@ -200,12 +200,12 @@ Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
-tar -xzf Prism-Viewer-1.1.0-linux-x64.tar.gz
-./Prism-Viewer-1.1.0-linux-x64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.1.1-linux-x64.tar.gz
+./Prism-Viewer-1.1.1-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-tar -xzf Prism-Viewer-1.1.0-linux-arm64.tar.gz
-./Prism-Viewer-1.1.0-linux-arm64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.1.1-linux-arm64.tar.gz
+./Prism-Viewer-1.1.1-linux-arm64/bin/prism-viewer
 ```
 
 The Windows x64 release supports Windows 10 version 1809 or newer and Windows
@@ -221,6 +221,7 @@ glibc and display drivers come from the host.
 
 ## Documentation
 
+- [Viewer 1.1.1 release notes](docs/release-notes/v1.1.1.md)
 - [Viewer 1.1.0 release notes](docs/release-notes/v1.1.0.md)
 
 - [Prism Viewer 1.0.1 update notes](docs/update/v1.0.1.md)

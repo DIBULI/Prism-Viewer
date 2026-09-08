@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 1.1.0 LANGUAGES CXX)
+project(prism_viewer VERSION 1.1.1 LANGUAGES CXX)
 
 # Viewer and its pinned binary SDK are versioned independently.
 set(PRISM_USB_SDK_VERSION "1.1.0")
