@@ -194,6 +194,20 @@ using prism_viewer::ui::WifiHotspotPanel;
 using prism_viewer::ui::WifiHotspotViewState;
 using prism_viewer::ui::decodePreviewJpeg;
 
+QString cameraFrameStatsText(uint32_t frame_id, double fps,
+                            const QString& preview_frame,
+                            size_t jpeg_bytes, uint32_t exposure_us) {
+  return uiText("RX frame=%1 fps=%2 preview frame=%3 "
+                "jpeg=%4 KiB exposure=%5 us",
+                "接收帧=%1 帧率=%2 预览帧=%3 "
+                "JPEG=%4 KiB 曝光=%5 微秒")
+      .arg(frame_id)
+      .arg(fps, 0, 'f', 2)
+      .arg(preview_frame)
+      .arg(static_cast<double>(jpeg_bytes) / 1024.0, 0, 'f', 1)
+      .arg(exposure_us);
+}
+
 QString accelerationUnitText(AccelerationUnit unit) {
   switch (unit) {
     case AccelerationUnit::MilliGravity:
@@ -2586,12 +2600,14 @@ class MainWindow : public QMainWindow {
     tabs_->addTab(device_info_panel_, uiText("Device Info", "设备信息"));
 
     camera_page_ = new QWidget(tabs_);
+    camera_page_->setObjectName(QStringLiteral("cameraPage"));
     auto* camera_layout = new QVBoxLayout(camera_page_);
     camera_layout->setContentsMargins(8, 8, 8, 8);
     camera_layout->setSpacing(10);
     tabs_->addTab(camera_page_, uiText("Camera", "相机"));
 
     auto* camera_splitter = new QSplitter(Qt::Horizontal, camera_page_);
+    camera_splitter->setObjectName(QStringLiteral("cameraMainSplitter"));
     camera_splitter->setChildrenCollapsible(false);
     camera_splitter->setHandleWidth(8);
     camera_layout->addWidget(camera_splitter, 1);
@@ -2820,6 +2836,7 @@ class MainWindow : public QMainWindow {
 
     auto* video_group = new QGroupBox(
         uiText("Live cameras", "实时相机"), camera_splitter);
+    video_group->setObjectName(QStringLiteral("liveCamerasGroup"));
     auto* video_grid = new QGridLayout(video_group);
     video_grid->setContentsMargins(10, 14, 10, 10);
     video_grid->setHorizontalSpacing(10);
@@ -2858,14 +2875,17 @@ class MainWindow : public QMainWindow {
         };
       }
       frame_labels_[i] = new QLabel(
-          uiText("RX complete sets=0 fps=0.00",
-                 "接收完整帧组=0 帧率=0.00"),
+          cameraFrameStatsText(0, 0.0, QStringLiteral("-"), 0, 0),
           tile);
       frame_labels_[i]->setObjectName(QStringLiteral("cameraStats"));
-      frame_labels_[i]->setToolTip(uiText(
-          "Counts complete four-camera frame sets received and acknowledged. "
-          "The low-latency preview may skip obsolete whole frame sets.",
-          "统计已接收并确认的四相机完整帧组。低延迟预览可能跳过过时的整组帧。"));
+      // Counter/exposure digit counts must not become tile minimum widths.
+      // All values remain visible: wrap only when needed at the available
+      // width, without a fixed row count or an elide/crop policy.
+      frame_labels_[i]->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+      frame_labels_[i]->setWordWrap(true);
+      frame_labels_[i]->setTextFormat(Qt::PlainText);
+      frame_labels_[i]->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      frame_labels_[i]->setToolTip(frame_labels_[i]->text());
 
       tile_layout->addWidget(caption);
       tile_layout->addWidget(image_labels_[i], 1);
@@ -5714,8 +5734,8 @@ class MainWindow : public QMainWindow {
     for (int i = 0; i < 4; ++i) {
       image_labels_[i]->clearImage(uiText("Waiting", "等待数据"));
       frame_labels_[i]->setText(
-          uiText("RX complete sets=0 fps=0.00",
-                 "接收完整帧组=0 帧率=0.00"));
+          cameraFrameStatsText(0, 0.0, QStringLiteral("-"), 0, 0));
+      frame_labels_[i]->setToolTip(frame_labels_[i]->text());
     }
     for (int row = 0; row < 2; ++row) {
       for (int col = 1; col < imu_table_->columnCount(); ++col) {
@@ -7517,17 +7537,10 @@ class MainWindow : public QMainWindow {
               : QString::number(latest_camera_frame_id_);
       for (size_t camera = 0; camera < frame_labels_.size(); ++camera) {
         frame_labels_[camera]->setText(
-            uiText("RX frame=%1 complete sets=%2 fps=%3 preview frame=%4 "
-                   "jpeg=%5 KiB exposure=%6 us",
-                   "接收帧=%1 完整帧组=%2 帧率=%3 预览帧=%4 "
-                   "JPEG=%5 KiB 曝光=%6 微秒")
-                .arg(frame_id)
-                .arg(camera_frame_sets_)
-                .arg(received_fps, 0, 'f', 2)
-                .arg(preview_frame)
-                .arg(static_cast<double>(jpeg_sizes[camera]) / 1024.0, 0,
-                     'f', 1)
-                .arg(exposure_us[camera]));
+            cameraFrameStatsText(frame_id, received_fps,
+                                 preview_frame, jpeg_sizes[camera],
+                                 exposure_us[camera]));
+        frame_labels_[camera]->setToolTip(frame_labels_[camera]->text());
       }
     });
   }
@@ -9887,6 +9900,83 @@ int runViewerApplication(int argc, char** argv) {
         dataset_frame_jump_spin->maximum() == 1 &&
         !dataset_frame_jump_spin->isEnabled() &&
         !dataset_frame_jump_button->isEnabled();
+    auto* camera_page =
+        window.findChild<QWidget*>(QStringLiteral("cameraPage"));
+    auto* camera_splitter =
+        window.findChild<QSplitter*>(QStringLiteral("cameraMainSplitter"));
+    auto* live_cameras =
+        window.findChild<QGroupBox*>(QStringLiteral("liveCamerasGroup"));
+    bool camera_stats_layout_ok = main_tabs != nullptr &&
+        camera_page != nullptr && camera_splitter != nullptr &&
+        live_cameras != nullptr;
+    if (camera_stats_layout_ok) {
+      camera_page->setEnabled(true);
+      main_tabs->setCurrentWidget(camera_page);
+      const auto settle_layout = [&app]() {
+        app.processEvents();
+        QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        app.processEvents();
+      };
+      settle_layout();
+      const auto stats = live_cameras->findChildren<QLabel*>(
+          QStringLiteral("cameraStats"));
+      const auto images = live_cameras->findChildren<QLabel*>(
+          QStringLiteral("cameraImage"));
+      camera_stats_layout_ok = stats.size() == 4 && images.size() == 4;
+      if (camera_stats_layout_ok) {
+        const QSize window_size = window.size();
+        const auto splitter_sizes = camera_splitter->sizes();
+        std::array<QRect, 4> image_rects;
+        std::array<QRect, 4> tile_rects;
+        std::array<QString, 4> original_text;
+        for (int camera = 0; camera < 4; ++camera) {
+          image_rects[camera] = images[camera]->geometry();
+          tile_rects[camera] = images[camera]->parentWidget()->geometry();
+          original_text[camera] = stats[camera]->text();
+        }
+        // Unequal digit counts must not change either grid column or the
+        // camera/control splitter, even at the compact window size.
+        QStringList samples = {
+            cameraFrameStatsText(9, 9.99, QStringLiteral("8"), 10138, 50),
+            cameraFrameStatsText(18386, 10.01,
+                                 QStringLiteral("18385"), 142029, 16325),
+            cameraFrameStatsText(UINT32_MAX, 30.0,
+                                 QStringLiteral("4294967294"), 1310720, 995000)};
+        const bool original_chinese = common::chineseUi();
+        common::setChineseUi(!original_chinese);
+        samples.push_back(cameraFrameStatsText(
+            UINT32_MAX, 30.0,
+            QStringLiteral("4294967294"), 1310720, 995000));
+        common::setChineseUi(original_chinese);
+        for (int step = 0; step < 12; ++step) {
+          stats[step % 4]->setText(samples[(step + step / 4) % samples.size()]);
+          settle_layout();
+          camera_stats_layout_ok = camera_stats_layout_ok &&
+              window.size() == window_size &&
+              camera_splitter->sizes() == splitter_sizes;
+          for (int camera = 0; camera < 4; ++camera) {
+            camera_stats_layout_ok = camera_stats_layout_ok &&
+                images[camera]->geometry().x() == image_rects[camera].x() &&
+                images[camera]->width() == image_rects[camera].width() &&
+                images[camera]->parentWidget()->geometry().x() == tile_rects[camera].x() &&
+                images[camera]->parentWidget()->width() == tile_rects[camera].width() &&
+                std::abs(images[camera]->width() - images[0]->width()) <= 1;
+            const QRect text_bounds = stats[camera]->fontMetrics().boundingRect(
+                QRect(0, 0, stats[camera]->contentsRect().width(), 10000),
+                Qt::AlignLeft | Qt::TextWordWrap, stats[camera]->text());
+            camera_stats_layout_ok = camera_stats_layout_ok &&
+                !stats[camera]->text().contains(QLatin1Char('\n')) &&
+                !stats[camera]->text().contains(QStringLiteral("sets=")) &&
+                !stats[camera]->text().contains(QStringLiteral("帧组=")) &&
+                text_bounds.height() <= stats[camera]->contentsRect().height();
+          }
+        }
+        for (int camera = 0; camera < 4; ++camera) {
+          stats[camera]->setText(original_text[camera]);
+        }
+        settle_layout();
+      }
+    }
     bool imu_layout_ok =
         main_tabs != nullptr && imu_page != nullptr &&
         imu_splitter != nullptr &&
@@ -10088,7 +10178,7 @@ int runViewerApplication(int argc, char** argv) {
     QString imu_window_report;
     const bool imu_window_ok =
         window.runImuPlotWindowSelfTest(&imu_window_report);
-    const bool success = playback_controls_ok && imu_layout_ok &&
+    const bool success = playback_controls_ok && camera_stats_layout_ok && imu_layout_ok &&
         lidar_layout_ok && dataset_frame_layout_ok && dataset_overview_ok &&
         imu_window_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
@@ -10101,6 +10191,8 @@ int runViewerApplication(int argc, char** argv) {
               << kMaximumMainWindowMinimumHeight
               << " playback_controls="
               << (playback_controls_ok ? "PASS" : "FAIL")
+              << " camera_stats_stable="
+              << (camera_stats_layout_ok ? "PASS" : "FAIL")
               << " imu_horizontal="
               << (imu_layout_ok ? "PASS" : "FAIL")
               << " imu_zoom="
