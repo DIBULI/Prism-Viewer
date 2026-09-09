@@ -6178,7 +6178,7 @@ class MainWindow : public QMainWindow {
                         latest_rk_heartbeat_time_us_ / 1000u))
                     .toUTC()
                     .toString(
-                        QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"));
+                        QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'"));
     }
     QString text;
     QString style;
