@@ -1,6 +1,7 @@
 #include "communication/device_info_compat.hpp"
 #include "communication/prism_runtime.hpp"
 #include "communication/rtk_corrections.hpp"
+#include "common/sample_rate_tracker.hpp"
 #include "common/ui_text.hpp"
 #include "communication/device_session.hpp"
 #include "control/operation_controller.hpp"
@@ -10,7 +11,7 @@
 #include "dataset/dataset_playback_timing.hpp"
 #include "dataset/rosbag_exporter.hpp"
 #include "imu_units.hpp"
-#include "imu_timestamp_policy.hpp"
+#include "stream/usb_stream_source.hpp"
 #include "transfer/camera_frame_assembler.hpp"
 #include "ui/app_theme.hpp"
 #include "ui/camera_encoding_panel.hpp"
@@ -193,6 +194,9 @@ using prism_viewer::ui::DeviceInfoPanel;
 using prism_viewer::ui::WifiHotspotPanel;
 using prism_viewer::ui::WifiHotspotViewState;
 using prism_viewer::ui::decodePreviewJpeg;
+using prism_viewer::stream::UsbStreamSource;
+using prism_viewer::stream::UsbStreamSourceConfig;
+using prism_viewer::transfer::CameraFrameSet;
 
 QString cameraFrameStatsText(uint32_t frame_id, double fps,
                             const QString& preview_frame,
@@ -314,46 +318,6 @@ struct ImuUiSnapshot {
 struct PendingImuPlotSample {
   prism::ImuSample sample;
   std::chrono::steady_clock::time_point received_at;
-};
-
-class SampleRateTracker {
- public:
-  void add(std::chrono::steady_clock::time_point now) {
-    ++total_samples_;
-    if (anchors_.empty()) {
-      anchors_.push_back({now, total_samples_});
-      next_anchor_ = now + kAnchorPeriod;
-      return;
-    }
-    if (now < next_anchor_) return;
-
-    anchors_.push_back({now, total_samples_});
-    next_anchor_ = now + kAnchorPeriod;
-    while (anchors_.size() > 2 &&
-           now - anchors_[1].time >= kImuRateWindow) {
-      anchors_.pop_front();
-    }
-  }
-
-  double rate(std::chrono::steady_clock::time_point now) const {
-    if (anchors_.empty()) return 0.0;
-    const double elapsed =
-        std::chrono::duration<double>(now - anchors_.front().time).count();
-    if (elapsed <= 0.0) return 0.0;
-    return static_cast<double>(total_samples_ - anchors_.front().sample_count) /
-           elapsed;
-  }
-
- private:
-  struct Anchor {
-    std::chrono::steady_clock::time_point time;
-    uint64_t sample_count = 0;
-  };
-
-  static constexpr auto kAnchorPeriod = std::chrono::milliseconds(100);
-  std::deque<Anchor> anchors_;
-  std::chrono::steady_clock::time_point next_anchor_{};
-  uint64_t total_samples_ = 0;
 };
 
 using prism_viewer::ui::ImageViewLabel;
@@ -2377,6 +2341,8 @@ class MainWindow : public QMainWindow {
     setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
     resize(1480, 940);
 
+    usb_stream_source_ = std::make_unique<UsbStreamSource>(client_, client_io_mutex_);
+
     auto* central = new QWidget(this);
     central->setObjectName(QStringLiteral("appRoot"));
     auto* root = new QVBoxLayout(central);
@@ -2525,6 +2491,7 @@ class MainWindow : public QMainWindow {
     language_selector_->setToolTip(
         uiText("Change display language (the viewer restarts once)",
                "切换显示语言（Viewer 会自动重启一次）"));
+
     start_button_->setObjectName(QStringLiteral("startButton"));
     stop_button_->setObjectName(QStringLiteral("stopButton"));
     imu_record_start_button_->setMinimumWidth(130);
@@ -5002,11 +4969,16 @@ class MainWindow : public QMainWindow {
   void startCapture() {
     if (worker_running_ || time_sync_running_ ||
         wifi_operation_running_ || camera_exposure_operation_running_ ||
-        camera_encoding_operation_running_ ||
-        !client_.isOpen()) {
-      if (!client_.isOpen()) {
-        showOpenDeviceHint(uiText("Capture", "采集"));
-      }
+        camera_encoding_operation_running_) {
+      return;
+    }
+
+    startUsbCapture();
+  }
+
+  void startUsbCapture() {
+    if (!client_.isOpen()) {
+      showOpenDeviceHint(uiText("Capture", "采集"));
       return;
     }
     prism::LidarModel requested_lidar_model = prism::LidarModel::None;
@@ -5026,7 +4998,12 @@ class MainWindow : public QMainWindow {
     }
     requested_lidar_model_.store(
         static_cast<int>(requested_lidar_model), std::memory_order_release);
-    operation_controller_.join();
+
+    // Configure the USB stream source.
+    prism_viewer::stream::UsbStreamSourceConfig config;
+    config.lidar_model = requested_lidar_model;
+    config.cors_active = cors_session_.active();
+    dynamic_cast<prism_viewer::stream::UsbStreamSource*>(usb_stream_source_.get())->set_config(config);
 
     stop_requested_ = false;
     worker_running_ = true;
@@ -5046,7 +5023,118 @@ class MainWindow : public QMainWindow {
                              : QStringLiteral("Mid-360S")));
     }
 
-    operation_controller_.start([this]() { workerMain(); });
+    // Connect callbacks.
+    setupStreamSourceCallbacks();
+
+    // Start streaming.
+    if (!usb_stream_source_->start()) {
+      worker_running_ = false;
+      setRunningUi(false);
+      appendLog(QStringLiteral("Failed to start USB stream source"));
+    }
+  }
+
+  void setupStreamSourceCallbacks() {
+    auto& source = *usb_stream_source_;
+
+    source.post = [this](std::function<void()> fn) { post(fn); };
+
+    source.on_imu = [this](const prism::ImuSample& sample) {
+      dataset_recorder_.appendImu(sample);
+    };
+
+    // The source throttles these; the plot and the table refresh at their own
+    // rates rather than once per 800 Hz sample.
+    source.on_imu_plot = [this](const prism::ImuSample& sample,
+                                std::chrono::steady_clock::time_point at) {
+      queueImuPlotSample(sample, at);
+    };
+
+    source.on_imu_ui = [this](const prism::ImuSample& sample,
+                              uint64_t received_count, double sample_rate_hz,
+                              uint64_t fsync_event_count,
+                              uint64_t last_fsync_sample_us,
+                              bool last_fsync_delay_valid) {
+      queueImuUiUpdate(sample, received_count, sample_rate_hz,
+                       fsync_event_count, last_fsync_sample_us,
+                       last_fsync_delay_valid);
+    };
+
+    source.on_imu_timestamp_alarm = [this](int sensor, bool active,
+                                           const std::string& detail) {
+      updateImuTimestampAlarm(sensor, active,
+                              QString::fromStdString(detail));
+    };
+
+    source.on_lidar = [this](const prism::LidarPointBatch& batch) {
+      dataset_recorder_.appendLidar(batch);
+    };
+
+    source.on_lidar_preview = [this](std::vector<prism::LidarPoint> points,
+                                     prism::LidarModel model,
+                                     uint64_t total_points, uint32_t batch_id,
+                                     bool timestamp_synced) {
+      queueLidarPreview(std::move(points), model, total_points, batch_id,
+                        timestamp_synced);
+    };
+
+    source.on_lidar_imu = [this](const prism::LidarImuSample& sample) {
+      dataset_recorder_.appendLidarImu(sample);
+    };
+
+    source.on_camera = [this](prism_viewer::transfer::CameraFrameSet frame) {
+      processFrameSet(frame.frame_id, frame.timestamp_us,
+                      camera_frame_sets_, frame.metadata,
+                      std::move(frame.jpeg));
+    };
+
+    source.on_camera_frame_set_status =
+        [this](uint32_t frame_id, uint64_t received_frame_sets,
+               double received_fps, const std::array<size_t, 4>& jpeg_sizes,
+               const std::array<uint32_t, 4>& exposure_us) {
+          queueCameraFrameSetStatus(frame_id, received_frame_sets,
+                                    received_fps, jpeg_sizes, exposure_us);
+        };
+
+    source.on_video_meta = [this](const prism::VideoMeta& meta) {
+      if (!camera_preview_enabled_.load(std::memory_order_acquire)) return;
+      updateMeta(meta);
+    };
+
+    // Exposure commands must be issued from the capture thread, so the source
+    // pumps them from its loop and forgives the frame-set gap they cause.
+    source.on_poll_tick = [this]() {
+      return processPendingCameraExposureOperation();
+    };
+
+    source.on_capture_finished = [this](const std::string& reason) {
+      cancelPendingCameraExposureOperation(QString::fromStdString(reason));
+    };
+
+    source.on_rover_rtcm = [this](const prism::RoverRtcmChunkView& chunk) {
+      dataset_recorder_.appendRoverRtcm(chunk);
+    };
+
+    source.on_heartbeat = [this](const prism::HeartbeatStatus& status) {
+      updateHeartbeat(status);
+    };
+
+    source.on_device_info = [this](const prism::DeviceInfo& info,
+                                    auto provider) {
+      updateDeviceInfo(info, provider);
+    };
+
+    source.on_gnss_timing = [this](const prism::GnssTimingStatus& status) {
+      updateGnssTimingStatus(status);
+    };
+
+    source.on_lidar_status = [this](const prism::LidarStatus& status) {
+      updateLidarStatus(status);
+    };
+
+    source.on_log = [this](const std::string& message) {
+      appendLog(QString::fromStdString(message));
+    };
   }
 
   bool gpsTimeIsAuthoritative() const {
@@ -5231,12 +5319,12 @@ class MainWindow : public QMainWindow {
   void stopCapture() {
     stop_requested_ = true;
     appendLog(QStringLiteral("Stopping streams"));
-    /*
-     * Let the USB worker begin quiescing camera and IMU immediately. Dataset
-     * finalization can otherwise spend seconds draining a slow disk while the
-     * board continues to stream and the GUI appears frozen.
-     */
+    if (usb_stream_source_->active()) {
+      usb_stream_source_->stop();
+    }
     if (dataset_recorder_.isActive()) stopImuRecording();
+    worker_running_ = false;
+    setRunningUi(false);
   }
 
   void startImuRecording(DatasetRecordingMode mode) {
@@ -5840,6 +5928,7 @@ class MainWindow : public QMainWindow {
     close_device_button_->setEnabled(
         device_open && !upgrading && !time_syncing && !wifi_busy &&
         !exposure_busy && !encoding_busy);
+
     start_button_->setEnabled(!busy && device_open);
     stop_button_->setEnabled(running);
     const bool gps_time_authoritative = gpsTimeIsAuthoritative();
@@ -7737,6 +7826,51 @@ class MainWindow : public QMainWindow {
     });
   }
 
+  void updateImuTimestampAlarm(int sensor, bool active, const QString& detail) {
+    post([this, sensor, active, detail]() {
+      if (sensor < 0 || sensor >= static_cast<int>(imu_timestamp_alarm_.size())) return;
+      if (imu_timestamp_alarm_[sensor] == active) return;
+
+      imu_timestamp_alarm_[sensor] = active;
+      imu_timestamp_alarm_detail_[sensor] = active ? detail : QString();
+      auto* timestamp_item = imu_table_->item(sensor, 3);
+      if (active) {
+        timestamp_item->setBackground(QColor(QStringLiteral("#fee4e2")));
+        timestamp_item->setForeground(QColor(QStringLiteral("#b42318")));
+      } else {
+        timestamp_item->setBackground(QBrush());
+        timestamp_item->setForeground(QBrush());
+      }
+
+      QStringList active_alarms;
+      for (size_t i = 0; i < imu_timestamp_alarm_.size(); ++i) {
+        if (imu_timestamp_alarm_[i]) {
+          active_alarms.push_back(QStringLiteral("IMU%1: %2")
+                                      .arg(i)
+                                      .arg(imu_timestamp_alarm_detail_[i]));
+        }
+      }
+      if (active_alarms.empty()) {
+        imu_alarm_label_->setText(
+            uiText("Timestamp interval: OK", "时间戳间隔：正常"));
+        imu_alarm_label_->setStyleSheet(QStringLiteral(
+            "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
+            "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
+      } else {
+        imu_alarm_label_->setText(uiText("TIMESTAMP ALARM | ", "时间戳告警 | ") +
+                                  active_alarms.join(QStringLiteral(" | ")));
+        imu_alarm_label_->setStyleSheet(QStringLiteral(
+            "background: #fee4e2; color: #b42318; border: 1px solid #fda29b;"
+            "border-radius: 5px; padding: 4px 8px; font-weight: 700;"));
+      }
+
+      appendLogLine(
+          QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
+          (active ? QStringLiteral("ALARM: IMU%1 timestamp interval %2").arg(sensor).arg(detail)
+                  : QStringLiteral("RECOVERED: IMU%1 timestamp interval stable").arg(sensor)));
+    });
+  }
+
   void queueImuUiUpdate(const prism::ImuSample& sample,
                         uint64_t received_count,
                         double sample_rate_hz,
@@ -7933,842 +8067,6 @@ class MainWindow : public QMainWindow {
     }
   }
 
-  void updateImuTimestampAlarm(int sensor, bool active, const QString& detail) {
-    post([this, sensor, active, detail]() {
-      if (sensor < 0 || sensor >= static_cast<int>(imu_timestamp_alarm_.size())) return;
-      if (imu_timestamp_alarm_[sensor] == active) return;
-
-      imu_timestamp_alarm_[sensor] = active;
-      imu_timestamp_alarm_detail_[sensor] = active ? detail : QString();
-      auto* timestamp_item = imu_table_->item(sensor, 3);
-      if (active) {
-        timestamp_item->setBackground(QColor(QStringLiteral("#fee4e2")));
-        timestamp_item->setForeground(QColor(QStringLiteral("#b42318")));
-      } else {
-        timestamp_item->setBackground(QBrush());
-        timestamp_item->setForeground(QBrush());
-      }
-
-      QStringList active_alarms;
-      for (size_t i = 0; i < imu_timestamp_alarm_.size(); ++i) {
-        if (imu_timestamp_alarm_[i]) {
-          active_alarms.push_back(QStringLiteral("IMU%1: %2")
-                                      .arg(i)
-                                      .arg(imu_timestamp_alarm_detail_[i]));
-        }
-      }
-      if (active_alarms.empty()) {
-        imu_alarm_label_->setText(
-            uiText("Timestamp interval: OK", "时间戳间隔：正常"));
-        imu_alarm_label_->setStyleSheet(QStringLiteral(
-            "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
-            "border-radius: 5px; padding: 4px 8px; font-weight: 600;"));
-      } else {
-        imu_alarm_label_->setText(uiText("TIMESTAMP ALARM | ", "时间戳告警 | ") +
-                                  active_alarms.join(QStringLiteral(" | ")));
-        imu_alarm_label_->setStyleSheet(QStringLiteral(
-            "background: #fee4e2; color: #b42318; border: 1px solid #fda29b;"
-            "border-radius: 5px; padding: 4px 8px; font-weight: 700;"));
-      }
-
-      appendLogLine(
-          QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz ")) +
-          (active ? QStringLiteral("ALARM: IMU%1 timestamp interval %2").arg(sensor).arg(detail)
-                  : QStringLiteral("RECOVERED: IMU%1 timestamp interval stable").arg(sensor)));
-    });
-  }
-
-  double elapsedSeconds() const {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
-  }
-
-  void workerMain() {
-    bool video_started = false;
-    bool aggregate_stream_start_attempted = false;
-    bool aggregate_stream_stop_attempted = false;
-    bool camera_progress_stalled = false;
-    try {
-      if (!client_.isOpen()) {
-        throw std::runtime_error("device is not open");
-      }
-
-      // The USB connection only proves that Viewer can reach the RK agent.
-      // DeviceInfo is the status interface; heartbeat contains RK time only.
-      bool sensor_board_link_ready = false;
-      std::optional<prism::DeviceInfo> capture_device_info;
-      std::optional<std::chrono::steady_clock::time_point>
-          capture_device_info_at;
-      while (!stop_requested_ && !sensor_board_link_ready) {
-        processPendingCameraExposureOperation();
-        try {
-          const auto status =
-              withClientIo([this]() { return readDeviceInfo(client_); });
-          const auto& info = status.info;
-          capture_device_info = info;
-          capture_device_info_at = std::chrono::steady_clock::now();
-          updateDeviceInfo(info, status.time_sync_provider);
-          updateGnssTimingStatus(withClientIo(
-              [this]() { return client_.gnssTimingStatus(); }));
-          sensor_board_link_ready = info.sensor_board_online;
-        } catch (const std::exception&) {
-        }
-        if (!stop_requested_ && !sensor_board_link_ready) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(250));
-        }
-      }
-
-      if (!sensor_board_link_ready) {
-        appendLog(QStringLiteral(
-            "Capture cancelled while waiting for the RK/sensor-board link"));
-        updateStatus(uiText("Capture not started: waiting was cancelled",
-                            "未开始采集：已取消等待 RK 与 sensor-board 连接"));
-        cancelPendingCameraExposureOperation(
-            uiText("Capture stopped before the exposure request was processed",
-                   "采集已停止，曝光请求尚未执行"));
-        worker_running_ = false;
-        post([this]() { refreshControls(); });
-        return;
-      }
-
-      appendLog(QStringLiteral(
-          "RK/sensor-board link is online; starting camera and IMU streams"));
-      updateStatus(uiText("RK/sensor-board link online; starting capture",
-                          "RK 与 sensor-board 已连接，正在开始采集"));
-
-      /*
-       * Camera and IMU form one capture transaction.  A camera failure must
-       * abort the operation instead of silently leaving an IMU-only stream.
-       * Passing fps=0 (the SDK default) makes the Agent use the persistent
-       * camera_fps selected in the Stream panel.
-       */
-      aggregate_stream_start_attempted = true;
-      const auto status = withClientIo(
-          [this]() { return client_.startVideo1280x1024(); });
-      video_started = true;
-      appendLog(QStringLiteral("Video started cameras=%1 fps=%2 size=%3x%4")
-                    .arg(status.cameras)
-                    .arg(status.fps)
-                    .arg(status.width)
-                    .arg(status.height));
-
-      prism_viewer::transfer::CameraFrameAssembler camera_assembler;
-      std::deque<std::chrono::steady_clock::time_point>
-          camera_rate_samples;
-      uint64_t received_camera_frame_sets = 0;
-      auto last_completed_camera_frame_set_at =
-          std::chrono::steady_clock::now();
-      auto last_usb_frame_at = last_completed_camera_frame_set_at;
-      auto last_video_chunk_at = last_completed_camera_frame_set_at;
-      std::optional<uint32_t> last_completed_camera_frame_id;
-      std::optional<uint32_t> last_video_chunk_frame_id;
-      uint64_t received_video_chunks = 0;
-      uint64_t discarded_incomplete_camera_frame_sets = 0;
-      std::chrono::steady_clock::time_point next_camera_status_post;
-      auto handleCompletedCameraFrame =
-          [this, &camera_rate_samples, &received_camera_frame_sets,
-           &last_completed_camera_frame_set_at,
-           &last_completed_camera_frame_id, &next_camera_status_post](
-              prism_viewer::transfer::CameraFrameSet completed) {
-            const auto received_at = std::chrono::steady_clock::now();
-            last_completed_camera_frame_set_at = received_at;
-            last_completed_camera_frame_id = completed.frame_id;
-            camera_rate_samples.push_back(received_at);
-            while (camera_rate_samples.size() > 2 &&
-                   received_at - camera_rate_samples.front() >
-                       kCameraRateWindow) {
-              camera_rate_samples.pop_front();
-            }
-            const double camera_elapsed =
-                camera_rate_samples.size() > 1
-                    ? std::chrono::duration<double>(
-                          camera_rate_samples.back() -
-                          camera_rate_samples.front())
-                          .count()
-                    : 0.0;
-            const double received_camera_fps =
-                camera_elapsed > 0.0
-                    ? static_cast<double>(camera_rate_samples.size() - 1) /
-                          camera_elapsed
-                    : 0.0;
-            ++received_camera_frame_sets;
-
-            /*
-             * Return flow-control credit once the four JPEGs and their exact
-             * per-frame metadata are both available in memory.
-             */
-            withClientIo([this, &completed]() {
-              client_.sendVideoAck(completed.frame_id);
-            });
-            if (received_at >= next_camera_status_post) {
-              next_camera_status_post =
-                  received_at + kCameraStatusUiPeriod;
-              std::array<size_t, 4> jpeg_sizes{};
-              for (size_t camera = 0; camera < jpeg_sizes.size(); ++camera) {
-                jpeg_sizes[camera] = completed.jpeg[camera].size();
-              }
-              queueCameraFrameSetStatus(
-                  completed.frame_id, received_camera_frame_sets,
-                  received_camera_fps, jpeg_sizes,
-                  completed.metadata.exposure_us);
-            }
-            processFrameSet(
-                completed.frame_id, completed.timestamp_us,
-                received_camera_frame_sets, completed.metadata,
-                std::move(completed.jpeg));
-          };
-      std::array<std::chrono::steady_clock::time_point, 2> last_imu_post{};
-      last_imu_post.fill(std::chrono::steady_clock::now());
-      std::array<std::chrono::steady_clock::time_point, 2>
-          last_imu_plot_post{};
-      last_imu_plot_post.fill(std::chrono::steady_clock::now());
-      auto next_metadata_ui_update = std::chrono::steady_clock::now();
-      std::array<SampleRateTracker, 2> imu_rate_samples;
-      std::array<uint64_t, 2> received_imu_samples{};
-      std::array<uint64_t, 2> received_fsync_events{};
-      std::array<uint64_t, 2> last_fsync_sample_us{};
-      std::array<bool, 2> last_fsync_delay_valid{};
-      struct TimestampCheck {
-        bool initialized = false;
-        bool alarm = false;
-        bool last_timestamp_synced = false;
-        uint64_t last_timestamp_us = 0;
-        uint16_t last_sequence = 0;
-        uint32_t bad_streak = 0;
-        uint32_t good_streak = 0;
-      };
-      std::array<TimestampCheck, 2> timestamp_checks{};
-      const prism::LidarModel requested_lidar_model =
-          static_cast<prism::LidarModel>(requested_lidar_model_.load(
-              std::memory_order_acquire));
-      std::vector<prism::LidarPoint> pending_lidar_preview;
-      pending_lidar_preview.reserve(8192u);
-      uint64_t received_lidar_points = 0;
-      auto last_lidar_preview_post = std::chrono::steady_clock::now();
-      prism_runtime::ImuStream imu_stream(
-          client_, [this, &last_imu_post, &last_imu_plot_post,
-                   &imu_rate_samples, &received_imu_samples,
-                   &received_fsync_events, &last_fsync_sample_us,
-                   &last_fsync_delay_valid,
-                   &timestamp_checks](
-                      const prism::ImuSample& sample) {
-            const int sensor = static_cast<int>(sample.sensor_id);
-            if (sensor < 0 || sensor >= static_cast<int>(received_imu_samples.size())) {
-              return;
-            }
-            dataset_recorder_.appendImu(sample);
-            const uint64_t received_count = ++received_imu_samples[sensor];
-            if (sample.fsync_event) {
-              ++received_fsync_events[sensor];
-              last_fsync_sample_us[sensor] = sample.timestamp_us;
-              last_fsync_delay_valid[sensor] = sample.fsync_delay_valid;
-            }
-            const auto now = std::chrono::steady_clock::now();
-            auto& rate_tracker = imu_rate_samples[sensor];
-            rate_tracker.add(now);
-            if (now - last_imu_plot_post[sensor] >=
-                kImuPlotSamplePeriod) {
-              last_imu_plot_post[sensor] = now;
-              queueImuPlotSample(sample, now);
-            }
-
-            auto& timestamp_check = timestamp_checks[sensor];
-            const uint16_t current_sequence =
-                static_cast<uint16_t>(sample.sample_id & 0xffffu);
-            const bool timestamp_valid = sample.timestamp_us != 0;
-            const bool timestamp_domain_changed =
-                timestamp_check.initialized &&
-                sample.timestamp_synced != timestamp_check.last_timestamp_synced;
-            const uint16_t sequence_delta = timestamp_check.initialized
-                                                ? static_cast<uint16_t>(
-                                                      current_sequence -
-                                                      timestamp_check.last_sequence)
-                                                : 0u;
-            const bool expected_fsync_reanchor =
-                prism_viewer::shouldRebaselineForSyncedFsync(
-                    timestamp_check.initialized, sample.timestamp_synced,
-                    sample.fsync_event, sample.fsync_delay_valid,
-                    sample.sample_gap, sequence_delta) ||
-                prism_viewer::shouldRebaselineForFirstUtcFsync(
-                    timestamp_check.initialized, sample.timestamp_synced,
-                    sample.fsync_event, sample.fsync_delay_valid,
-                    sample.sample_gap, sequence_delta,
-                    timestamp_check.last_timestamp_us, sample.timestamp_us);
-
-            // Local sensor-board time and synchronized UTC are different time
-            // domains.  Every valid synchronized FSYNC sample can replace the
-            // extrapolated sample clock with the precise PPS anchor.  When the
-            // sequence is continuous and PL reports no sample gap, that clock
-            // correction is not a sampling-interval failure.  Establish a
-            // fresh baseline and check again from the following sample.
-            if (!timestamp_valid || timestamp_domain_changed ||
-                expected_fsync_reanchor) {
-              timestamp_check.bad_streak = 0;
-              // An expected periodic re-anchor must not conceal an alarm
-              // raised by an actual earlier stream fault, nor interrupt its
-              // run of good samples toward recovery.
-              if (!expected_fsync_reanchor) {
-                timestamp_check.good_streak = 0;
-                if (timestamp_check.alarm) {
-                  timestamp_check.alarm = false;
-                  updateImuTimestampAlarm(sensor, false, QString());
-                }
-              }
-            } else if (timestamp_check.initialized) {
-              const bool timestamp_regressed =
-                  sample.timestamp_us <= timestamp_check.last_timestamp_us;
-              const bool sequence_repeated = sequence_delta == 0;
-              const uint64_t total_delta_us = timestamp_regressed
-                                            ? 0
-                                            : sample.timestamp_us -
-                                                  timestamp_check.last_timestamp_us;
-              const uint64_t interval_us = sequence_repeated
-                                               ? 0
-                                               : (total_delta_us + sequence_delta / 2u) /
-                                                     sequence_delta;
-              const bool interval_bad = timestamp_regressed || sequence_repeated ||
-                                        interval_us < 250 || interval_us > 4000;
-              if (interval_bad) {
-                timestamp_check.good_streak = 0;
-                ++timestamp_check.bad_streak;
-                const bool severe = timestamp_regressed || sequence_repeated ||
-                                    interval_us > 10000;
-                if (!timestamp_check.alarm &&
-                    (severe || timestamp_check.bad_streak >= 3)) {
-                  timestamp_check.alarm = true;
-                  const QString detail = timestamp_regressed
-                                             ? QStringLiteral("regression/repeat: previous=%1 us current=%2 us")
-                                                   .arg(timestamp_check.last_timestamp_us)
-                                                   .arg(sample.timestamp_us)
-                                         : sequence_repeated
-                                             ? QStringLiteral("duplicate sample detected")
-                                             : QStringLiteral("delta=%1 us over %2 samples (%3 us/sample)")
-                                                   .arg(total_delta_us)
-                                                   .arg(sequence_delta)
-                                                   .arg(interval_us);
-                  const QString context = QStringLiteral(
-                      " | fsync=%1 synced=%2 flags=0x%3 gap=%4")
-                                              .arg(sample.fsync_event ? 1 : 0)
-                                              .arg(sample.timestamp_synced ? 1 : 0)
-                                              .arg(sample.flags, 4, 16,
-                                                   QLatin1Char('0'))
-                                              .arg(sample.sample_gap ? 1 : 0);
-                  updateImuTimestampAlarm(sensor, true, detail + context);
-                }
-              } else {
-                timestamp_check.bad_streak = 0;
-                if (timestamp_check.alarm) {
-                  ++timestamp_check.good_streak;
-                  if (timestamp_check.good_streak >= 1000) {
-                    timestamp_check.alarm = false;
-                    timestamp_check.good_streak = 0;
-                    updateImuTimestampAlarm(sensor, false, QString());
-                  }
-                }
-              }
-            } else if (timestamp_valid) {
-              timestamp_check.initialized = true;
-            }
-            if (timestamp_valid) {
-              timestamp_check.initialized = true;
-              timestamp_check.last_timestamp_us = sample.timestamp_us;
-              timestamp_check.last_sequence = current_sequence;
-              timestamp_check.last_timestamp_synced = sample.timestamp_synced;
-            } else {
-              timestamp_check.initialized = false;
-            }
-
-            if (now - last_imu_post[sensor] >= kImuUiPeriod) {
-              last_imu_post[sensor] = now;
-              const double sample_rate = rate_tracker.rate(now);
-              queueImuUiUpdate(sample, received_count, sample_rate,
-                               received_fsync_events[sensor],
-                               last_fsync_sample_us[sensor],
-                               last_fsync_delay_valid[sensor]);
-            }
-          });
-      prism_runtime::LidarStream lidar_stream(
-          client_, [this, requested_lidar_model, &pending_lidar_preview,
-                   &received_lidar_points, &last_lidar_preview_post](
-                       const prism::LidarPointBatch& batch) {
-            if (batch.model != requested_lidar_model) {
-              throw std::runtime_error(
-                  "received LiDAR points for a model other than the explicit selection");
-            }
-            dataset_recorder_.appendLidar(batch);
-            received_lidar_points += batch.points.size();
-            const auto now = std::chrono::steady_clock::now();
-            if (!lidar_ui_enabled_.load(std::memory_order_acquire)) {
-              pending_lidar_preview.clear();
-              last_lidar_preview_post = now;
-              return;
-            }
-            pending_lidar_preview.insert(pending_lidar_preview.end(),
-                                         batch.points.begin(),
-                                         batch.points.end());
-            if (now - last_lidar_preview_post <
-                std::chrono::milliseconds(50)) {
-              return;
-            }
-            last_lidar_preview_post = now;
-            queueLidarPreview(std::move(pending_lidar_preview), batch.model,
-                              received_lidar_points, batch.batch_id,
-                              batch.timestamp_synced);
-            pending_lidar_preview.clear();
-            pending_lidar_preview.reserve(8192u);
-          },
-          [this, requested_lidar_model](
-              const prism::LidarImuSample& sample) {
-            if (sample.model != requested_lidar_model) {
-              throw std::runtime_error(
-                  "received LiDAR IMU for a model other than the explicit selection");
-            }
-            dataset_recorder_.appendLidarImu(sample);
-          });
-      prism_runtime::RoverRtcmStream rover_rtcm_stream(
-          client_, [this](const prism::RoverRtcmChunkView& chunk) {
-            dataset_recorder_.appendRoverRtcm(chunk);
-          });
-      try {
-        withClientIo([&imu_stream]() { imu_stream.start(); });
-      } catch (...) {
-        if (video_started) {
-          try {
-            aggregate_stream_stop_attempted = true;
-            withClientIo([this]() { client_.stopVideo(); });
-            video_started = false;
-          } catch (const std::exception& stop_error) {
-            appendLog(QStringLiteral(
-                          "Capture rollback failed after IMU start error: %1")
-                          .arg(stop_error.what()));
-          }
-        }
-        throw;
-      }
-      appendLog(QStringLiteral("IMU started through agent SDK ImuStream"));
-      if (requested_lidar_model != prism::LidarModel::None) {
-        try {
-          withClientIo([&lidar_stream, requested_lidar_model]() {
-            lidar_stream.start(requested_lidar_model);
-          });
-          updateLidarStatus(withClientIo(
-              [this]() { return client_.lidarStatus(); }));
-          appendLog(QStringLiteral("LiDAR started model=%1")
-                        .arg(requested_lidar_model == prism::LidarModel::Mid360
-                                 ? QStringLiteral("Mid-360")
-                                 : QStringLiteral("Mid-360S")));
-        } catch (...) {
-          try {
-            aggregate_stream_stop_attempted = true;
-            withClientIo([&imu_stream]() { imu_stream.stop(); });
-            video_started = false;
-          } catch (const std::exception& stop_error) {
-            appendLog(QStringLiteral(
-                          "Capture rollback failed after LiDAR start error: %1")
-                          .arg(stop_error.what()));
-          }
-          throw;
-        }
-      }
-      withClientIo([&rover_rtcm_stream]() { rover_rtcm_stream.start(); });
-      appendLog(QStringLiteral(
-          "Rover RTCM stream started; only CRC-valid RTCM3 is recorded"));
-      updateStatus(uiText("Running", "运行中"));
-
-      const auto capture_started_at = std::chrono::steady_clock::now();
-      last_completed_camera_frame_set_at = capture_started_at;
-      last_usb_frame_at = capture_started_at;
-      last_video_chunk_at = capture_started_at;
-      auto next_device_info_query =
-          capture_started_at + std::chrono::milliseconds(500);
-      uint64_t accounted_cors_command_time_us =
-          cors_usb_command_time_us_.load(std::memory_order_acquire);
-      const auto compensateCorsUsbCommandTime = [&]() {
-        const uint64_t current =
-            cors_usb_command_time_us_.load(std::memory_order_acquire);
-        const uint64_t delta = current - accounted_cors_command_time_us;
-        if (delta != 0u) {
-          last_completed_camera_frame_set_at +=
-              std::chrono::microseconds(delta);
-          accounted_cors_command_time_us = current;
-        }
-      };
-      appendLog(QStringLiteral(
-                    "Camera frame-set progress watchdog armed: timeout=%1 ms; "
-                    "only complete four-camera frame sets count as progress")
-                    .arg(std::chrono::duration_cast<std::chrono::milliseconds>(
-                             kCameraFrameSetProgressTimeout)
-                             .count()));
-      auto throwIfCameraFrameSetProgressStalled =
-          [&](std::chrono::steady_clock::time_point now) {
-            compensateCorsUsbCommandTime();
-            now = std::chrono::steady_clock::now();
-            const auto camera_progress_age =
-                now - last_completed_camera_frame_set_at;
-            if (camera_progress_age < kCameraFrameSetProgressTimeout) return;
-
-            camera_progress_stalled = true;
-            const auto stalled_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    camera_progress_age)
-                    .count();
-            const auto usb_idle_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - last_usb_frame_at)
-                    .count();
-            std::ostringstream error;
-            error << "Camera frame-set progress stalled: no complete "
-                     "four-camera frame set for "
-                  << stalled_ms << " ms";
-            if (last_completed_camera_frame_id.has_value()) {
-              error << ", last complete frame-id="
-                    << *last_completed_camera_frame_id;
-            } else {
-              error << ", no complete frame set received since stream start";
-            }
-            error << ", last delivered USB frame=" << usb_idle_ms << " ms ago";
-            if (last_video_chunk_frame_id.has_value()) {
-              const auto video_idle_ms =
-                  std::chrono::duration_cast<std::chrono::milliseconds>(
-                      now - last_video_chunk_at)
-                      .count();
-              error << ", video chunks received=" << received_video_chunks
-                    << ", last video chunk frame-id="
-                    << *last_video_chunk_frame_id << " (" << video_idle_ms
-                    << " ms ago)"
-                    << ", discarded incomplete frame sets="
-                    << discarded_incomplete_camera_frame_sets;
-            } else {
-              error << ", no video chunks delivered to the capture loop";
-            }
-            if (capture_device_info.has_value()) {
-              error << ", last-observed camera-streaming-mask=0x" << std::hex
-                    << static_cast<unsigned int>(
-                           capture_device_info->camera_streaming_mask)
-                    << ", sensor-board-error-flags=0x"
-                    << capture_device_info->sensor_board_error_flags << std::dec;
-              if (capture_device_info_at.has_value()) {
-                const auto device_info_age_ms =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        now - *capture_device_info_at)
-                        .count();
-                error << " (" << device_info_age_ms << " ms old)";
-              }
-            }
-            error << ". Stopping camera and IMU streams.";
-            throw std::runtime_error(error.str());
-          };
-      unsigned consecutive_usb_read_errors = 0;
-      std::exception_ptr capture_error;
-      try {
-        while (!stop_requested_) {
-          compensateCorsUsbCommandTime();
-          /*
-           * SDK commands synchronously consume the shared USB IN endpoint and
-           * defer stream frames until the command response arrives. Exclude
-           * that interval from the camera-progress budget: the capture worker
-           * cannot assemble or acknowledge a frame set while it is inside
-           * command().
-           */
-          const auto exposure_operation_started_at =
-              std::chrono::steady_clock::now();
-          throwIfCameraFrameSetProgressStalled(exposure_operation_started_at);
-          const auto camera_progress_age_before_exposure =
-              exposure_operation_started_at -
-              last_completed_camera_frame_set_at;
-          const bool exposure_operation_processed =
-              processPendingCameraExposureOperation();
-          auto loop_now = std::chrono::steady_clock::now();
-          if (exposure_operation_processed) {
-            /*
-             * A live exposure transaction can fill the SDK deferred-frame
-             * queue. If progress was fresh when the command began, give the
-             * worker a full watchdog interval to drain it. A request made after
-             * progress was already stale may compensate only for its own
-             * synchronous command time; repeated requests must not conceal an
-             * existing camera stall.
-             */
-            if (camera_progress_age_before_exposure <
-                kCameraControlCommandFreshnessLimit) {
-              last_completed_camera_frame_set_at = loop_now;
-            } else {
-              last_completed_camera_frame_set_at +=
-                  loop_now - exposure_operation_started_at;
-            }
-            /*
-             * Do not chain periodic commands immediately after exposure. Drain
-             * the SDK's deferred stream frames first so the four-frame video
-             * credit window can be acknowledged promptly.
-             */
-            next_device_info_query = loop_now + std::chrono::seconds(1);
-            appendLog(QStringLiteral(
-                "Runtime exposure operation processed; prioritizing deferred "
-                "camera and IMU frames"));
-          }
-
-          throwIfCameraFrameSetProgressStalled(loop_now);
-          const auto camera_progress_age =
-              loop_now - last_completed_camera_frame_set_at;
-
-          /*
-           * Periodic status commands are useful only while camera progress is
-           * fresh. Once progress is questionable, dedicate the shared receiver
-           * to stream draining until a complete frame arrives or the watchdog
-           * expires. Version data is static for an open session and is
-           * therefore not refreshed from the capture loop.
-           */
-          if (loop_now >= next_device_info_query &&
-              camera_progress_age < kCameraControlCommandFreshnessLimit) {
-            const auto query_started_at = std::chrono::steady_clock::now();
-            try {
-              const auto status =
-                  withClientIo([this]() { return readDeviceInfo(client_); });
-              const auto& info = status.info;
-              capture_device_info = info;
-              capture_device_info_at = std::chrono::steady_clock::now();
-              updateDeviceInfo(info, status.time_sync_provider);
-              updateGnssTimingStatus(withClientIo(
-                  [this]() { return client_.gnssTimingStatus(); }));
-              if (!info.sensor_board_online) {
-                appendLog(QStringLiteral(
-                    "DeviceInfo reports sensor-board offline; stopping camera "
-                    "and IMU streams"));
-                updateStatus(
-                    uiText("RK/sensor-board link lost; stopping capture",
-                           "RK 与 sensor-board 连接中断，正在停止采集"));
-                stop_requested_ = true;
-                continue;
-              }
-              if (requested_lidar_model != prism::LidarModel::None) {
-                try {
-                  updateLidarStatus(withClientIo(
-                      [this]() { return client_.lidarStatus(); }));
-                } catch (const std::exception& lidar_error) {
-                  appendLog(QStringLiteral("LiDAR status refresh failed: %1")
-                                .arg(lidar_error.what()));
-                }
-              }
-            } catch (const std::exception& ex) {
-              appendLog(QStringLiteral("DeviceInfo refresh failed: %1")
-                            .arg(ex.what()));
-            }
-            const auto query_finished_at = std::chrono::steady_clock::now();
-            last_completed_camera_frame_set_at +=
-                query_finished_at - query_started_at;
-            next_device_info_query =
-                query_finished_at + std::chrono::seconds(1);
-            loop_now = query_finished_at;
-          }
-
-          prism::Frame frame;
-          try {
-            frame = withClientIo([this]() {
-              return client_.readFrame(
-                  cors_session_.active() ? 100u : 1000u);
-            });
-          } catch (const std::exception& ex) {
-            ++consecutive_usb_read_errors;
-            if (consecutive_usb_read_errors == 1) {
-              appendLog(
-                  QStringLiteral("USB frame read failed: %1").arg(ex.what()));
-            }
-            if (!client_.keepaliveEnabled() ||
-                consecutive_usb_read_errors >= 3) {
-              throw std::runtime_error(
-                  "USB transport stopped responding after " +
-                  std::to_string(consecutive_usb_read_errors) +
-                  " consecutive read failures: " + ex.what());
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            continue;
-          }
-          consecutive_usb_read_errors = 0;
-          last_usb_frame_at = std::chrono::steady_clock::now();
-
-          if (imu_stream.handleFrame(frame)) {
-            continue;
-          }
-          if (lidar_stream.handleFrame(frame)) {
-            continue;
-          }
-          if (rover_rtcm_stream.handleFrame(frame)) {
-            continue;
-          }
-          if (handleRtkNavigationFrame(frame)) {
-            continue;
-          }
-
-          if (frame.type == prism::FrameType::Heartbeat) {
-            const auto heartbeat = prism_runtime::parseHeartbeat(frame);
-            updateHeartbeat(heartbeat);
-          } else if (frame.type == prism::FrameType::VideoChunk) {
-            const auto chunk = prism_runtime::parseVideoChunkView(frame);
-            last_video_chunk_at = std::chrono::steady_clock::now();
-            last_video_chunk_frame_id = chunk.frame_id;
-            ++received_video_chunks;
-            auto result = camera_assembler.ingest(chunk);
-            for (uint32_t discarded : result.discarded_incomplete_frame_ids) {
-              ++discarded_incomplete_camera_frame_sets;
-              appendLog(
-                  QStringLiteral(
-                      "Discarding and acknowledging incomplete or corrupt "
-                      "four-camera frame set %1")
-                      .arg(discarded));
-              /*
-               * A transmitted frame set consumes one server flow-control
-               * credit even when one camera image is corrupt or incomplete.
-               * The assembler emits every retired ID exactly once.
-               */
-              withClientIo([this, discarded]() {
-                client_.sendVideoAck(discarded);
-              });
-            }
-            if (!result.completed.has_value()) continue;
-            handleCompletedCameraFrame(std::move(*result.completed));
-          } else if (frame.type == prism::FrameType::VideoMeta) {
-            const auto meta = prism_runtime::parseVideoMeta(frame);
-            std::optional<prism_viewer::transfer::CameraFrameSet> completed =
-                camera_assembler.addMetadata(meta);
-            if (completed.has_value()) {
-              handleCompletedCameraFrame(std::move(*completed));
-            }
-            const auto metadata_now = std::chrono::steady_clock::now();
-            if (camera_preview_enabled_.load(std::memory_order_acquire) &&
-                metadata_now >= next_metadata_ui_update) {
-              updateMeta(meta);
-              next_metadata_ui_update = metadata_now + kMetadataUiPeriod;
-            }
-          }
-        }
-      } catch (...) {
-        capture_error = std::current_exception();
-      }
-
-      std::exception_ptr rover_rtcm_stop_error;
-      try {
-        withClientIo([&rover_rtcm_stream]() { rover_rtcm_stream.stop(); });
-      } catch (...) {
-        rover_rtcm_stop_error = std::current_exception();
-      }
-      std::exception_ptr lidar_stop_error;
-      try {
-        withClientIo([&lidar_stream]() { lidar_stream.stop(); });
-      } catch (...) {
-        lidar_stop_error = std::current_exception();
-      }
-      std::exception_ptr stop_error;
-      aggregate_stream_stop_attempted = true;
-      try {
-        withClientIo([&imu_stream]() { imu_stream.stop(); });
-        // IMU_STOP is the aggregate Camera + IMU stop transaction.
-        video_started = false;
-      } catch (...) {
-        stop_error = std::current_exception();
-      }
-      if (capture_error) {
-        if (rover_rtcm_stop_error) {
-          try {
-            std::rethrow_exception(rover_rtcm_stop_error);
-          } catch (const std::exception& ex) {
-            appendLog(QStringLiteral(
-                          "Capture error cleanup could not confirm rover RTCM stop: %1")
-                          .arg(ex.what()));
-          }
-        }
-        if (lidar_stop_error) {
-          try {
-            std::rethrow_exception(lidar_stop_error);
-          } catch (const std::exception& ex) {
-            appendLog(QStringLiteral(
-                          "Capture error cleanup could not confirm LiDAR stop: %1")
-                          .arg(ex.what()));
-          }
-        }
-        if (stop_error) {
-          try {
-            std::rethrow_exception(stop_error);
-          } catch (const std::exception& ex) {
-            appendLog(
-                QStringLiteral("Capture error cleanup could not confirm "
-                               "aggregate stream stop: %1")
-                    .arg(ex.what()));
-          }
-        }
-        std::rethrow_exception(capture_error);
-      }
-      if (rover_rtcm_stop_error) {
-        std::rethrow_exception(rover_rtcm_stop_error);
-      }
-      if (lidar_stop_error) std::rethrow_exception(lidar_stop_error);
-      if (stop_error) std::rethrow_exception(stop_error);
-      appendLog(QStringLiteral("Streams stopped"));
-      updateStatus(uiText("Stopped", "已停止"));
-    } catch (const std::exception& ex) {
-      appendLog(QStringLiteral("Error: %1").arg(ex.what()));
-      updateStatus(uiText("Error: %1", "错误：%1").arg(ex.what()));
-      /*
-       * Attempt the aggregate stop at most once. This still covers a remote
-       * stream that started before its start acknowledgement was lost. Any
-       * capture transaction error then closes the transport because private
-       * SDK deferred frames cannot be safely reused by a fresh assembler.
-       */
-      if (aggregate_stream_start_attempted &&
-          !aggregate_stream_stop_attempted && client_.isOpen()) {
-        aggregate_stream_stop_attempted = true;
-        try {
-          withClientIo([this]() { client_.stopVideo(); });
-          appendLog(QStringLiteral(
-              "Capture error rollback stopped camera and IMU streams"));
-        } catch (const std::exception& stop_error) {
-          appendLog(QStringLiteral(
-                        "Capture error rollback could not confirm stream stop: %1")
-                        .arg(stop_error.what()));
-        }
-      }
-      if (aggregate_stream_start_attempted && client_.isOpen()) {
-        cors_session_.requestStop();
-        withClientIo([this]() { client_.closeDevice(); });
-        appendLog(camera_progress_stalled
-                      ? QStringLiteral(
-                            "USB session closed after camera frame-set stall "
-                            "to discard queued stream frames; reopen the device "
-                            "before retrying")
-                      : QStringLiteral(
-                            "USB session closed after capture transaction "
-                            "error to discard queued stream frames; reopen the "
-                            "device before retrying"));
-        post([this]() {
-          latest_device_info_valid_ = false;
-          latest_gnss_timing_status_.reset();
-          latest_device_versions_valid_ = false;
-          latest_rk_heartbeat_time_us_ = 0;
-          device_info_panel_->setDeviceOpen(false);
-          camera_encoding_panel_->setDeviceOpen(false);
-          camera_exposure_panel_->setDeviceOpen(false);
-          wifi_hotspot_panel_->setDeviceOpen(false);
-          cors_panel_->setDeviceOpen(false);
-          time_sync_label_->setText(
-              uiText("Time sync: device closed", "时间同步：设备已关闭"));
-          host_time_sync_label_->setText(uiText(
-              "Host/device clock: device closed", "主机/设备时钟：设备已关闭"));
-        });
-      }
-      appendLog(client_.isOpen()
-                    ? QStringLiteral(
-                          "USB device remains open after capture error")
-                    : QStringLiteral(
-                          "USB transport is no longer available after capture error"));
-    }
-
-    cancelPendingCameraExposureOperation(
-        uiText("Capture stopped before the exposure request was processed",
-               "采集已停止，曝光请求尚未执行"));
-    worker_running_ = false;
-    post([this]() {
-      if (dataset_recorder_.isActive()) stopImuRecording();
-      refreshControls();
-    });
-  }
-
   QComboBox* device_selector_ = nullptr;
   QPushButton* refresh_devices_button_ = nullptr;
   QPushButton* open_device_button_ = nullptr;
@@ -8879,6 +8177,7 @@ class MainWindow : public QMainWindow {
   DatasetRecorder dataset_recorder_;
   QString recorded_dataset_root_;
 
+  std::unique_ptr<prism_viewer::stream::StreamSource> usb_stream_source_;
   prism_viewer::control::OperationController operation_controller_;
   prism_viewer::cors::CorsSession cors_session_;
   std::mutex client_io_mutex_;

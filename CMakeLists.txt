@@ -197,6 +197,7 @@ add_executable(prism-viewer
   src/dataset/dataset_playback_timing.cpp
   src/dataset/rosbag_exporter.cpp
   src/main.cpp
+  src/stream/usb_stream_source.cpp
   src/transfer/camera_frame_assembler.cpp
   src/ui/camera_zoom_dialog.cpp
   src/ui/camera_encoding_panel.cpp
