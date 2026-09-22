@@ -84,7 +84,7 @@ The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
 Viewer master uses Prism SDK **1.2.0**, commit
-`a07ff4d6e6e944a62933b05ac069dd0e2ef16cd5` (Runtime API ABI 13), on every
+`dabcb9bf37983260f97e8072a8e08054971b6de1` (Runtime API ABI 13), on every
 platform. It requires Agent 1.2.0. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
