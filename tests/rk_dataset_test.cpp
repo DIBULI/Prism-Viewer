@@ -25,6 +25,17 @@ template<class Function> void rejects(Function f) {
 QByteArray read(const QString& path) { QFile file(path); require(file.open(QIODevice::ReadOnly),"read failed");return file.readAll(); }
 std::filesystem::path fsPath(const QString& path) { return std::filesystem::u8path(path.toUtf8().constData()); }
 
+QByteArray headerValue(const QByteArray& request, const QByteArray& name) {
+  // HTTP field names are case-insensitive. Qt 6 serializes some names in
+  // lowercase; the opaque ETag value must still be compared byte-for-byte.
+  for (const auto& line : request.split('\n')) {
+    const int colon = line.indexOf(':');
+    if (colon > 0 && line.left(colon).trimmed().compare(name, Qt::CaseInsensitive) == 0)
+      return line.mid(colon + 1).trimmed();
+  }
+  return {};
+}
+
 void fixture(const QString& worker, const QString& root, const QString& epoch) {
   QImage image(16,16,QImage::Format_RGB32); image.fill(Qt::green);
   const QString jpeg=root+QStringLiteral("/fixture.jpg"); require(image.save(jpeg,"JPG"),"JPEG fixture failed");
@@ -70,7 +81,10 @@ int main(int argc,char** argv) {
     if(argc==5 && std::string(argv[1])=="--download") {
       std::cout<<downloadRkDataset(rkDatasetEndpoint(QString::fromUtf8(argv[2])),QString::fromUtf8(argv[3]),QString::fromUtf8(argv[4])).toStdString()<<'\n';return 0;
     }
-    require(rkDatasetEndpoint(QStringLiteral("10.42.200.1")).port()==8080,"default port");
+    require(headerValue("GET / HTTP/1.1\r\nif-match: \"V1\"\r\n\r\n", "If-Match") == "\"V1\"",
+            "header parser must ignore field-name case but preserve ETag case");
+    require(rkDatasetEndpoint(QStringLiteral("10.42.200.1")).port()==80,"default port");
+    require(rkDatasetEndpoint(QStringLiteral("http://10.42.200.1:8080")).port()==8080,"explicit legacy port");
     for(const auto& address:{"file:///etc/passwd","http://example.com:8080","http://user:pass@127.0.0.1/","http://127.0.0.1/foo","http://127.0.0.1/?x=1"})
       rejects([&]{rkDatasetEndpoint(QString::fromLatin1(address));});
     QTemporaryDir temp; require(temp.isValid(),"temporary directory");
@@ -101,7 +115,7 @@ int main(int argc,char** argv) {
           } else {
             const auto filename=QString::fromLatin1(path.mid(path.lastIndexOf('/')+1));
             if(!files.count(filename)) status=404;
-            else { body=files.at(filename);extra="ETag: \"v1\"\r\n";require(input.contains("If-Match: \"v1\""),"download missing snapshot condition"); }
+            else { body=files.at(filename);extra="ETag: \"v1\"\r\n";require(headerValue(input,"If-Match")=="\"v1\"","download missing snapshot condition"); }
           }
           if(mode==2) {status=302;extra="Location: http://127.0.0.1:9/secret\r\n";body.clear();}
           const auto size=body.size();

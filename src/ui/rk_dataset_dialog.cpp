@@ -159,7 +159,7 @@ class Dialog final : public QDialog {
     auto* connection=new QHBoxLayout();
     connection->addWidget(new QLabel(uiText("RK address", "RK 地址"),this));
     QSettings settings(QStringLiteral("DIBULI"),QStringLiteral("PrismViewer"));
-    address_=new QLineEdit(settings.value(QStringLiteral("rkDataset/address"),QStringLiteral("http://10.42.200.1:8080")).toString(),this);
+    address_=new QLineEdit(settings.value(QStringLiteral("rkDataset/address"),QStringLiteral("http://10.42.200.1:80")).toString(),this);
     address_->setObjectName(QStringLiteral("rkDatasetAddress")); connection->addWidget(address_,1);
     refresh_=new QPushButton(uiText("Refresh", "刷新列表"),this); refresh_->setObjectName(QStringLiteral("rkDatasetRefresh")); connection->addWidget(refresh_);
     layout->addLayout(connection);
@@ -180,8 +180,8 @@ class Dialog final : public QDialog {
     open_=new QPushButton(uiText("Open downloaded dataset", "打开已下载数据集"),this); actions->addWidget(open_); actions->addStretch();
     cancel_=new QPushButton(uiText("Close", "关闭"),this); actions->addWidget(cancel_); layout->addLayout(actions);
     progress_=new QProgressBar(this); progress_->setRange(0,1000); progress_->setValue(0); layout->addWidget(progress_);
-    status_=new QLabel(uiText("Use RK Wi-Fi or Ethernet IP, port 8080. This LAN service has no authentication.",
-                              "填写 RK 的 Wi-Fi 或有线 IP，端口 8080。此局域网服务没有访问认证。"),this);
+    status_=new QLabel(uiText("Use RK Wi-Fi or Ethernet IP, port 80. This LAN service has no authentication.",
+                              "填写 RK 的 Wi-Fi 或有线 IP，端口 80。此局域网服务没有访问认证。"),this);
     status_->setWordWrap(true); status_->setTextInteractionFlags(Qt::TextSelectableByMouse); layout->addWidget(status_);
     status_->setTextFormat(Qt::PlainText);
     connect(refresh_,&QPushButton::clicked,this,[this]{refresh();});

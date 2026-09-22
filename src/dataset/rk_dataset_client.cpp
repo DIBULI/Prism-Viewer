@@ -106,9 +106,9 @@ QUrl rkDatasetEndpoint(const QString& text) {
   QHostAddress address;
   if (!url.isValid() || url.scheme() != QStringLiteral("http") || !address.setAddress(url.host()) ||
       !url.userInfo().isEmpty() || url.hasQuery() || url.hasFragment() ||
-      (!url.path().isEmpty() && url.path() != QStringLiteral("/")) || url.port(8080) < 1)
-    fail(QStringLiteral("Use an RK IP address, for example http://10.42.200.1:8080"));
-  if (url.port() == -1) url.setPort(8080);
+      (!url.path().isEmpty() && url.path() != QStringLiteral("/")) || url.port(80) < 1)
+    fail(QStringLiteral("Use an RK IP address, for example http://10.42.200.1:80"));
+  if (url.port() == -1) url.setPort(80);
   url.setPath(QStringLiteral("/"));
   return url;
 }
