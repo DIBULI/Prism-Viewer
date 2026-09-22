@@ -140,8 +140,8 @@ void loadLidarIndex(const std::filesystem::path& root,
           batch_id >> batch.timestamp_raw) ||
         byte_size > std::numeric_limits<uint32_t>::max() ||
         point_count == 0u || point_count > kMaximumLidarPointsPerBatch ||
-        byte_size != point_count * kStoredLidarPointBytes ||
-        (model != 1u && model != 2u) || device_type > 255u ||
+        byte_size != point_count * (model == 3u ? 24u : kStoredLidarPointBytes) ||
+        (model != 1u && model != 2u && model != 3u) || device_type > 255u ||
         time_type > 255u || batch_id > std::numeric_limits<uint32_t>::max()) {
       throw std::runtime_error("invalid lidar.tum line " +
                                std::to_string(line_number));
@@ -161,6 +161,8 @@ void loadLidarIndex(const std::filesystem::path& root,
       batch.time_interval_100ns = static_cast<uint16_t>(interval);
       batch.timestamp_synced = synced != 0u;
       batch.tai_offset_applied = tai != 0u;
+      if (model == 3u && interval != 0u)
+        throw std::runtime_error("XT32 requires explicit per-point times");
     }
 
     const std::filesystem::path relative_path(relative_path_text);
@@ -546,8 +548,9 @@ bool loadDatasetLidarPoints(
   points->clear();
   if (error != nullptr) error->clear();
   try {
+    const size_t stride = batch.model == 3u ? 24u : kStoredLidarPointBytes;
     if (batch.point_count == 0u ||
-        batch.byte_size != batch.point_count * kStoredLidarPointBytes ||
+        batch.byte_size != batch.point_count * stride ||
         batch.byte_offset >
             static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
       throw std::runtime_error("invalid LiDAR playback batch");
@@ -568,7 +571,7 @@ bool loadDatasetLidarPoints(
     }
     points->reserve(batch.point_count);
     for (size_t offset = 0; offset < bytes.size();
-         offset += kStoredLidarPointBytes) {
+         offset += stride) {
       DatasetPlaybackLidarPoint point;
       point.x_mm = static_cast<int32_t>(readLittleEndianU32(&bytes[offset]));
       point.y_mm =
@@ -577,6 +580,15 @@ bool loadDatasetLidarPoints(
           static_cast<int32_t>(readLittleEndianU32(&bytes[offset + 8u]));
       point.reflectivity = bytes[offset + 12u];
       point.tag = bytes[offset + 13u];
+      if (batch.model == 3u) {
+        point.ring = uint16_t(bytes[offset + 14u]) | (uint16_t(bytes[offset + 15u]) << 8u);
+        point.offset_ns = static_cast<int32_t>(readLittleEndianU32(&bytes[offset + 16u]));
+        point.return_id = bytes[offset + 20u];
+        point.confidence = bytes[offset + 21u];
+        if (point.ring >= 32u || point.return_id < 1u || point.return_id > 3u ||
+            bytes[offset + 22u] || bytes[offset + 23u])
+          throw std::runtime_error("invalid XT32 point metadata");
+      }
       points->push_back(point);
     }
     return true;

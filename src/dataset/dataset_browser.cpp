@@ -789,11 +789,13 @@ DatasetValidationResult validatePrismDatasetImpl(
   }
 
   const std::filesystem::path lidar_path = root / "lidar.tum";
+  bool lidar_only_xt32 = true;
   result.lidar_present = std::filesystem::is_regular_file(lidar_path);
   if (strict_v6) {
     const bool declared =
         field("lidar_storage") ==
-        "cartesian-mm-chunk-v2-with-time-source";
+        "cartesian-mm-chunk-v2-with-time-source" ||
+        field("lidar_storage") == "cartesian-mm-chunk-v3-with-point-time";
     if (declared != result.lidar_present ||
         (result.recording_mode == "imu-only" && declared)) {
       addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
@@ -824,13 +826,14 @@ DatasetValidationResult validatePrismDatasetImpl(
             point_count >> model >> device_type >> time_type >> batch_id >>
             raw_timestamp) ||
           point_count == 0u || point_count > kMaximumLidarPointsPerBatch ||
-          size != point_count * kStoredLidarPointBytes ||
-          (model != 1u && model != 2u)) {
+          size != point_count * (model == 3u ? 24u : kStoredLidarPointBytes) ||
+          (model != 1u && model != 2u && model != 3u)) {
         addIssue(&result, DatasetValidationSeverity::Error, "lidar.tum",
                  line_number, "invalid LiDAR point index row");
         continue;
       }
       bool has_time_source = false;
+      if (model != 3u) lidar_only_xt32 = false;
       uint32_t interval = 0;
       uint32_t synced = 0;
       uint32_t tai = 0;
@@ -838,7 +841,7 @@ DatasetValidationResult validatePrismDatasetImpl(
       if (!parser.eof()) {
         std::string trailing;
         if (!(parser >> interval >> synced >> tai) || (parser >> trailing) ||
-            interval > std::numeric_limits<uint16_t>::max() || synced > 1u ||
+            interval > std::numeric_limits<uint16_t>::max() || (model == 3u && interval != 0u) || synced > 1u ||
             tai > 1u || (tai != 0u && synced == 0u)) {
           addIssue(&result, DatasetValidationSeverity::Error, "lidar.tum",
                    line_number, "invalid LiDAR time-source fields");
@@ -895,7 +898,9 @@ DatasetValidationResult validatePrismDatasetImpl(
                "LiDAR IMU file does not match the v6 declaration");
     }
     if (result.recording_mode == "full" &&
-        result.lidar_present != result.lidar_imu_present) {
+        result.lidar_present != result.lidar_imu_present &&
+        !(result.lidar_present && result.lidar.rows > 0 && lidar_only_xt32 &&
+          field("lidar_storage") == "cartesian-mm-chunk-v3-with-point-time")) {
       addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
                "full v6 recording must contain both LiDAR point and IMU streams");
     }

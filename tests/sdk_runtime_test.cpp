@@ -12,7 +12,7 @@ extern "C" const prism::RuntimeApi* prism_usb_sdk_get_runtime_api(uint32_t);
 
 int main() {
   try {
-    static_assert(prism::kRuntimeApiVersion == 12,
+    static_assert(prism::kRuntimeApiVersion == 13,
                   "Review the Viewer bindings when updating the SDK ABI");
 #ifdef _WIN32
     // Load the pinned package, not a DLL supplied by PATH or the host machine.
@@ -30,7 +30,9 @@ int main() {
         std::string(api->sdk_version) != PRISM_REQUIRED_USB_SDK_VERSION) {
       throw std::runtime_error("SDK headers/runtime version or ABI mismatch");
     }
-    if (get_api(0) || !api->client_create || !api->client_destroy ||
+    if (get_api(0) || get_api(prism::kRuntimeApiVersion - 1) ||
+        get_api(prism::kRuntimeApiVersion + 1) ||
+        !api->client_create || !api->client_destroy ||
         !api->gnss_timing_status || !api->begin_rtk_corrections ||
         !api->send_rtk_corrections || !api->end_rtk_corrections ||
         !api->rtk_correction_status ||

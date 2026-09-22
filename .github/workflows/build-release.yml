@@ -54,7 +54,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "7e7156adabf56b4d6f5407c11c86704d6ca87ac80afaddb6357d876a97bdbc9e"
+          $expected = "e66ed9134005390b3facd4542995672a73750ef4ddbab26cebf883ac103864cd"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -186,13 +186,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: 7edce8226754e8ef2036a00db6909f58ce37a6a9775dd5c12fcf0b4e6f40db98
+            sdk_sha256: dc9c5695583052b67e92b0fa402a157856035e36b2054c7e157de537ce69aecb
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: b0e4e193ba28e0036b480e4bb0d92fc530548255613b06681f6b86d9062e1ecb
+            sdk_sha256: ace28e3ea5b4542dc5a00afd766ae1aff0034b365f699543ff2fb9a86380bc8d
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -461,7 +461,7 @@ jobs:
           sdk_commit="$(git -C third_party/Prism-SDK rev-parse HEAD)"
           {
             echo "Prism Viewer version: 1.1.1"
-            echo "Prism SDK version: 1.1.0"
+            echo "Prism SDK version: 1.2.0 (Runtime API ABI 13)"
             echo "Prism SDK commit: $sdk_commit"
             echo "Prism SDK linkage: $LINUX_SDK_LINKAGE"
             echo "Prism SDK source: third_party/Prism-SDK/$LINUX_SDK_RUNTIME"

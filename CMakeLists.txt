@@ -8,7 +8,7 @@ endif()
 project(prism_viewer VERSION 1.1.1 LANGUAGES CXX)
 
 # Viewer and its pinned binary SDK are versioned independently.
-set(PRISM_USB_SDK_VERSION "1.1.0")
+set(PRISM_USB_SDK_VERSION "1.2.0")
 
 include(GNUInstallDirs)
 
@@ -567,6 +567,12 @@ if(BUILD_TESTING)
       rosbag-exporter-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME rosbag-exporter COMMAND rosbag-exporter-test)
+  add_executable(xt32-dataset-test tests/xt32_dataset_test.cpp
+    src/dataset/dataset_playback.cpp src/dataset/dataset_browser.cpp src/common/ui_text.cpp)
+  target_include_directories(xt32-dataset-test PRIVATE src)
+  target_compile_features(xt32-dataset-test PRIVATE cxx_std_17)
+  target_link_libraries(xt32-dataset-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Gui ${QT_PACKAGE}::Sql)
+  add_test(NAME xt32-dataset COMMAND xt32-dataset-test)
 
   add_test(
     NAME dataset-recorder-full

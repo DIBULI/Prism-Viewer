@@ -63,14 +63,17 @@ in the current user's local Qt settings.
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
-Viewer 1.1.1 uses Prism SDK **v1.1.0**, commit
-`01af764ebc55d049b501b1dd2a356d7379f1e2e5` (Runtime API 12), on every
-platform. It requires Agent 1.1.0. The build's `sdk-runtime` test checks the
+Viewer master uses Prism SDK **1.2.0**, commit
+`0f2052ea5e35ad6e5ce0ffbff8c324a2a3786a16` (Runtime API ABI 13), on every
+platform. It requires Agent 1.2.0. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
-This SDK update adds the aligned C++ RK-local API for applications running on
-the RK device. Viewer continues to use the Host USB API; its Host runtime and
-device protocol are unchanged by the RK-local update.
+This update adds [Hesai PandarXT-32](docs/xt32.md) preview, recording, playback
+and ROS PointCloud2 export, including signed per-point time offsets and dual
+returns. XT32 has no built-in IMU. Viewer continues to use the prebuilt Host
+SDK, not SDK implementation sources. Replace the headers and runtime together
+and rebuild; older ABI 12 libraries are not compatible. Existing tags and
+Releases are unchanged by this mainline update.
 The package contains:
 
 - public headers under `include/prism`;

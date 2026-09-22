@@ -500,12 +500,16 @@ struct LidarFramePoint {
   float z_m = 0.0F;
   uint8_t reflectivity = 0;
   uint8_t tag = 0;
+  uint16_t ring = 0;
+  uint8_t return_id = 0;
+  uint8_t confidence = 0;
 };
 
 struct LidarFrame {
   uint64_t timebase_ns = 0;
   std::string frame_id;
   std::vector<LidarFramePoint> points;
+  bool explicit_point_time = false;
 };
 
 class LidarFrameAccumulator {
@@ -516,8 +520,8 @@ class LidarFrameAccumulator {
                                  uint32_t time_interval_100ns,
                                  const std::string& frame_id,
                                  const Bytes& point_data,
-                                 uint32_t point_count) {
-    constexpr uint32_t kStoredPointSize = 16u;
+                                 uint32_t point_count, bool timed = false) {
+    const uint32_t kStoredPointSize = timed ? 24u : 16u;
     if (point_count == 0u ||
         point_data.size() !=
             static_cast<size_t>(point_count) * kStoredPointSize) {
@@ -532,18 +536,30 @@ class LidarFrameAccumulator {
     const uint64_t batch_span_ns =
         static_cast<uint64_t>(time_interval_100ns) * 100ULL;
     const uint64_t intervals = point_count > 1u ? point_count - 1u : 0u;
-    for (uint32_t index = 0; index < point_count; ++index) {
-      const uint64_t source_offset_ns =
+    std::vector<uint32_t> order(point_count);
+    for (uint32_t i = 0; i < point_count; ++i) order[i] = i;
+    const auto explicit_offset = [&point_data, kStoredPointSize](uint32_t i) {
+      return static_cast<int32_t>(readU32(point_data.data() + size_t(i) * kStoredPointSize + 16u));
+    };
+    // Dual-return blocks revisit the same firing times. Sort only this packet,
+    // retaining both returns; do not reset/drop a scan on those valid offsets.
+    if (timed) std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+      return explicit_offset(a) < explicit_offset(b);
+    });
+    for (uint32_t index : order) {
+      const int64_t source_offset_ns = timed ? explicit_offset(index) :
           intervals == 0u
               ? 0u
-              : (static_cast<uint64_t>(index) * batch_span_ns +
+              : static_cast<int64_t>((static_cast<uint64_t>(index) * batch_span_ns +
                  intervals / 2u) /
-                    intervals;
-      if (batch_time_ns >
-          std::numeric_limits<uint64_t>::max() - source_offset_ns) {
+                    intervals);
+      if ((source_offset_ns < 0 && batch_time_ns < uint64_t(-source_offset_ns)) ||
+          (source_offset_ns >= 0 && batch_time_ns >
+          std::numeric_limits<uint64_t>::max() - uint64_t(source_offset_ns))) {
         throw std::overflow_error("LiDAR point timestamp overflow");
       }
-      const uint64_t point_timestamp_ns = batch_time_ns + source_offset_ns;
+      const uint64_t point_timestamp_ns = source_offset_ns < 0
+          ? batch_time_ns - uint64_t(-source_offset_ns) : batch_time_ns + uint64_t(source_offset_ns);
 
       if (active_ && point_timestamp_ns < window_start_ns_) reset();
       if (!active_) {
@@ -563,12 +579,19 @@ class LidarFrameAccumulator {
       }
       const uint8_t* source =
           point_data.data() + static_cast<size_t>(index) * kStoredPointSize;
+      if (timed && (source[15] != 0u || source[14] >= 32u ||
+          source[20] < 1u || source[20] > 3u || source[22] || source[23]))
+        throw std::runtime_error("invalid XT32 point metadata");
+      frame_.explicit_point_time = timed;
       frame_.points.push_back(
           LidarFramePoint{static_cast<uint32_t>(offset_ns),
                            static_cast<int32_t>(readU32(source)) / 1000.0F,
                            static_cast<int32_t>(readU32(source + 4u)) / 1000.0F,
                            static_cast<int32_t>(readU32(source + 8u)) / 1000.0F,
-                           source[12], source[13]});
+                           source[12], source[13],
+                           static_cast<uint16_t>(timed ? source[14] : 0u),
+                           static_cast<uint8_t>(timed ? source[20] : 0u),
+                           static_cast<uint8_t>(timed ? source[21] : 0u)});
     }
     return completed;
   }
@@ -660,7 +683,7 @@ void appendRos1PointField(Bytes* message, const std::string& name,
 }
 
 Bytes makeRos1PointCloud2(uint32_t sequence, const LidarFrame& frame) {
-  constexpr uint32_t kPointStep = 20u;
+  const uint32_t kPointStep = frame.explicit_point_time ? 24u : 20u;
   if (frame.points.size() > std::numeric_limits<uint32_t>::max()) {
     throw std::runtime_error("PointCloud2 contains too many points");
   }
@@ -674,13 +697,18 @@ Bytes makeRos1PointCloud2(uint32_t sequence, const LidarFrame& frame) {
   appendRos1HeaderNs(&message, sequence, frame.timebase_ns, frame.frame_id);
   appendU32(&message, 1u);
   appendU32(&message, point_count);
-  appendU32(&message, 6u);
+  appendU32(&message, frame.explicit_point_time ? 9u : 6u);
   appendRos1PointField(&message, "x", 0u, 7u);
   appendRos1PointField(&message, "y", 4u, 7u);
   appendRos1PointField(&message, "z", 8u, 7u);
   appendRos1PointField(&message, "intensity", 12u, 2u);
   appendRos1PointField(&message, "tag", 13u, 2u);
   appendRos1PointField(&message, "offset_time", 16u, 6u);
+  if (frame.explicit_point_time) {
+    appendRos1PointField(&message, "ring", 14u, 4u);
+    appendRos1PointField(&message, "return_id", 20u, 2u);
+    appendRos1PointField(&message, "vendor_reserved", 21u, 2u);
+  }
   appendU8(&message, 0u);
   appendU32(&message, kPointStep);
   appendU32(&message, data_size);
@@ -691,9 +719,15 @@ Bytes makeRos1PointCloud2(uint32_t sequence, const LidarFrame& frame) {
     appendFloat(&message, point.z_m);
     appendU8(&message, point.reflectivity);
     appendU8(&message, point.tag);
-    appendU8(&message, 0u);
-    appendU8(&message, 0u);
+    appendU8(&message, static_cast<uint8_t>(point.ring));
+    appendU8(&message, static_cast<uint8_t>(point.ring >> 8u));
     appendU32(&message, point.offset_time_ns);
+    if (frame.explicit_point_time) {
+      appendU8(&message, point.return_id);
+      appendU8(&message, point.confidence);
+      appendU8(&message, 0u);
+      appendU8(&message, 0u);
+    }
   }
   appendU8(&message, 1u);
   return message;
@@ -828,7 +862,7 @@ void writeRos2PointField(CdrWriter* writer, const std::string& name,
 }
 
 Bytes makeRos2PointCloud2(const LidarFrame& frame) {
-  constexpr uint32_t kPointStep = 20u;
+  const uint32_t kPointStep = frame.explicit_point_time ? 24u : 20u;
   if (frame.points.size() > std::numeric_limits<uint32_t>::max()) {
     throw std::runtime_error("PointCloud2 contains too many points");
   }
@@ -844,22 +878,33 @@ Bytes makeRos2PointCloud2(const LidarFrame& frame) {
     appendFloat(&point_data, point.z_m);
     appendU8(&point_data, point.reflectivity);
     appendU8(&point_data, point.tag);
-    appendU8(&point_data, 0u);
-    appendU8(&point_data, 0u);
+    appendU8(&point_data, static_cast<uint8_t>(point.ring));
+    appendU8(&point_data, static_cast<uint8_t>(point.ring >> 8u));
     appendU32(&point_data, point.offset_time_ns);
+    if (frame.explicit_point_time) {
+      appendU8(&point_data, point.return_id);
+      appendU8(&point_data, point.confidence);
+      appendU8(&point_data, 0u);
+      appendU8(&point_data, 0u);
+    }
   }
 
   CdrWriter writer;
   writeRos2HeaderNs(&writer, frame.timebase_ns, frame.frame_id);
   writer.writeU32(1u);
   writer.writeU32(point_count);
-  writer.writeU32(6u);
+  writer.writeU32(frame.explicit_point_time ? 9u : 6u);
   writeRos2PointField(&writer, "x", 0u, 7u);
   writeRos2PointField(&writer, "y", 4u, 7u);
   writeRos2PointField(&writer, "z", 8u, 7u);
   writeRos2PointField(&writer, "intensity", 12u, 2u);
   writeRos2PointField(&writer, "tag", 13u, 2u);
   writeRos2PointField(&writer, "offset_time", 16u, 6u);
+  if (frame.explicit_point_time) {
+    writeRos2PointField(&writer, "ring", 14u, 4u);
+    writeRos2PointField(&writer, "return_id", 20u, 2u);
+    writeRos2PointField(&writer, "vendor_reserved", 21u, 2u);
+  }
   writer.writeU8(0u);
   writer.writeU32(kPointStep);
   writer.writeU32(static_cast<uint32_t>(point_data.size()));
@@ -987,7 +1032,8 @@ V6DatasetLayout readV6DatasetLayout(
   }
 
   const std::string& lidar_storage = required("lidar_storage");
-  if (lidar_storage == "cartesian-mm-chunk-v2-with-time-source") {
+  if (lidar_storage == "cartesian-mm-chunk-v2-with-time-source" ||
+      lidar_storage == "cartesian-mm-chunk-v3-with-point-time") {
     layout.lidar = true;
   } else if (lidar_storage != "none") {
     throw std::runtime_error("v6 dataset has an invalid LiDAR storage field");
@@ -1001,7 +1047,8 @@ V6DatasetLayout readV6DatasetLayout(
   }
 
   if (layout.full != layout.cameras ||
-      (layout.full && layout.lidar != layout.lidar_imu) ||
+      (layout.full && layout.lidar != layout.lidar_imu &&
+       !(layout.lidar && lidar_storage == "cartesian-mm-chunk-v3-with-point-time")) ||
       (!layout.full && layout.lidar)) {
     throw std::runtime_error(
         "v6 dataset storage declarations contradict its recording mode");
@@ -1828,11 +1875,14 @@ RosbagExportResult exportDatasetToRosbag(
               point_count >> model >> device_type >> time_type >> batch_id >>
               raw_timestamp) || point_count == 0 ||
             point_count > kMaximumLidarPointsPerBatch ||
-            size != point_count * 16ULL || (model != 1u && model != 2u)) {
+            size != point_count * (model == 3u ? 24ULL : 16ULL) ||
+            (model != 1u && model != 2u && model != 3u)) {
           throw std::runtime_error("invalid lidar.tum line " +
                                    std::to_string(line_number));
         }
         bool has_v6_time_source = false;
+        if (strict_time_v6 && !v6_layout.lidar_imu && model != 3u)
+          throw std::runtime_error("Livox recording requires the LiDAR IMU stream");
         uint32_t time_interval_100ns = 0;
         uint32_t timestamp_synced = 0;
         uint32_t tai_offset_applied = 0;
@@ -1844,6 +1894,7 @@ RosbagExportResult exportDatasetToRosbag(
               (parser >> trailing) ||
               time_interval_100ns >
                   std::numeric_limits<uint16_t>::max() ||
+              (model == 3u && time_interval_100ns != 0u) ||
               timestamp_synced > 1u || tai_offset_applied > 1u ||
               (tai_offset_applied != 0u && timestamp_synced == 0u)) {
             throw std::runtime_error("invalid lidar.tum line " +
@@ -1879,10 +1930,10 @@ RosbagExportResult exportDatasetToRosbag(
             dataset_root, relative_path, offset, static_cast<uint32_t>(size),
             &container, &open_container);
         const std::string frame_id =
-            model == 1u ? "livox_mid360" : "livox_mid360s";
+            model == 3u ? "hesai_xt32" : (model == 1u ? "livox_mid360" : "livox_mid360s");
         write_completed_frames(frame_accumulator.append(
             timestamp_us, time_interval_100ns, frame_id, points,
-            static_cast<uint32_t>(point_count)));
+            static_cast<uint32_t>(point_count), model == 3u));
         result.lidar_points += point_count;
         ++completed;
         checkCancelled(cancelled);

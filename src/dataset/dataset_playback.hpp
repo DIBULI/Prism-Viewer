@@ -47,6 +47,10 @@ struct DatasetPlaybackLidarPoint {
   int32_t z_mm = 0;
   uint8_t reflectivity = 0;
   uint8_t tag = 0;
+  uint16_t ring = 0;
+  int32_t offset_ns = 0;
+  uint8_t return_id = 0;
+  uint8_t confidence = 0;
 };
 
 struct DatasetPlaybackLidarImuSample {

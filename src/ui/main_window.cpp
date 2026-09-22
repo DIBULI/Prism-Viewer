@@ -1,4 +1,5 @@
 #include "communication/device_info_compat.hpp"
+#include "prism/usb/lidar_points.hpp"
 #include "communication/prism_runtime.hpp"
 #include "communication/rtk_corrections.hpp"
 #include "common/ui_text.hpp"
@@ -434,7 +435,8 @@ class DatasetRecorder {
  public:
   bool start(const std::filesystem::path& root, bool overwrite,
              DatasetRecordingMode mode, bool record_lidar_streams,
-             DatasetTimestampDomain timestamp_domain, std::string* error) {
+             DatasetTimestampDomain timestamp_domain, std::string* error,
+             bool lidar_has_imu = true) {
     std::unique_lock<std::mutex> lock(mutex_);
     try {
       if (session_open_) {
@@ -578,6 +580,7 @@ class DatasetRecorder {
       record_lidar_streams_.store(record_lidar_streams,
                                   std::memory_order_relaxed);
       timestamp_domain_ = timestamp_domain;
+      lidar_has_imu_ = lidar_has_imu;
 
       for (size_t sensor = 0; sensor < imu_files_.size(); ++sensor) {
         imu_files_[sensor].open(
@@ -625,14 +628,14 @@ class DatasetRecorder {
             return false;
           }
           lidar_index_file_
-              << "# Prism Livox point-batch stream\n"
+              << "# Prism LiDAR point-batch stream\n"
               << "# timestamp[s] container_path byte_offset byte_size "
                  "point_count model device_type time_type batch_id "
                  "timestamp_raw time_interval_100ns timestamp_synced "
                  "tai_offset_applied\n";
         }
       }
-      if (record_lidar_streams) {
+      if (record_lidar_streams && lidar_has_imu_) {
         lidar_imu_file_.open(root_ / "lidar_imu.tum",
                              std::ios::out | std::ios::trunc);
         lidar_imu_file_.imbue(std::locale::classic());
@@ -901,7 +904,7 @@ class DatasetRecorder {
         return;
       }
       if (batch.points.size() >
-          std::numeric_limits<uint32_t>::max() / 16u) {
+          std::numeric_limits<uint32_t>::max() / 24u) {
         markWriteFailedNoThrow("LiDAR dataset batch is too large");
         return;
       }
@@ -929,22 +932,7 @@ class DatasetRecorder {
       job.device_type = batch.device_type;
       job.time_type = batch.time_type;
       job.point_count = static_cast<uint32_t>(batch.points.size());
-      job.points.reserve(batch.points.size() * 16u);
-      auto append_le32 = [&job](uint32_t value) {
-        for (unsigned byte = 0; byte < 4u; ++byte) {
-          job.points.push_back(
-              static_cast<uint8_t>((value >> (byte * 8u)) & 0xffu));
-        }
-      };
-      for (const auto& point : batch.points) {
-        append_le32(static_cast<uint32_t>(point.x_mm));
-        append_le32(static_cast<uint32_t>(point.y_mm));
-        append_le32(static_cast<uint32_t>(point.z_mm));
-        job.points.push_back(point.reflectivity);
-        job.points.push_back(point.tag);
-        job.points.push_back(0u);
-        job.points.push_back(0u);
-      }
+      job.points = prism::serializeLidarPoints(batch);
       job.payload_bytes = job.points.size();
 
       std::lock_guard<std::mutex> lock(mutex_);
@@ -1582,7 +1570,7 @@ class DatasetRecorder {
     if (has_lidar_streams && !imu_only && lidar_batch_count_ == 0) {
       missing.push_back("synchronized LiDAR point batches");
     }
-    if (has_lidar_streams && lidar_imu_sample_count_ == 0) {
+    if (has_lidar_streams && lidar_has_imu_ && lidar_imu_sample_count_ == 0) {
       missing.push_back("synchronized LiDAR IMU samples");
     }
     if (time_sync_sample_count_ == 0) {
@@ -1649,11 +1637,11 @@ class DatasetRecorder {
              << "point_deskew=none\n"
              << "lidar_storage="
              << (!imu_only && has_lidar_streams
-                     ? "cartesian-mm-chunk-v2-with-time-source"
+                     ? "cartesian-mm-chunk-v3-with-point-time"
                      : "none")
              << "\n"
              << "lidar_imu_storage="
-             << (has_lidar_streams ? "tum-si-v2-with-time-source" : "none")
+             << (has_lidar_streams && lidar_has_imu_ ? "tum-si-v2-with-time-source" : "none")
              << "\n"
              << "gps_rtk_storage=csv-v1\n"
              << "rover_rtcm_storage=raw-rtcm3-v1\n"
@@ -1849,6 +1837,7 @@ class DatasetRecorder {
   std::atomic<bool> active_{false};
   std::atomic<DatasetRecordingMode> mode_{DatasetRecordingMode::Full};
   std::atomic<bool> record_lidar_streams_{false};
+  bool lidar_has_imu_ = true;
   DatasetTimestampDomain timestamp_domain_ =
       DatasetTimestampDomain::SensorBoardBoot;
   bool session_open_ = false;
@@ -2643,7 +2632,7 @@ class MainWindow : public QMainWindow {
     lidar_sidebar_layout->setSpacing(10);
 
     auto* lidar_controls = new QGroupBox(
-        uiText("Livox point cloud", "Livox 点云"), lidar_sidebar);
+        uiText("LiDAR point cloud", "LiDAR 点云"), lidar_sidebar);
     auto* lidar_controls_layout = new QVBoxLayout(lidar_controls);
     lidar_controls_layout->setSpacing(8);
     lidar_enabled_checkbox_ = new QCheckBox(
@@ -2659,13 +2648,19 @@ class MainWindow : public QMainWindow {
     lidar_model_selector_->addItem(
         QStringLiteral("Mid-360S"),
         static_cast<int>(prism::LidarModel::Mid360S));
+    lidar_model_selector_->addItem(
+        QStringLiteral("Hesai PandarXT-32"),
+        static_cast<int>(prism::LidarModel::Xt32));
     lidar_model_selector_->setCurrentIndex(0);
     lidar_model_selector_->setEnabled(false);
     lidar_model_selector_->setSizePolicy(
         QSizePolicy::Expanding, QSizePolicy::Fixed);
     lidar_model_selector_->setToolTip(uiText(
-        "Model selection is mandatory; the Agent does not auto-detect it",
-        "必须明确选择型号，Agent 不会自动猜测"));
+        "Select the exact model. XT32 requires its calibration CSV on RK, "
+        "and unicast UDP output to the RK IP (port 2368 by default). "
+        "Start/stop controls reception, not the motor. XT32M2X is not supported.",
+        "必须选择准确型号。XT32 需在 RK 安装本机标定 CSV，并将雷达单播 UDP 目标设为 RK IP"
+        "（默认端口 2368）。启停仅控制接收，不控制电机；不支持 XT32M2X。"));
     auto* lidar_point_size_label = new QLabel(
         uiText("Point size", "点大小"), lidar_controls);
     lidar_point_size_spin_ = new QSpinBox(lidar_controls);
@@ -5014,12 +5009,13 @@ class MainWindow : public QMainWindow {
       requested_lidar_model = static_cast<prism::LidarModel>(
           lidar_model_selector_->currentData().toInt());
       if (requested_lidar_model != prism::LidarModel::Mid360 &&
-          requested_lidar_model != prism::LidarModel::Mid360S) {
+          requested_lidar_model != prism::LidarModel::Mid360S &&
+          requested_lidar_model != prism::LidarModel::Xt32) {
         QMessageBox::warning(
             this, uiText("LiDAR model required", "需要选择雷达型号"),
-            uiText("Select Mid-360 or Mid-360S before starting capture. "
+            uiText("Select Mid-360, Mid-360S or PandarXT-32 before starting capture. "
                    "The Agent will not choose a model automatically.",
-                   "开始采集前请选择 Mid-360 或 Mid-360S。Agent 不会自动选择型号。"));
+                   "开始采集前请选择 Mid-360、Mid-360S 或 PandarXT-32。Agent 不会自动选择型号。"));
         tabs_->setCurrentWidget(lidar_page_);
         return;
       }
@@ -5041,9 +5037,7 @@ class MainWindow : public QMainWindow {
         "starting camera or IMU streams"));
     if (requested_lidar_model != prism::LidarModel::None) {
       appendLog(QStringLiteral("LiDAR requested with explicit model=%1")
-                    .arg(requested_lidar_model == prism::LidarModel::Mid360
-                             ? QStringLiteral("Mid-360")
-                             : QStringLiteral("Mid-360S")));
+                    .arg(QString::fromLatin1(prism::lidarModelName(requested_lidar_model))));
     }
 
     operation_controller_.start([this]() { workerMain(); });
@@ -5381,13 +5375,14 @@ class MainWindow : public QMainWindow {
     const auto lidar_model = static_cast<prism::LidarModel>(
         requested_lidar_model_.load(std::memory_order_acquire));
     const bool record_lidar_streams =
-        lidar_model != prism::LidarModel::None;
+        lidar_model != prism::LidarModel::None &&
+        !(mode == DatasetRecordingMode::ImuOnly && lidar_model == prism::LidarModel::Xt32);
     const DatasetTimestampDomain timestamp_domain =
         datasetTimestampDomainForProvider(latest_time_sync_provider_);
     std::string error;
     if (!dataset_recorder_.start(toFilesystemPath(selected_directory),
                                  overwrite, mode, record_lidar_streams,
-                                 timestamp_domain, &error)) {
+                                 timestamp_domain, &error, lidar_model != prism::LidarModel::Xt32)) {
       QMessageBox::critical(
           this, uiText("Dataset recording failed", "数据集录制失败"),
           uiText("Unable to start recording: %1", "无法开始录制：%1")
@@ -5408,7 +5403,10 @@ class MainWindow : public QMainWindow {
                        "正在录制板载 IMU0/IMU1 + GPS/RTK + 时间同步"));
     } else {
       imu_record_status_label_->setText(
-          record_lidar_streams
+          lidar_model == prism::LidarModel::Xt32
+              ? uiText("Recording 4 cameras + onboard IMU + XT32 points + GPS/RTK + time sync",
+                       "正在录制四路相机 + 板载 IMU + XT32 点云 + GPS/RTK + 时间同步")
+              : record_lidar_streams
               ? uiText("Recording 4 cameras + onboard IMU0/IMU1 + "
                        "LiDAR points + LiDAR IMU + GPS/RTK + time sync",
                        "正在录制四路相机 + 板载 IMU0/IMU1 + 雷达点云 + "
@@ -5913,17 +5911,12 @@ class MainWindow : public QMainWindow {
   void updateLidarStatus(const prism::LidarStatus& status) {
     post([this, status]() {
       if (lidar_status_label_ == nullptr) return;
-      const QString model =
-          status.model == prism::LidarModel::Mid360
-              ? QStringLiteral("Mid-360")
-              : (status.model == prism::LidarModel::Mid360S
-                     ? QStringLiteral("Mid-360S")
-                     : uiText("not selected", "未选择"));
+      const QString model = QString::fromLatin1(prism::lidarModelName(status.model));
       QString text;
       QString style;
       if (!status.available) {
-        text = uiText("Livox SDK2 is unavailable: %1",
-                      "Livox SDK2 不可用：%1")
+        text = uiText("LiDAR backend is unavailable: %1",
+                      "LiDAR 后端不可用：%1")
                    .arg(toQString(status.error));
         style = QStringLiteral(
             "background: #fef3f2; color: #b42318; border: 1px solid #fecdca;"
@@ -6124,9 +6117,7 @@ class MainWindow : public QMainWindow {
           timestamp_synced]() {
       if (lidar_point_cloud_widget_ == nullptr) return;
       lidar_point_cloud_widget_->appendPoints(points);
-      const QString model_name = model == prism::LidarModel::Mid360
-                                     ? QStringLiteral("Mid-360")
-                                     : QStringLiteral("Mid-360S");
+      const QString model_name = QString::fromLatin1(prism::lidarModelName(model));
       const QString status =
           uiText("%1 point cloud | received %2 | batch %3 | displayed %4",
                  "%1 点云 | 已接收 %2 | 批次 %3 | 显示 %4")
@@ -6139,8 +6130,8 @@ class MainWindow : public QMainWindow {
               ? status + uiText(" | RK time synced", " | RK 时间已同步")
               : status +
                     uiText(" | time unsynced: preview only; recording waits "
-                           "for a timestamp-capable Agent",
-                           " | 时间未同步：仅预览；录制等待支持时间戳的 Agent"));
+                           "for synchronized device time",
+                           " | 时间未同步：仅预览；录制等待有效的设备同步时间"));
       lidar_status_label_->setStyleSheet(
           timestamp_synced
               ? QStringLiteral(
@@ -6603,15 +6594,14 @@ class MainWindow : public QMainWindow {
     points.reserve(stored_points.size());
     for (const auto& stored : stored_points) {
       points.push_back({stored.x_mm, stored.y_mm, stored.z_mm,
-                        stored.reflectivity, stored.tag});
+                        stored.reflectivity, stored.tag, stored.ring,
+                        stored.offset_ns, stored.return_id, stored.confidence});
     }
     lidar_point_cloud_widget_->appendPoints(points);
     dataset_lidar_point_cloud_widget_->appendPoints(points);
     dataset_playback_lidar_points_ += points.size();
-    const QString model =
-        batch.model == static_cast<uint8_t>(prism::LidarModel::Mid360)
-            ? QStringLiteral("Mid-360")
-            : QStringLiteral("Mid-360S");
+    const QString model = QString::fromLatin1(
+        prism::lidarModelName(static_cast<prism::LidarModel>(batch.model)));
     lidar_status_label_->setText(
         uiText("Dataset %1 point cloud | batch %2/%3 (id %4) | "
                "played %5 points | displayed %6 | %7",
@@ -8353,9 +8343,7 @@ class MainWindow : public QMainWindow {
           updateLidarStatus(withClientIo(
               [this]() { return client_.lidarStatus(); }));
           appendLog(QStringLiteral("LiDAR started model=%1")
-                        .arg(requested_lidar_model == prism::LidarModel::Mid360
-                                 ? QStringLiteral("Mid-360")
-                                 : QStringLiteral("Mid-360S")));
+                        .arg(QString::fromLatin1(prism::lidarModelName(requested_lidar_model))));
         } catch (...) {
           try {
             aggregate_stream_stop_attempted = true;
@@ -9579,6 +9567,36 @@ int runViewerApplication(int argc, char** argv) {
                       single_imu_summary.unsynced_imu_samples_dropped[1] ==
                           1u &&
                       single_imu_validation.valid;
+    }
+
+    // XT32 has no built-in IMU. Exercise the actual Viewer writer, not only
+    // the portable serializer, and ensure it completes and remains readable.
+    {
+      const auto xt_root = test_root / "xt32";
+      DatasetRecorder xt_recorder;
+      std::string xt_error;
+      if (!xt_recorder.start(xt_root, true, DatasetRecordingMode::Full, true,
+                            DatasetTimestampDomain::UnixUtc, &xt_error, false)) {
+        std::cerr << "XT32 recorder start: " << xt_error << '\n'; return 23;
+      }
+      xt_recorder.appendTimeSync(time_sync_info, communication::TimeSyncProvider::Gps, 0u);
+      xt_recorder.appendImu(imu0);xt_recorder.appendImu(imu1);
+      xt_recorder.appendFrameSet(7,1780000000000500ULL,metadata,jpeg);
+      auto xt = lidar;
+      xt.version=3;xt.model=prism::LidarModel::Xt32;xt.time_interval_100ns=0;
+      xt.points[0].ring=0;xt.points[0].offset_ns=-344000;xt.points[0].return_id=1;
+      xt.points[1].ring=31;xt.points[1].offset_ns=52872;xt.points[1].return_id=2;
+      xt_recorder.appendLidar(xt);
+      const auto xt_summary=xt_recorder.stop();
+      DatasetPlaybackData xt_data;
+      std::vector<prism_viewer::dataset::DatasetPlaybackLidarPoint> xt_points;
+      if (!xt_summary.success || !validatePrismDataset(xt_root).valid ||
+          std::filesystem::exists(xt_root / "lidar_imu.tum") ||
+          !loadDatasetPlaybackData(xt_root,{},&xt_data,&xt_error) || xt_data.lidar_batches.size()!=1 ||
+          !loadDatasetLidarPoints(xt_data.lidar_batches[0],&xt_points,&xt_error) ||
+          xt_points.size()!=2 || xt_points[0].offset_ns!=-344000 || xt_points[1].ring!=31) {
+        std::cerr << "XT32 recorder round trip failed: " << xt_error << '\n'; return 23;
+      }
     }
 
     // A recording that receives only unsynchronized samples is explicitly
