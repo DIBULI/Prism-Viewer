@@ -1,4 +1,5 @@
 #include "communication/prism_runtime.hpp"
+#include "prism/usb/gnss_reception_runtime_api.hpp"
 
 #ifdef _WIN32
 
@@ -15,8 +16,8 @@
 namespace prism_runtime {
 namespace {
 
-const prism::RuntimeApi* loadApi() {
-  static const prism::RuntimeApi* api = [] {
+HMODULE loadModule() {
+  static HMODULE module = [] {
     std::wstring executable_path(32768, L'\0');
     const DWORD length = GetModuleFileNameW(
         nullptr, executable_path.data(),
@@ -35,6 +36,15 @@ const prism::RuntimeApi* loadApi() {
           "LoadLibraryW failed for prism_usb_sdk.dll (Windows error " +
           std::to_string(GetLastError()) + ")");
     }
+    // Retain this exact module for both API tables and all client handles.
+    return module;
+  }();
+  return module;
+}
+
+const prism::RuntimeApi* loadApi() {
+  static const prism::RuntimeApi* api = [] {
+    const HMODULE module = loadModule();
     const auto get_api = reinterpret_cast<prism::GetRuntimeApiFunction>(
         GetProcAddress(module, prism::kRuntimeApiEntryPoint));
     if (get_api == nullptr) {
@@ -58,7 +68,36 @@ const prism::RuntimeApi* loadApi() {
   return api;
 }
 
+const prism::GnssReceptionRuntimeApi* receptionApi() {
+  static const auto* api = []() -> const prism::GnssReceptionRuntimeApi* {
+    const auto get_api = reinterpret_cast<prism::GetGnssReceptionRuntimeApiFunction>(
+        GetProcAddress(loadModule(), prism::kGnssReceptionRuntimeApiEntryPoint));
+    if (!get_api) return nullptr;
+    const auto* loaded = get_api(prism::kGnssReceptionRuntimeApiVersion);
+    if (!loaded || loaded->abi_version != prism::kGnssReceptionRuntimeApiVersion ||
+        loaded->struct_size < sizeof(prism::GnssReceptionRuntimeApi) ||
+        !loaded->gnss_reception_status) return nullptr;
+    return loaded;
+  }();
+  return api;
+}
+
 }  // namespace
+
+prism::GnssReceptionStatus Client::gnssReceptionStatus() {
+  const auto* api = receptionApi();
+  if (!api) throw std::runtime_error("GNSS reception extension unavailable");
+  return api->gnss_reception_status(handle_);
+}
+
+prism::GnssObservations Client::gnssObservations(uint64_t cursor,uint64_t session) {
+  const auto get=reinterpret_cast<prism::GetGnssObservationRuntimeApi>(
+      GetProcAddress(loadModule(),"prism_usb_sdk_get_gnss_observation_api"));
+  const auto* api=get?get(1):nullptr;
+  if(!api||api->version!=1||api->size<sizeof(*api)||!api->query)
+    throw std::runtime_error("GNSS visualization SDK extension unavailable");
+  return api->query(handle_,cursor,session);
+}
 
 Client::Client() : api_(loadApi()), handle_(api_->client_create()) {
   if (handle_ == nullptr) {

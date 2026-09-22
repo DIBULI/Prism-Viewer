@@ -28,6 +28,12 @@ the authoritative time source.
 
 ## CORS / RTK
 
+The **GNSS / RTK graphics** tab provides a rotatable satellite sky, a sortable,
+filterable satellite table, and separate GGA and ADRNAV trajectories in local
+ENU metres. It uses SDK read-only telemetry and never starts CORS. See
+[GNSS / RTK visualization](docs/gnss-visualization.md) for data requirements,
+freshness, gaps, and the distinction between GGA and the receiver's RTK solution.
+
 GPS/GNSS and RTK position details have separate scrollable tabs. GPS shows
 receiver fix, satellites/DOP, position, UTC, and basic PPS timing. RTK shows
 raw and independently smoothed positions, solution age against device time,
@@ -35,8 +41,21 @@ and precision. Positions include latitude/longitude, ellipsoidal height and loca
 metres relative to the first valid fix.
 
 Open a USB device, then use the **CORS / RTK** tab to configure and start an
-NTRIP correction session. China Mobile CORS is currently registered as the
-`china_mobile` service provider with:
+NTRIP correction session. Select **中国移动 CORS** or **千寻 CORS** in
+**Service provider**, then enter that provider's username and password.
+
+| Provider | Caster | WGS84 | CGCS2000 | Mountpoints |
+| --- | --- | --- | --- | --- |
+| China Mobile (`china_mobile`) | `120.253.226.97`, backup `120.253.239.161` | 8002 | 8001 | `RTCM33_GRCEJ`, `RTCM33_GRCEpro`, `RTCM33_GRCE`, `RTCM33_GRC`, `RTCM30_GR` |
+| Qianxun / 千寻 (`qianxun`) | `203.107.45.154` | 8002 | 8003 | `AUTO` (五星十六频), `RTCM32_GGB` (三星八频), `RTCM30_GG` (双星) |
+
+For Qianxun, start with `AUTO` and choose the coordinate system supplied with
+your account. Switching providers preserves the coordinate-system choice but
+updates its port: Qianxun CGCS2000 uses **8003**, not China Mobile's 8001.
+Only China Mobile has a preset backup endpoint. Account validity is managed
+by the provider; check expiry/renewal if authentication is rejected.
+
+China Mobile additionally supports:
 
 - automatic primary-to-backup caster failover;
 - an editable caster address accepting an IPv4/IPv6 address, hostname,
@@ -49,8 +68,9 @@ NTRIP correction session. China Mobile CORS is currently registered as the
   geoid separation are used to generate a live GGA every second; manual rover
   coordinates are not accepted.
 
-The stable `cors/serviceProvider` setting and provider catalog are the
-extension point for adding Qianxun and other providers later. Caster RTCM is
+The stable `cors/serviceProvider` setting saves the selected provider alongside
+the endpoint, port and mountpoint. Both providers use the same live device-GGA
+and NTRIP authentication path. Caster RTCM is
 forwarded only to the RK Agent's Host CORS input; it is not sent back to the
 sensor-board GNSS receiver. The session can remain active during camera/IMU
 capture, and Viewer serializes correction commands with stream reads on the
@@ -64,7 +84,7 @@ The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
 Viewer master uses Prism SDK **1.2.0**, commit
-`0f2052ea5e35ad6e5ce0ffbff8c324a2a3786a16` (Runtime API ABI 13), on every
+`a07ff4d6e6e944a62933b05ac069dd0e2ef16cd5` (Runtime API ABI 13), on every
 platform. It requires Agent 1.2.0. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
@@ -184,8 +204,8 @@ additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
 ```sh
-git tag v1.1.1
-git push origin v1.1.1
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
@@ -203,12 +223,12 @@ Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
-tar -xzf Prism-Viewer-1.1.1-linux-x64.tar.gz
-./Prism-Viewer-1.1.1-linux-x64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.2.0-linux-x64.tar.gz
+./Prism-Viewer-1.2.0-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-tar -xzf Prism-Viewer-1.1.1-linux-arm64.tar.gz
-./Prism-Viewer-1.1.1-linux-arm64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.2.0-linux-arm64.tar.gz
+./Prism-Viewer-1.2.0-linux-arm64/bin/prism-viewer
 ```
 
 The Windows x64 release supports Windows 10 version 1809 or newer and Windows

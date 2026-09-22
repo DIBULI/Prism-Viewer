@@ -73,11 +73,11 @@ dataset/
 ├── cam3.tum
 ├── lidar.tum              # 可选：LiDAR 点云索引
 ├── camera-data-0000.bin
-├── camera-data-0001.bin   # 数据超过 8 GiB 时自动创建
+├── camera-data-0001.bin   # 数据接近 1 GiB 时自动创建
 └── lidar-data-0000.bin    # 仅完整模式并启用 LiDAR 时包含点数据
 ```
 
-容器接近 8 GiB 后会按编号创建下一个文件，例如
+新录制的容器接近 1 GiB 后会按编号创建下一个文件，例如
 `camera-data-0001.bin`、`lidar-data-0001.bin`。编号只表示容器分卷顺序，
 不表示相机编号或 LiDAR 设备编号。
 
@@ -197,7 +197,7 @@ point_deskew=none
 必须存在。不要仅凭目录中是否碰巧残留某个文件来判断数据集类型。
 
 相机 JPEG 不再分别创建小文件，而是按完整四相机帧集顺序追加到不超过
-8 GiB 的容器中。这样可以避免 exFAT 大分配单元导致的空间和写放大，也会显著
+1 GiB 的容器中（旧版的 8 GiB 容器仍可读取）。这样可以避免 exFAT 大分配单元导致的空间和写放大，也会显著
 减少目录元数据更新。Viewer 仍可读取和导出旧的 v3/v4/v5 数据集；这些版本
 没有 `lidar_imu.tum` 时按“未录制雷达 IMU”处理。
 
@@ -280,9 +280,24 @@ timestamp_s ax_m_s2 ay_m_s2 az_m_s2 gx_rad_s gy_rad_s gz_rad_s
 ```
 
 时间戳保留到微秒；加速度单位为 `m/s²`，角速度单位为 `rad/s`。v6 只写入
-`timestamp_synced=1` 的板载 IMU 样本，未同步样本只计入 manifest 的
-`unsynced_imuN_samples_dropped`。IMU0、IMU1 至少一路同步即可开始并完成录制；
-未同步通道的索引文件可以为空，但两路都为空的数据集无效。
+`timestamp_synced=1` 的板载 IMU 样本，未同步样本计入 manifest 的
+`unsynced_imuN_samples_dropped`。录制启动后按设备检测到的 IMU 通道等待内部
+FSYNC/时间戳同步稳定：每路至少连续 200 个样本，覆盖至少 250 ms，序号连续、
+无 sample-gap，间隔在 625–1875 us，且最新数据不超过 500 ms。只检测到一路时
+只等待该路，另一索引保持为空；检测到两路时需要两路都稳定。此过程无需 GPS。
+
+界面先显示“等待 IMU 同步稳定”；15 秒仍未稳定则结束录制并报错。
+公共录制边界取就绪时所需各 IMU 的最新时间戳最大值，正式 IMU、相机、LiDAR
+索引只接收该边界之后的数据。启动阶段的 IMU 时间戳回跳不导致录制失败，
+但就绪后的回跳、重复时间戳、IMU 同步丢失或 sample-gap 会停止录制并标记
+`complete=0`。不会重开启动保护来掩盖中途异常，也不会修改传感器原始时间戳。
+
+`imu_metadata.csv` 保存原始 IMU 数值、原始时间戳、序号及同步/gap 标志，
+以 `startup` / `recording` / `rejected` 区分阶段。`dataset.info` 新增
+`startup_policy`、`startup_required_imu_mask`、`startup_ready`、
+`recording_start_us`、`startup_elapsed_us`、`startup_imuN_samples`、
+`startup_imuN_backsteps` 等诊断信息。启动丢弃不计作正式录制丢帧。
+GPS/RTK、RTCM 和校时状态是独立诊断流，从按下录制开始保留，不等待 IMU。
 
 ## 雷达内置 IMU
 
@@ -357,7 +372,8 @@ little-endian int32，随后是 uint8 reflectivity、uint8 tag 和两个保留�
 
 图像与 LiDAR 由独立写盘线程按公共传感器时间排序处理，避免阻塞 USB 接收线程。待写
 图像队列最多保存 256 个完整帧集，LiDAR 队列最多保存 512 批，二者共用
-128 MiB 的内存上限。磁盘持续跟不上时，新数据会被丢弃；相机数量记录在
+128 MiB 的内存上限；图像与点云各使用 4 MiB 顺序写缓存、1 GiB 分卷。
+停止录制会等待写线程排空队列并刷新文件。磁盘持续跟不上时，新数据会被丢弃；相机数量记录在
 `dropped_frame_sets`，LiDAR 数量记录在 `dropped_lidar_batches` 和
 `dropped_lidar_points`。未同步丢弃另由各个 `unsynced_*_dropped` 字段记录，
 并在停止录制后的 Viewer 状态和日志中显示。

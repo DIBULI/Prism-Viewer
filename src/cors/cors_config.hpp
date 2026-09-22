@@ -24,13 +24,13 @@ struct CorsMountpoint {
   QString display_name;
 };
 
-// IDs are persisted in the serviceProvider setting. Future providers such as
-// Qianxun are added as catalog entries without changing the session contract.
+// IDs are persisted in the serviceProvider setting.
 struct CorsServiceProvider {
   QString id;
   QString display_name;
   QVector<CorsEndpoint> endpoints;
   QVector<CorsMountpoint> mountpoints;
+  quint16 cgcs2000_port = 8001;
 };
 
 const QVector<CorsServiceProvider>& corsServiceProviders();

@@ -4,6 +4,7 @@
 #include "cors/cors_session.hpp"
 #include "communication/rtk_corrections.hpp"
 #include "prism/usb/configuration.hpp"
+#include "prism/usb/gnss_reception.hpp"
 
 #include <QtWidgets/QWidget>
 
@@ -36,6 +37,7 @@ class CorsPanel final : public QWidget {
       const communication::RtkNavigationStatus& status,
       bool from_dataset = false);
   void setGnssTimingStatus(const prism::GnssTimingStatus& status);
+  void setGnssReceptionStatus(std::optional<prism::GnssReceptionStatus> status);
   void setDeviceTimeUs(uint64_t device_time_us);
   void setNavigationUnavailable(const QString& reason = {});
   cors::CorsConfiguration configuration(QString* error = nullptr) const;
@@ -82,6 +84,8 @@ class CorsPanel final : public QWidget {
   QLabel* confidence_value_ = nullptr;
   QLabel* differential_value_ = nullptr;
   QLabel* gnss_receiver_value_ = nullptr;
+  QLabel* gnss_reception_value_ = nullptr;
+  QLabel* gnss_sync_value_ = nullptr;
   QLabel* gnss_dop_value_ = nullptr;
   QLabel* local_origin_value_ = nullptr;
   QLabel* gnss_position_value_ = nullptr;
@@ -99,6 +103,7 @@ class CorsPanel final : public QWidget {
   cors::CorsSessionStatus status_;
   communication::RtkNavigationStatus navigation_status_;
   std::optional<prism::GnssTimingStatus> gnss_timing_status_;
+  std::optional<prism::GnssReceptionStatus> gnss_reception_status_;
   QString navigation_unavailable_reason_;
   bool navigation_status_valid_ = false;
   bool navigation_from_dataset_ = false;

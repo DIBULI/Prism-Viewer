@@ -3,6 +3,7 @@
 #include <QtCore/QSettings>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QStringList>
+#include <QtGui/QPixmap>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QGroupBox>
@@ -28,7 +29,9 @@ int main(int argc, char** argv) {
   QApplication application(argc, argv);
   QTemporaryDir settings_directory;
   if (!settings_directory.isValid()) return 1;
-  QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope,
+  // NativeFormat ignores custom paths on macOS; never touch real credentials.
+  QSettings::setDefaultFormat(QSettings::IniFormat);
+  QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                      settings_directory.path());
 
   prism_viewer::ui::CorsPanel panel;
@@ -85,9 +88,20 @@ int main(int argc, char** argv) {
     return true;
   };
   ok &= verify_tab_fields(0, {"gnssReceiverQuality", "gnssDop",
-                              "gnssPosition", "gnssUtc", "gnssTimingQuality"});
+                              "gnssPosition", "gnssUtc", "gnssTimingQuality",
+                              "gnssReceptionStatus", "gnssTimeSyncStatus"});
   ok &= verify_tab_fields(1, {"rtkPosition", "rtkRawPosition",
                               "rtkSolutionEpoch", "rtkPrecision", "rtkConfidence"});
+  if (argc == 2) {
+    auto* column = panel.findChild<QGroupBox*>(
+        QStringLiteral("gpsGnssStatusColumn"));
+    position_tabs->setCurrentIndex(0);
+    application.processEvents();
+    ok &= column->grab().save(QString::fromLocal8Bit(argv[1]) + "-gps.png");
+    position_tabs->setCurrentIndex(1);
+    application.processEvents();
+    ok &= column->grab().save(QString::fromLocal8Bit(argv[1]) + "-rtk.png");
+  }
   auto* provider =
       panel.findChild<QComboBox*>(QStringLiteral("corsServiceProvider"));
   ok &= require(provider != nullptr, "serviceProvider selector is missing");
@@ -187,6 +201,76 @@ int main(int argc, char** argv) {
                     configuration.longitude_degrees == 121.4737 &&
                     configuration.altitude_meters == 15.2,
                 "Panel did not source the CORS position from device GNSS");
+
+  auto* coordinates =
+      panel.findChild<QComboBox*>(QStringLiteral("corsCoordinateSystem"));
+  auto* mounts = panel.findChild<QComboBox*>(QStringLiteral("corsMountpoint"));
+  auto* caster =
+      panel.findChild<QComboBox*>(QStringLiteral("corsEndpointPolicy"));
+  if (!provider || !coordinates || !mounts || !caster) return 1;
+  coordinates->setCurrentIndex(coordinates->findData(8001));
+  provider->setCurrentIndex(provider->findData(QStringLiteral("qianxun")));
+  ok &= require(coordinates->currentData().toUInt() == 8003 &&
+                    coordinates->findData(8001) == -1 &&
+                    caster->count() == 1 && mounts->count() == 3 &&
+                    mounts->currentData().toString() == QStringLiteral("AUTO"),
+                "Switching to Qianxun retained China Mobile options");
+  for (const int port : {8002, 8003}) {
+    coordinates->setCurrentIndex(coordinates->findData(port));
+    for (const QString& mount : {QStringLiteral("AUTO"),
+                                 QStringLiteral("RTCM32_GGB"),
+                                 QStringLiteral("RTCM30_GG")}) {
+      mounts->setCurrentIndex(mounts->findData(mount));
+      const auto requested = panel.configuration(&error);
+      ok &= require(error.isEmpty() &&
+                        requested.service_provider == QStringLiteral("qianxun") &&
+                        requested.endpoints.size() == 1 &&
+                        requested.endpoints.front().host == QStringLiteral("203.107.45.154") &&
+                        requested.endpoints.front().port == port &&
+                        requested.mountpoint == mount,
+                    "Qianxun selection did not reach the connection configuration");
+    }
+  }
+  // Save through the real button callback, with no network/session attached.
+  QPushButton* connect_cors = nullptr;
+  for (auto* button : panel.findChildren<QPushButton*>()) {
+    if (button->text() == QStringLiteral("Connect CORS")) connect_cors = button;
+  }
+  if (!connect_cors) return 1;
+  bool connected = false;
+  panel.on_connect = [&](const auto& requested) {
+    connected = requested.service_provider == QStringLiteral("qianxun") &&
+                requested.endpoints.front().port == 8003 &&
+                requested.mountpoint == QStringLiteral("RTCM30_GG");
+  };
+  connect_cors->click();
+  ok &= require(connected, "Qianxun connect callback failed");
+  {
+    prism_viewer::ui::CorsPanel restored;
+    restored.setGnssTimingStatus(configuration_timing);
+    restored.findChild<QLineEdit*>(QStringLiteral("corsPassword"))->setText(
+        QStringLiteral("test-password"));
+    const auto saved = restored.configuration(&error);
+    ok &= require(error.isEmpty() &&
+                      saved.service_provider == QStringLiteral("qianxun") &&
+                      saved.endpoints.size() == 1 &&
+                      saved.endpoints.front().port == 8003 &&
+                      saved.mountpoint == QStringLiteral("RTCM30_GG"),
+                  "Qianxun settings were not restored");
+  }
+  panel.on_connect = {};
+  mounts->setCurrentIndex(mounts->findData(QStringLiteral("AUTO")));
+  if (argc == 2) {
+    application.processEvents();
+    auto* column = panel.findChild<QGroupBox*>(QStringLiteral("corsConfigurationColumn"));
+    ok &= column->grab().save(QString::fromLocal8Bit(argv[1]) + "-qianxun.png");
+  }
+  provider->setCurrentIndex(provider->findData(QStringLiteral("china_mobile")));
+  ok &= require(coordinates->currentData().toUInt() == 8001 &&
+                    caster->count() == 3 && mounts->count() == 5 &&
+                    mounts->currentData().toString() == QStringLiteral("RTCM33_GRCEJ"),
+                "Switching back did not restore China Mobile CGCS2000/failover");
+  coordinates->setCurrentIndex(coordinates->findData(8002));
 
   auto* endpoint =
       panel.findChild<QComboBox*>(QStringLiteral("corsEndpointPolicy"));
@@ -358,5 +442,45 @@ int main(int argc, char** argv) {
   ok &= require(labelText("gnssReceiverQuality").contains(
                     QStringLiteral("invalid | no fix | 0 satellites")),
                 "Panel retained a stale valid fix after GNSS loss");
+  timing = {};
+  prism::GnssReceptionStatus reception;
+  reception.reception_available = true;
+  panel.setGnssReceptionStatus(reception);
+  timing.sensor_board_online = true;
+  timing.pps_detected = true;
+  timing.pps_valid = true;
+  timing.pps_high_width_us = 100000;
+  panel.setGnssTimingStatus(timing);
+  ok &= require(labelText("gnssReceptionStatus").contains("no bytes received") &&
+                    labelText("gnssTimeSyncStatus").contains("NOT LOCKED") &&
+                    labelText("gnssTimingQuality").contains("(valid)"),
+                "PPS-only state was not distinguished from reception/lock");
+  reception.raw_data_seen = true;
+  reception.raw_data_fresh = true;
+  panel.setGnssReceptionStatus(reception);
+  panel.setGnssTimingStatus(timing);
+  ok &= require(labelText("gnssReceptionStatus").contains("receiving bytes") &&
+                    labelText("gnssReceptionStatus").contains("no checksum-valid"),
+                "raw UART bytes were mistaken for valid NMEA");
+  reception.nmea_sentence_seen = true;
+  reception.nmea_sentence_fresh = true;
+  panel.setGnssReceptionStatus(reception);
+  panel.setGnssTimingStatus(timing);
+  ok &= require(labelText("gnssReceptionStatus").contains("valid sentences updating") &&
+                    labelText("gnssTimeSyncStatus").contains("NOT LOCKED") &&
+                    labelText("gnssReceiverQuality").contains("No GGA/GSA"),
+                "valid NMEA was incorrectly treated as a fix or UTC lock");
+  timing.time_synced = true;
+  reception.raw_data_fresh = false;
+  reception.nmea_sentence_fresh = false;
+  panel.setGnssReceptionStatus(reception);
+  panel.setGnssTimingStatus(timing);
+  ok &= require(labelText("gnssReceptionStatus").contains("over 2 s") &&
+                    labelText("gnssTimeSyncStatus").startsWith("LOCKED:"),
+                "stopped UART stream was hidden by retained PPS time lock");
+  panel.setGnssReceptionStatus(std::nullopt);
+  panel.setGnssTimingStatus(timing);
+  ok &= require(labelText("gnssReceptionStatus").contains("unavailable"),
+                "old recording was incorrectly labelled no UART reception");
   return ok ? 0 : 1;
 }

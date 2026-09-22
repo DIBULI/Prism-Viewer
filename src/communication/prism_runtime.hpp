@@ -77,6 +77,8 @@ class Client {
       const prism::ExposureLimits& limits,
       uint32_t field_mask = prism::kExposureLimitsFieldAll);
   prism::GnssTimingStatus gnssTimingStatus();
+  prism::GnssReceptionStatus gnssReceptionStatus();
+  prism::GnssObservations gnssObservations(uint64_t cursor=0, uint64_t session=0);
   prism::RtkCorrectionStatus beginRtkCorrections();
   prism::RtkCorrectionStatus sendRtkCorrections(
       const uint8_t* data, size_t size, uint32_t timeout_ms = 3000);

@@ -284,6 +284,12 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   differential_value_->setObjectName(QStringLiteral("rtkDifferential"));
   gnss_receiver_value_ = new QLabel(QStringLiteral("-"), this);
   gnss_receiver_value_->setObjectName(QStringLiteral("gnssReceiverQuality"));
+  gnss_reception_value_ = new QLabel(QStringLiteral("-"), this);
+  gnss_reception_value_->setObjectName(QStringLiteral("gnssReceptionStatus"));
+  gnss_reception_value_->setWordWrap(true);
+  gnss_sync_value_ = new QLabel(QStringLiteral("-"), this);
+  gnss_sync_value_->setObjectName(QStringLiteral("gnssTimeSyncStatus"));
+  gnss_sync_value_->setWordWrap(true);
   gnss_dop_value_ = new QLabel(QStringLiteral("-"), this);
   gnss_dop_value_->setObjectName(QStringLiteral("gnssDop"));
   local_origin_value_ = new QLabel(QStringLiteral("-"), this);
@@ -432,6 +438,8 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   precision_value_->setParent(gnss_group);
   confidence_value_->setParent(gnss_group);
   gnss_receiver_value_->setParent(gnss_group);
+  gnss_reception_value_->setParent(gnss_group);
+  gnss_sync_value_->setParent(gnss_group);
   gnss_dop_value_->setParent(gnss_group);
   local_origin_value_->setParent(gnss_group);
   gnss_position_value_->setParent(gnss_group);
@@ -439,6 +447,11 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   gnss_timing_value_->setParent(gnss_group);
   addStatusField(gps_layout, gps_content,
                  uiText("GPS fix", "GPS 定位"), gnss_receiver_value_);
+  addStatusField(gps_layout, gps_content,
+                 uiText("UART / NMEA reception", "UART / NMEA 接收"),
+                 gnss_reception_value_);
+  addStatusField(gps_layout, gps_content,
+                 uiText("External time lock", "外部授时锁定"), gnss_sync_value_);
   addStatusField(gps_layout, gps_content,
                  uiText("Position DOP", "定位 DOP"), gnss_dop_value_);
   addStatusField(gps_layout, gps_content,
@@ -519,25 +532,35 @@ void CorsPanel::populateProviders() {
 
 void CorsPanel::populateProviderOptions() {
   const QString previous_mount = mountpoint_selector_->currentData().toString();
+  // Preserve the coordinate system, not the previous provider's port number.
+  const bool use_cgcs2000 = coordinate_system_selector_->currentIndex() == 1;
   endpoint_selector_->clear();
   mountpoint_selector_->clear();
   const auto* provider = cors::findCorsServiceProvider(
       provider_selector_->currentData().toString());
   if (provider == nullptr || provider->endpoints.isEmpty()) return;
+  coordinate_system_selector_->clear();
+  coordinate_system_selector_->addItem(QStringLiteral("WGS84 — 8002"), 8002);
+  coordinate_system_selector_->addItem(
+      QStringLiteral("CGCS2000 — %1").arg(provider->cgcs2000_port),
+      provider->cgcs2000_port);
+  coordinate_system_selector_->setCurrentIndex(use_cgcs2000 ? 1 : 0);
   const QString primary = provider->endpoints.front().host;
-  const QString backup = provider->endpoints.size() > 1
-                             ? provider->endpoints.at(1).host
-                             : primary;
-  endpoint_selector_->addItem(
-      uiText("Automatic (%1, then %2)", "自动（%1，失败后 %2）")
-          .arg(primary, backup),
-      QStringLiteral("automatic"));
-  endpoint_selector_->addItem(
-      uiText("Primary only — %1", "仅主服务 — %1").arg(primary),
-      QStringLiteral("primary"));
-  endpoint_selector_->addItem(
-      uiText("Backup only — %1", "仅备用服务 — %1").arg(backup),
-      QStringLiteral("backup"));
+  if (provider->endpoints.size() > 1) {
+    const QString backup = provider->endpoints.at(1).host;
+    endpoint_selector_->addItem(
+        uiText("Automatic (%1, then %2)", "自动（%1，失败后 %2）")
+            .arg(primary, backup),
+        QStringLiteral("automatic"));
+    endpoint_selector_->addItem(
+        uiText("Primary only — %1", "仅主服务 — %1").arg(primary),
+        QStringLiteral("primary"));
+    endpoint_selector_->addItem(
+        uiText("Backup only — %1", "仅备用服务 — %1").arg(backup),
+        QStringLiteral("backup"));
+  } else {
+    endpoint_selector_->addItem(primary, QStringLiteral("primary"));
+  }
   for (const auto& mountpoint : provider->mountpoints) {
     mountpoint_selector_->addItem(mountpoint.display_name, mountpoint.id);
   }
@@ -546,7 +569,8 @@ void CorsPanel::populateProviderOptions() {
 }
 
 void CorsPanel::loadSettings() {
-  QSettings settings(QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"));
+  QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                     QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"));
   settings.beginGroup(QStringLiteral("cors"));
   const QString provider =
       settings.value(QStringLiteral("serviceProvider"),
@@ -590,7 +614,8 @@ void CorsPanel::loadSettings() {
 }
 
 void CorsPanel::saveSettings() {
-  QSettings settings(QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"));
+  QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                     QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"));
   settings.beginGroup(QStringLiteral("cors"));
   settings.setValue(QStringLiteral("serviceProvider"),
                     provider_selector_->currentData());
@@ -754,6 +779,7 @@ void CorsPanel::setDeviceOpen(bool open) {
     device_time_anchor_us_ = 0;
     device_time_valid_ = false;
     gnss_timing_status_.reset();
+    gnss_reception_status_.reset();
     resetLocalOrigin();
     setNavigationUnavailable();
     device_configuration_ = {};
@@ -847,6 +873,12 @@ void CorsPanel::setNavigationStatus(
   navigation_status_valid_ = true;
   navigation_from_dataset_ = from_dataset;
   navigation_unavailable_reason_.clear();
+  refreshView();
+}
+
+void CorsPanel::setGnssReceptionStatus(
+    std::optional<prism::GnssReceptionStatus> status) {
+  gnss_reception_status_ = status;
   refreshView();
 }
 
@@ -1141,8 +1173,29 @@ void CorsPanel::refreshView() {
           : uiText("Waiting for the first valid GPS/RTK fix",
                    "等待首个有效 GPS/RTK 定位"));
 
+  if (gnss_reception_status_ && gnss_reception_status_->reception_available) {
+      const auto& reception = *gnss_reception_status_;
+      const QString raw = reception.raw_data_fresh
+          ? uiText("UART: receiving bytes", "UART：正在接收字节")
+          : (reception.raw_data_seen
+                 ? uiText("UART: no new bytes for over 2 s", "UART：超过 2 秒未收到新字节")
+                 : uiText("UART: no bytes received", "UART：尚未收到字节"));
+      const QString nmea = reception.nmea_sentence_fresh
+          ? uiText("NMEA: valid sentences updating", "NMEA：有效报文持续更新")
+          : (reception.nmea_sentence_seen
+                 ? uiText("NMEA: no valid sentence for over 2 s", "NMEA：超过 2 秒没有有效报文")
+                 : uiText("NMEA: no checksum-valid sentence received", "NMEA：尚未收到校验有效的报文"));
+      gnss_reception_value_->setText(raw + QStringLiteral("\n") + nmea);
+    } else {
+      gnss_reception_value_->setText(uiText(
+          "Reception details unavailable from this Agent/recording",
+          "当前 Agent／录像未提供独立接收状态"));
+    }
   if (gnss_timing_status_.has_value()) {
     const auto& timing = *gnss_timing_status_;
+    gnss_sync_value_->setText(timing.time_synced
+        ? uiText("LOCKED: external PPS and RMC accepted", "已锁定：外部 PPS 与 RMC 已通过校时验证")
+        : uiText("NOT LOCKED: independent of UART/NMEA reception", "未锁定：不代表 UART／NMEA 没有收到数据"));
     if (timing.nmea_seen) {
       gnss_receiver_value_->setText(
           QStringLiteral("%1 | %2 | %3 satellites | NMEA age %4 ms | updates %5")
@@ -1155,7 +1208,7 @@ void CorsPanel::refreshView() {
               .arg(timing.nmea_update_count));
     } else {
       gnss_receiver_value_->setText(
-          uiText("waiting for NMEA", "等待 NMEA 报文"));
+          uiText("No GGA/GSA position-quality data yet", "尚无 GGA/GSA 定位质量数据"));
     }
     gnss_dop_value_->setText(
         timing.nmea_dop_valid
@@ -1216,6 +1269,7 @@ void CorsPanel::refreshView() {
     gnss_timing_value_->setText(time_parts.join(QStringLiteral(" | ")));
   } else {
     gnss_receiver_value_->setText(QStringLiteral("-"));
+    gnss_sync_value_->setText(QStringLiteral("-"));
     gnss_dop_value_->setText(QStringLiteral("-"));
     gnss_position_value_->setText(QStringLiteral("-"));
     gnss_utc_value_->setText(QStringLiteral("-"));

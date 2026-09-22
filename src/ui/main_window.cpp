@@ -10,6 +10,7 @@
 #include "dataset/dataset_playback.hpp"
 #include "dataset/dataset_playback_timing.hpp"
 #include "dataset/rosbag_exporter.hpp"
+#include "dataset/recording_startup_gate.hpp"
 #include "imu_units.hpp"
 #include "imu_timestamp_policy.hpp"
 #include "transfer/camera_frame_assembler.hpp"
@@ -18,11 +19,13 @@
 #include "ui/camera_exposure_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
 #include "ui/cors_panel.hpp"
+#include "ui/gnss_visualization.hpp"
 #include "ui/device_info_panel.hpp"
 #include "ui/image_view_label.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
 #include "ui/main_window.hpp"
 #include "ui/preview_image_decoder.hpp"
+#include "ui/rk_dataset_dialog.hpp"
 #include "ui/wifi_hotspot_panel.hpp"
 
 #include <QtCore/QByteArray>
@@ -436,7 +439,7 @@ class DatasetRecorder {
   bool start(const std::filesystem::path& root, bool overwrite,
              DatasetRecordingMode mode, bool record_lidar_streams,
              DatasetTimestampDomain timestamp_domain, std::string* error,
-             bool lidar_has_imu = true) {
+             unsigned required_imu_mask = 3, bool lidar_has_imu = true) {
     std::unique_lock<std::mutex> lock(mutex_);
     try {
       if (session_open_) {
@@ -451,14 +454,15 @@ class DatasetRecorder {
         return false;
       }
       root_ = root;
-      const std::array<std::filesystem::path, 15> known_outputs = {
+      const std::array<std::filesystem::path, 16> known_outputs = {
           root_ / "imu0.tum", root_ / "imu1.tum", root_ / "cam0.tum",
           root_ / "cam1.tum", root_ / "cam2.tum", root_ / "cam3.tum",
           root_ / "lidar.tum", root_ / "lidar_imu.tum",
           root_ / "gps_rtk.csv",
           root_ / "rover_rtcm.bin", root_ / "rover_rtcm.csv",
           root_ / "base_rtcm.bin", root_ / "base_rtcm.csv",
-          root_ / "time_sync.csv", root_ / "dataset.info"};
+          root_ / "time_sync.csv", root_ / "dataset.info",
+          root_ / "imu_metadata.csv"};
       bool existing_dataset = false;
       for (const auto& path : known_outputs) {
         const bool exists = std::filesystem::exists(path, filesystem_error);
@@ -570,6 +574,11 @@ class DatasetRecorder {
       stop_writer_ = false;
       start_unix_us_ = wallClockUs();
       start_steady_time_ = std::chrono::steady_clock::now();
+      startup_gate_ = StartupGate(required_imu_mask);
+      lidar_has_imu_ = lidar_has_imu;
+      startup_imu_.fill(0);
+      startup_camera_ = startup_lidar_ = startup_lidar_imu_ = 0;
+      rejected_imu_ = 0;
       camera_chunk_index_ = 0;
       camera_chunk_size_ = 0;
       camera_chunk_name_.clear();
@@ -580,7 +589,19 @@ class DatasetRecorder {
       record_lidar_streams_.store(record_lidar_streams,
                                   std::memory_order_relaxed);
       timestamp_domain_ = timestamp_domain;
-      lidar_has_imu_ = lidar_has_imu;
+
+      // Buffers outlive their streams, including close/reopen at a chunk boundary.
+      camera_buffer_.resize(4u * 1024u * 1024u);
+      lidar_buffer_.resize(4u * 1024u * 1024u);
+      camera_chunk_file_.rdbuf()->pubsetbuf(camera_buffer_.data(), camera_buffer_.size());
+      lidar_chunk_file_.rdbuf()->pubsetbuf(lidar_buffer_.data(), lidar_buffer_.size());
+      imu_metadata_file_.open(root_ / "imu_metadata.csv", std::ios::out | std::ios::trunc);
+      imu_metadata_file_.imbue(std::locale::classic());
+      if (!imu_metadata_file_.is_open()) {
+        if (error) *error = "cannot open IMU diagnostics";
+        return false;
+      }
+      imu_metadata_file_ << "phase,sensor_id,timestamp_us,sample_id,timestamp_synced,sample_gap,recording_elapsed_us,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps\n";
 
       for (size_t sensor = 0; sensor < imu_files_.size(); ++sensor) {
         imu_files_[sensor].open(
@@ -588,9 +609,7 @@ class DatasetRecorder {
             std::ios::out | std::ios::trunc);
         imu_files_[sensor].imbue(std::locale::classic());
         if (!imu_files_[sensor].is_open()) {
-          for (auto& file : imu_files_) {
-            if (file.is_open()) file.close();
-          }
+          closeFiles();
           if (error != nullptr) {
             *error = "cannot open output file for IMU" +
                      std::to_string(sensor);
@@ -791,8 +810,27 @@ class DatasetRecorder {
       if (!isValidSynchronizedTimestamp(sample.timestamp_synced,
                                         sample.timestamp_us)) {
         ++unsynced_imu_samples_dropped_[sample.sensor_id];
+      }
+      bool admitted = false;
+      try {
+        admitted = startup_gate_.imu(sample.sensor_id, sample.timestamp_us,
+            sample.sample_id,
+            isValidSynchronizedTimestamp(sample.timestamp_synced, sample.timestamp_us),
+            sample.sample_gap, recordingElapsedUs());
+      } catch (const std::exception& e) {
+        ++rejected_imu_;
+        writeImuDiagnostic(sample, "rejected");
+        write_failed_ = true;
+        write_error_ = e.what();
         return;
       }
+      if (!admitted) {
+        ++startup_imu_[sample.sensor_id];
+        writeImuDiagnostic(sample, "startup");
+        return;
+      }
+      writeImuDiagnostic(sample, "recording");
+      if (write_failed_) return;
 
       constexpr double kStandardGravity = 9.80665;
       constexpr double kRadiansPerDegree =
@@ -868,6 +906,10 @@ class DatasetRecorder {
         ++unsynced_camera_frame_sets_dropped_;
         return;
       }
+      if (!admitTimestamp(StartupGate::Camera, timestamp_us)) {
+        if (!write_failed_) ++startup_camera_;
+        return;
+      }
       /*
        * Bound both job count and payload bytes. A slow/removable destination
        * must drop frame sets instead of exhausting Viewer memory.
@@ -941,6 +983,10 @@ class DatasetRecorder {
         return;
       }
       constexpr size_t kMaximumQueuedLidarBatches = 512u;
+      if (!admitTimestamp(StartupGate::Lidar, job.timestamp_us)) {
+        if (!write_failed_) ++startup_lidar_;
+        return;
+      }
       if (lidar_jobs_.size() >= kMaximumQueuedLidarBatches ||
           job.payload_bytes > kMaximumQueuedFrameBytes ||
           queued_payload_bytes_ >
@@ -972,6 +1018,10 @@ class DatasetRecorder {
                                         sample.timestamp_utc_us) ||
           (sample.tai_offset_applied && !sample.timestamp_synced)) {
         ++unsynced_lidar_imu_samples_dropped_;
+        return;
+      }
+      if (!admitTimestamp(StartupGate::LidarImu, sample.timestamp_utc_us)) {
+        if (!write_failed_) ++startup_lidar_imu_;
         return;
       }
       writeTumTimestamp(lidar_imu_file_, sample.timestamp_utc_us);
@@ -1305,7 +1355,51 @@ class DatasetRecorder {
     return active_.load(std::memory_order_acquire);
   }
 
+  bool startupReady() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return startup_gate_.ready();
+  }
+
+  std::string pollError() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (session_open_ && !write_failed_) {
+      try { startup_gate_.checkTimeout(recordingElapsedUs()); }
+      catch (const std::exception& e) { write_failed_ = true; write_error_ = e.what(); }
+    }
+    return write_failed_ ? write_error_ : std::string{};
+  }
+
  private:
+  using StartupGate = prism_viewer::dataset::RecordingStartupGate;
+  uint64_t recordingElapsedUs() const {
+    return static_cast<uint64_t>(std::max<int64_t>(0,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start_steady_time_).count()));
+  }
+  // Called with mutex_ held. Once recording has begun, never reopen the gate
+  // to hide a later regression: stop and mark the dataset incomplete instead.
+  bool admitTimestamp(StartupGate::Stream stream, uint64_t timestamp) {
+    try {
+      startup_gate_.checkTimeout(recordingElapsedUs());
+      return startup_gate_.admit(stream, timestamp);
+    } catch (const std::exception& e) {
+      write_failed_ = true;
+      write_error_ = e.what();
+      return false;
+    }
+  }
+  void writeImuDiagnostic(const prism::ImuSample& sample, const char* phase) {
+    imu_metadata_file_ << phase << ',' << unsigned(sample.sensor_id) << ','
+        << sample.timestamp_us << ',' << sample.sample_id << ','
+        << sample.timestamp_synced << ',' << sample.sample_gap << ',' << recordingElapsedUs();
+    for (auto v : sample.accel_mg) imu_metadata_file_ << ',' << v;
+    for (auto v : sample.gyro_mdps) imu_metadata_file_ << ',' << v;
+    imu_metadata_file_ << '\n';
+    if (!imu_metadata_file_.good()) {
+      write_failed_ = true;
+      write_error_ = "IMU diagnostic write failed";
+    }
+  }
   struct FrameSetJob {
     uint32_t frame_id = 0;
     uint64_t timestamp_us = 0;
@@ -1513,7 +1607,9 @@ class DatasetRecorder {
   bool openNextCameraChunk() {
     if (camera_chunk_file_.is_open()) {
       camera_chunk_file_.flush();
+      const bool flushed = camera_chunk_file_.good();
       camera_chunk_file_.close();
+      if (!flushed || camera_chunk_file_.fail()) return false;
     }
     std::ostringstream name;
     name << "camera-data-" << std::setw(4) << std::setfill('0')
@@ -1529,7 +1625,9 @@ class DatasetRecorder {
   bool openNextLidarChunk() {
     if (lidar_chunk_file_.is_open()) {
       lidar_chunk_file_.flush();
+      const bool flushed = lidar_chunk_file_.good();
       lidar_chunk_file_.close();
+      if (!flushed || lidar_chunk_file_.fail()) return false;
     }
     std::ostringstream name;
     name << "lidar-data-" << std::setw(4) << std::setfill('0')
@@ -1554,10 +1652,9 @@ class DatasetRecorder {
 
   void validateRequiredStreams() {
     std::vector<std::string> missing;
-    if (std::none_of(imu_counts_.begin(), imu_counts_.end(),
-                     [](uint64_t count) { return count != 0; })) {
-      missing.push_back("synchronized onboard IMU samples");
-    }
+    for (unsigned id = 0; id < 2; ++id)
+      if ((startup_gate_.requiredMask() & (1u << id)) && !imu_counts_[id])
+        missing.push_back("synchronized onboard IMU" + std::to_string(id) + " samples");
     const bool imu_only = mode_.load(std::memory_order_relaxed) ==
                           DatasetRecordingMode::ImuOnly;
     if (!imu_only &&
@@ -1650,6 +1747,21 @@ class DatasetRecorder {
              << "base_rtcm_index=csv-v1\n"
              << "time_sync_storage=csv-v1\n"
              << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
+             << "payload_write_buffer_bytes=4194304\n"
+             << "startup_policy=internal-imu-stable-250ms\n"
+             << "startup_required_imu_mask=" << startup_gate_.requiredMask() << "\n"
+             << "startup_ready=" << startup_gate_.ready() << "\n"
+             << "recording_start_us=" << startup_gate_.start_us << "\n"
+             << "startup_elapsed_us=" << startup_gate_.ready_elapsed_us << "\n"
+             << "startup_imu0_samples=" << startup_imu_[0] << "\n"
+             << "startup_imu1_samples=" << startup_imu_[1] << "\n"
+             << "startup_imu0_backsteps=" << startup_gate_.backsteps[0] << "\n"
+             << "startup_imu1_backsteps=" << startup_gate_.backsteps[1] << "\n"
+             << "startup_camera_frame_sets=" << startup_camera_ << "\n"
+             << "startup_lidar_batches=" << startup_lidar_ << "\n"
+             << "startup_lidar_imu_samples=" << startup_lidar_imu_ << "\n"
+             << "rejected_imu_samples=" << rejected_imu_ << "\n"
+             << "imu_diagnostics=imu_metadata.csv\n"
              << "start_unix_us=" << start_unix_us_ << "\n"
              << "end_unix_us=" << recording_host_end_unix_us << "\n"
              << "recording_host_start_unix_us=" << start_unix_us_ << "\n"
@@ -1715,6 +1827,11 @@ class DatasetRecorder {
   }
 
   void closeFiles() {
+    if (imu_metadata_file_.is_open()) {
+      imu_metadata_file_.flush();
+      if (!imu_metadata_file_.good()) write_failed_ = true;
+      imu_metadata_file_.close();
+    }
     for (auto& file : imu_files_) {
       if (!file.is_open()) continue;
       file.flush();
@@ -1780,7 +1897,7 @@ class DatasetRecorder {
   }
 
   static constexpr uint64_t kCameraChunkTargetBytes =
-      8ULL * 1024ULL * 1024ULL * 1024ULL;
+      1ULL * 1024ULL * 1024ULL * 1024ULL;
   static constexpr uint64_t kMaximumQueuedFrameBytes =
       128ULL * 1024ULL * 1024ULL;
   mutable std::mutex mutex_;
@@ -1788,6 +1905,12 @@ class DatasetRecorder {
   std::thread writer_;
   std::deque<FrameSetJob> frame_jobs_;
   std::deque<LidarJob> lidar_jobs_;
+  std::vector<char> camera_buffer_, lidar_buffer_;
+  std::ofstream imu_metadata_file_;
+  StartupGate startup_gate_;
+  bool lidar_has_imu_ = true;
+  std::array<uint64_t, 2> startup_imu_{};
+  uint64_t startup_camera_ = 0, startup_lidar_ = 0, startup_lidar_imu_ = 0, rejected_imu_ = 0;
   std::array<std::ofstream, 2> imu_files_;
   std::array<std::ofstream, 4> camera_index_files_;
   std::ofstream camera_chunk_file_;
@@ -1837,7 +1960,6 @@ class DatasetRecorder {
   std::atomic<bool> active_{false};
   std::atomic<DatasetRecordingMode> mode_{DatasetRecordingMode::Full};
   std::atomic<bool> record_lidar_streams_{false};
-  bool lidar_has_imu_ = true;
   DatasetTimestampDomain timestamp_domain_ =
       DatasetTimestampDomain::SensorBoardBoot;
   bool session_open_ = false;
@@ -2359,6 +2481,41 @@ WifiHotspotViewState toWifiHotspotViewState(
   return view;
 }
 
+QString cameraGainText(uint32_t gain_x1024, bool metadata_valid) {
+  // Zero is an unavailable metadata field, not a measured 0x gain.
+  if (!metadata_valid || gain_x1024 == 0u) return QStringLiteral("—");
+  QString value = QString::number(gain_x1024 / 1024.0, 'f', 5);
+  while (value.endsWith(QLatin1Char('0'))) value.chop(1);
+  if (value.endsWith(QLatin1Char('.'))) value.chop(1);
+  return value + QStringLiteral("×");
+}
+
+class CameraStatsLabel final : public QLabel {
+ public:
+  using QLabel::QLabel;
+  void setStats(const QString& text) {
+    setText(text);
+    fitWrappedText();
+  }
+ protected:
+  void resizeEvent(QResizeEvent* event) override {
+    QLabel::resizeEvent(event);
+    fitWrappedText();
+  }
+ private:
+  bool fitting_ = false;
+  void fitWrappedText() {
+    // Qt 5 can under-allocate wrapped labels inside a nested splitter/grid.
+    // Reserve the actual text height at the assigned width, not a fixed row count.
+    if (fitting_) return;
+    fitting_ = true;
+    setMinimumHeight(0);
+    const int needed = heightForWidth(width());
+    if (needed > 0) setMinimumHeight(needed);
+    fitting_ = false;
+  }
+};
+
 class MainWindow : public QMainWindow {
  public:
   MainWindow() {
@@ -2816,6 +2973,8 @@ class MainWindow : public QMainWindow {
     wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);
     tabs_->addTab(wifi_hotspot_panel_, uiText("Network", "网络"));
 
+    gnss_visualization_ = new prism_viewer::ui::GnssVisualization(tabs_);
+    tabs_->addTab(gnss_visualization_,uiText("GNSS / RTK plots","GNSS / RTK 图形"));
     cors_panel_ = new CorsPanel(tabs_);
     tabs_->addTab(cors_panel_,
                   uiText("CORS / RTK", "CORS / RTK"));
@@ -2829,8 +2988,12 @@ class MainWindow : public QMainWindow {
                   uiText("Local Datasets", "本地数据集"));
     root->addWidget(tabs_, 1);
 
-    auto* video_group = new QGroupBox(
-        uiText("Live cameras", "实时相机"), camera_splitter);
+    auto* video_scroll = new QScrollArea(camera_splitter);
+    video_scroll->setObjectName(QStringLiteral("liveCameraScrollArea"));
+    video_scroll->setFrameShape(QFrame::NoFrame);
+    video_scroll->setWidgetResizable(true);
+    video_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* video_group = new QGroupBox(uiText("Live cameras", "实时相机"));
     video_group->setObjectName(QStringLiteral("liveCamerasGroup"));
     auto* video_grid = new QGridLayout(video_group);
     video_grid->setContentsMargins(10, 14, 10, 10);
@@ -2852,7 +3015,7 @@ class MainWindow : public QMainWindow {
       image_labels_[i] = new ImageViewLabel(tile);
       image_labels_[i]->setObjectName(QStringLiteral("cameraImage"));
       image_labels_[i]->setTransformationMode(Qt::FastTransformation);
-      image_labels_[i]->setMinimumSize(280, 200);
+      image_labels_[i]->setMinimumSize(280, 160);
       image_labels_[i]->setCursor(Qt::PointingHandCursor);
       image_labels_[i]->clearImage(uiText("No frame", "无图像"));
       image_labels_[i]->setToolTip(
@@ -2869,25 +3032,32 @@ class MainWindow : public QMainWindow {
               std::memory_order_release);
         };
       }
-      frame_labels_[i] = new QLabel(
-          cameraFrameStatsText(0, 0.0, QStringLiteral("-"), 0, 0),
+      frame_labels_[i] = new CameraStatsLabel(
+          uiText("RX frame=— fps=0.00 analog gain=—",
+                 "接收帧=— 帧率=0.00 模拟增益=—"),
           tile);
       frame_labels_[i]->setObjectName(QStringLiteral("cameraStats"));
-      // Counter/exposure digit counts must not become tile minimum widths.
-      // All values remain visible: wrap only when needed at the available
-      // width, without a fixed row count or an elide/crop policy.
+      // Contents determine height, never the width of the two camera columns.
+      frame_labels_[i]->setMinimumWidth(0);
       frame_labels_[i]->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
       frame_labels_[i]->setWordWrap(true);
       frame_labels_[i]->setTextFormat(Qt::PlainText);
-      frame_labels_[i]->setTextInteractionFlags(Qt::TextSelectableByMouse);
-      frame_labels_[i]->setToolTip(frame_labels_[i]->text());
+      frame_labels_[i]->setToolTip(uiText(
+          "Exposure and analog gain come from the same received frame's "
+          "metadata, not the manual settings. A dash means unavailable. "
+          "The low-latency preview may skip obsolete whole frame sets.",
+          "曝光及模拟增益来自同一接收帧的实际元数据，不是手动设定值；"
+          "— 表示未提供。低延迟预览可能跳过过时的整组帧。"));
 
       tile_layout->addWidget(caption);
       tile_layout->addWidget(image_labels_[i], 1);
       tile_layout->addWidget(frame_labels_[i]);
       video_grid->addWidget(tile, i / 2, i % 2);
     }
-    camera_splitter->addWidget(video_group);
+    // Small screens scroll the camera panel instead of overlapping images and
+    // telemetry. Normal-size windows still show the complete 2x2 grid.
+    video_scroll->setWidget(video_group);
+    camera_splitter->addWidget(video_scroll);
 
     auto* camera_tools = new QTabWidget(camera_splitter);
     camera_tools->setObjectName(QStringLiteral("cameraTools"));
@@ -2966,6 +3136,17 @@ class MainWindow : public QMainWindow {
         "background: #ffffff; border: 1px solid #d9e2ef; border-radius: 6px;"
         "padding: 7px 10px; color: #344054;"));
     dataset_controls->addWidget(dataset_open_button_);
+    auto* rk_download = new QPushButton(uiText("Download from RK...", "从 RK 导出……"), dataset_page_);
+    rk_download->setObjectName(QStringLiteral("datasetDownloadRkButton"));
+    connect(rk_download, &QPushButton::clicked, this, [this] {
+      if (worker_running_ || rosbag_export_running_ || dataset_recorder_.isActive()) {
+        QMessageBox::information(this, uiText("RK dataset export", "RK 数据集导出"),
+          uiText("Stop this Viewer capture/recording before opening RK dataset export.", "请先停止此 Viewer 的采集/录制，再从 RK 导出数据。"));
+        return;
+      }
+      prism_viewer::ui::showRkDatasetDialog(this, [this](const QString& path) { loadRecordedDataset(path, true); });
+    });
+    dataset_controls->addWidget(rk_download);
     dataset_controls->addWidget(dataset_validate_button_);
     dataset_controls->addWidget(dataset_export_rosbag_button_);
     dataset_controls->addWidget(dataset_metadata_toggle_button_);
@@ -3701,6 +3882,20 @@ class MainWindow : public QMainWindow {
             [this]() { flushPendingImuUiUpdates(); });
     imu_ui_timer_->start();
 
+    auto* recording_timer = new QTimer(this);
+    recording_timer->setInterval(250);
+    connect(recording_timer, &QTimer::timeout, this, [this]() {
+      if (!dataset_recorder_.isActive()) return;
+      if (!dataset_recorder_.pollError().empty()) {
+        stopImuRecording();  // Stops recording, not the live capture.
+      } else if (dataset_recorder_.startupReady()) {
+        const QString label = imu_record_status_label_->property("ready_text").toString();
+        if (!label.isEmpty() && imu_record_status_label_->text() != label)
+          imu_record_status_label_->setText(label);
+      }
+    });
+    recording_timer->start();
+
     rtk_telemetry_timer_ = new QTimer(this);
     rtk_telemetry_timer_->setInterval(20);
     rtk_telemetry_timer_->setTimerType(Qt::PreciseTimer);
@@ -3911,6 +4106,82 @@ class MainWindow : public QMainWindow {
     return retention_ok && rendering_ok;
   }
 
+  bool runCameraGainSelfTest(const QString& screenshot) {
+    const bool was_chinese = prism_viewer::common::chineseUi();
+    QWidget* previous_page = tabs_->currentWidget();
+    tabs_->setCurrentWidget(camera_page_);
+    const auto settle = [] {
+      for (int i = 0; i < 4; ++i) {
+        QApplication::processEvents();
+        QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+      }
+    };
+    const std::array<QString, 4> analog = {
+        QStringLiteral("1×"), QStringLiteral("1.03125×"),
+        QStringLiteral("16.5×"), QStringLiteral("124×")};
+    bool ok = true;
+    for (bool chinese : {false, true}) {
+      prism_viewer::common::setChineseUi(chinese);
+      prism::VideoMeta meta;
+      meta.valid = true; meta.cameras = 4;
+      meta.exposure_us.fill(50);
+      meta.analog_gain_x1024.fill(1024);
+      meta.digital_gain_x1024.fill(1024);
+      queueCameraFrameSetStatus(1, 1, 10, {1024, 1024, 1024, 1024}, meta);
+      settle();
+      std::array<int, 4> widths{};
+      for (size_t i = 0; i < widths.size(); ++i)
+        widths[i] = frame_labels_[i]->parentWidget()->width();
+
+      meta.exposure_us = {995000, 50, 12345, 50000};
+      meta.analog_gain_x1024 = {1024, 1056, 16896, 126976};
+      meta.digital_gain_x1024 = {2048, 4096, 1024, 0};
+      queueCameraFrameSetStatus(4294967295u, 9876543210ull, 30,
+                               {4194304, 1024, 4194304, 1024}, meta);
+      updateMeta(meta);
+      settle();
+      for (size_t i = 0; i < frame_labels_.size(); ++i) {
+        const auto* label = frame_labels_[i];
+        const QString a = uiText("analog gain=", "模拟增益=") + analog[i];
+        const QString d = uiText("digital gain", "数字增益");
+        const bool values_ok = label->text().contains(a) && !label->text().contains(d) &&
+            !label->toolTip().contains(d) &&
+            !label->text().contains(QStringLiteral("complete sets")) &&
+            !label->text().contains(QStringLiteral("完整帧组")) &&
+            meta_text_->toPlainText().contains(a) &&
+            !meta_text_->toPlainText().contains(d);
+        const bool layout_ok = label->wordWrap() && label->width() > 0 &&
+            label->parentWidget()->width() == widths[i] &&
+            std::abs(widths[i] - widths[i ^ 1u]) <= 1 &&
+            label->height() >= label->heightForWidth(label->width()) &&
+            label->parentWidget()->rect().contains(label->geometry());
+        ok = ok && values_ok && layout_ok;
+        std::cout << "camera_gain_fixture language=" << (chinese ? "zh" : "en")
+                  << " camera=" << i << " values=" << values_ok
+                  << " layout=" << layout_ok << " width=" << widths[i]
+                  << " height=" << label->height()
+                  << " required_height=" << label->heightForWidth(label->width())
+                  << " x=" << label->x() << " y=" << label->y()
+                  << " label_width=" << label->width()
+                  << " tile_height=" << label->parentWidget()->height()
+                  << " now_width=" << label->parentWidget()->width() << '\n';
+      }
+      if (!screenshot.isEmpty() && chinese)
+        ok = camera_page_->grab().save(screenshot) && ok;
+      meta.valid = false;  // Never retain or invent gain for unavailable metadata.
+      queueCameraFrameSetStatus(2, 2, 10, {}, meta);
+      updateMeta(meta);
+      settle();
+      for (const auto* label : frame_labels_) {
+        ok = ok && label->text().contains(uiText("analog gain=—", "模拟增益=—")) &&
+            !label->text().contains(uiText("digital gain", "数字增益"));
+      }
+    }
+    prism_viewer::common::setChineseUi(was_chinese);
+    tabs_->setCurrentWidget(previous_page);
+    return ok;
+  }
+
  protected:
   void closeEvent(QCloseEvent* event) override {
     cors_session_.stop();
@@ -4111,6 +4382,7 @@ class MainWindow : public QMainWindow {
       }
     }
     const auto now = std::chrono::steady_clock::now();
+    queryGnssObservations(); // client_io_mutex_ already held
     if (rtk_navigation_query_supported_.load(std::memory_order_acquire) &&
         now >= next_idle_rtk_navigation_query_) {
       next_idle_rtk_navigation_query_ = now + kRtkNavigationStatusPeriod;
@@ -4132,10 +4404,15 @@ class MainWindow : public QMainWindow {
         appendLog(QStringLiteral("Idle GNSS timing refresh failed: %1")
                       .arg(QString::fromUtf8(error.what())));
       }
+      queryGnssReceptionStatus();  // client_io_mutex_ is already held.
     }
   }
 
   void queryInitialRtkNavigationStatus() {
+    gnss_observation_cursor_=gnss_observation_session_=0;
+    next_gnss_observation_query_={};
+    gnss_visualization_->reset();
+    withClientIo([this](){queryGnssObservations();});
     try {
       rememberRtkCorrectionStatus(
           prism_viewer::communication::queryRtkCorrectionStatus(client_));
@@ -4779,6 +5056,7 @@ class MainWindow : public QMainWindow {
     setStatusAppearance(false);
     rtk_navigation_query_supported_.store(true, std::memory_order_release);
     status_label_->setText(uiText("Opening USB device", "正在打开 USB 设备"));
+    gnss_reception_query_supported_.store(true, std::memory_order_release);
     appendLog(QStringLiteral("Opening USB device through prism_usb_sdk"));
     try {
       const auto opened =
@@ -4825,6 +5103,7 @@ class MainWindow : public QMainWindow {
                   timeSyncProviderName(time_sync_provider))));
       updateDeviceInfo(device_info, time_sync_provider);
       if (gnss_timing.has_value()) updateGnssTimingStatus(*gnss_timing);
+      withClientIo([this]() { queryGnssReceptionStatus(); });
       updateDeviceVersions(versions);
       camera_encoding_panel_->setConfiguration(configuration);
       cors_panel_->setDeviceConfiguration(configuration);
@@ -4954,6 +5233,7 @@ class MainWindow : public QMainWindow {
       const auto gnss_timing = client_.gnssTimingStatus();
       updateDeviceInfo(status.info, status.time_sync_provider);
       updateGnssTimingStatus(gnss_timing);
+      withClientIo([this]() { queryGnssReceptionStatus(); });
       appendLog(QStringLiteral("DeviceInfo refreshed; time-sync-provider=%1")
                     .arg(QString::fromLatin1(
                         timeSyncProviderName(status.time_sync_provider))));
@@ -5262,16 +5542,14 @@ class MainWindow : public QMainWindow {
     const bool sensor_board_synced =
         latest_device_info_valid_ &&
         latest_device_info_.sensor_board_time_synced;
-    const bool any_onboard_imu_synced =
-        latest_device_info_valid_ &&
-        (latest_device_info_.imu_time_synced_mask & 0x03u) != 0u;
-    if (!sensor_board_synced || !any_onboard_imu_synced) {
+    const unsigned required_imu_mask = latest_device_info_valid_ ?
+        (latest_device_info_.imu_present_mask | latest_device_info_.imu_receiving_mask) & 3u : 0u;
+    if (!sensor_board_synced || !required_imu_mask) {
       const QString detail = uiText(
-          "Recording requires the sensor-board and at least one onboard IMU "
-          "to be synchronized to the RK device time domain. Wait until IMU0 "
-          "or IMU1 shows synced before recording.",
-          "录制要求 sensor-board 与至少一路板载 IMU 同步到 RK 设备时间域。"
-          "请等待 IMU0 或 IMU1 任一路显示“已同步”后再录制。");
+          "Recording requires the Sensor Board clock and a detected onboard IMU. "
+          "IMU stabilization is checked after recording starts; GPS is not required.",
+          "录制要求 sensor-board 时钟有效且检测到板载 IMU。"
+          "开始录制后会等待 IMU 同步稳定，无需 GPS 授时。");
       appendLog(QStringLiteral(
                     "Dataset recording rejected: sensor_board_synced=%1 "
                     "imu_time_synced_mask=0x%2")
@@ -5376,13 +5654,14 @@ class MainWindow : public QMainWindow {
         requested_lidar_model_.load(std::memory_order_acquire));
     const bool record_lidar_streams =
         lidar_model != prism::LidarModel::None &&
-        !(mode == DatasetRecordingMode::ImuOnly && lidar_model == prism::LidarModel::Xt32);
+        (mode != DatasetRecordingMode::ImuOnly || lidar_model != prism::LidarModel::Xt32);
     const DatasetTimestampDomain timestamp_domain =
         datasetTimestampDomainForProvider(latest_time_sync_provider_);
     std::string error;
     if (!dataset_recorder_.start(toFilesystemPath(selected_directory),
                                  overwrite, mode, record_lidar_streams,
-                                 timestamp_domain, &error, lidar_model != prism::LidarModel::Xt32)) {
+                                 timestamp_domain, &error, required_imu_mask,
+                                 lidar_model != prism::LidarModel::Xt32)) {
       QMessageBox::critical(
           this, uiText("Dataset recording failed", "数据集录制失败"),
           uiText("Unable to start recording: %1", "无法开始录制：%1")
@@ -5415,7 +5694,11 @@ class MainWindow : public QMainWindow {
                        "+ time sync",
                        "正在录制四路相机 + 板载 IMU0/IMU1 + GPS/RTK + 时间同步"));
     }
-    imu_record_status_label_->setToolTip(selected_directory);
+    imu_record_status_label_->setProperty("ready_text", imu_record_status_label_->text());
+    imu_record_status_label_->setText(uiText(
+        "Waiting for stable IMU synchronization (up to 15 s; GPS not required)",
+        "等待 IMU 同步稳定（最多 15 秒，无需 GPS）"));
+    imu_record_status_label_->setToolTip(QString());
     imu_record_status_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
         "border-radius: 5px; padding: 4px 8px; font-weight: 700;"));
@@ -5731,9 +6014,9 @@ class MainWindow : public QMainWindow {
     }
     for (int i = 0; i < 4; ++i) {
       image_labels_[i]->clearImage(uiText("Waiting", "等待数据"));
-      frame_labels_[i]->setText(
-          cameraFrameStatsText(0, 0.0, QStringLiteral("-"), 0, 0));
-      frame_labels_[i]->setToolTip(frame_labels_[i]->text());
+      frame_labels_[i]->setStats(
+          uiText("RX frame=— fps=0.00 analog gain=—",
+                 "接收帧=— 帧率=0.00 模拟增益=—"));
     }
     for (int row = 0; row < 2; ++row) {
       for (int col = 1; col < imu_table_->columnCount(); ++col) {
@@ -6270,6 +6553,40 @@ class MainWindow : public QMainWindow {
         device_info_panel_->setVersions(versions);
       }
     });
+  }
+
+  // Call with client I/O ownership. Optional diagnostics must never cause the
+  // existing timing query, opening a device, or starting capture to fail.
+  void queryGnssReceptionStatus() {
+    if (!gnss_reception_query_supported_.load(std::memory_order_acquire)) return;
+    try {
+      const auto status = client_.gnssReceptionStatus();
+      post([this, status]() {
+        if (cors_panel_) cors_panel_->setGnssReceptionStatus(status);
+      });
+    } catch (const std::exception& error) {
+      gnss_reception_query_supported_.store(false, std::memory_order_release);
+      post([this]() {
+        if (cors_panel_) cors_panel_->setGnssReceptionStatus(std::nullopt);
+      });
+      appendLog(QStringLiteral("GNSS reception diagnostics unavailable; reopen to retry: %1")
+                    .arg(QString::fromUtf8(error.what())));
+    }
+  }
+
+  void queryGnssObservations() {
+    const auto now=std::chrono::steady_clock::now();
+    if(now<next_gnss_observation_query_)return;
+    next_gnss_observation_query_=now+std::chrono::milliseconds(100);
+    try {
+      auto batch=client_.gnssObservations(gnss_observation_cursor_,gnss_observation_session_);
+      gnss_observation_cursor_=batch.cursor;gnss_observation_session_=batch.session;
+      post([this,batch=std::move(batch)](){gnss_visualization_->apply(batch);});
+    }catch(const std::exception& e){
+      next_gnss_observation_query_=now+std::chrono::seconds(5);
+      QString message=uiText("GNSS graphics unavailable (matching Agent/SDK required): ","GNSS 图形暂不可用（需要匹配的 Agent／SDK）：")+QString::fromUtf8(e.what());
+      post([this,message](){gnss_visualization_->unavailable(message);});
+    }
   }
 
   void updateGnssTimingStatus(const prism::GnssTimingStatus& status) {
@@ -7503,11 +7820,11 @@ class MainWindow : public QMainWindow {
   void queueCameraFrameSetStatus(
       uint32_t frame_id, uint64_t received_frame_sets, double received_fps,
       const std::array<size_t, 4>& jpeg_sizes,
-      const std::array<uint32_t, 4>& exposure_us) {
+      const prism::VideoMeta& metadata) {
     const uint64_t generation =
         camera_preview_generation_.load(std::memory_order_acquire);
     post([this, generation, frame_id, received_frame_sets, received_fps,
-          jpeg_sizes, exposure_us]() {
+          jpeg_sizes, metadata]() {
       if (generation !=
           camera_preview_generation_.load(std::memory_order_acquire)) {
         return;
@@ -7526,11 +7843,19 @@ class MainWindow : public QMainWindow {
               ? QStringLiteral("-")
               : QString::number(latest_camera_frame_id_);
       for (size_t camera = 0; camera < frame_labels_.size(); ++camera) {
-        frame_labels_[camera]->setText(
-            cameraFrameStatsText(frame_id, received_fps,
-                                 preview_frame, jpeg_sizes[camera],
-                                 exposure_us[camera]));
-        frame_labels_[camera]->setToolTip(frame_labels_[camera]->text());
+        frame_labels_[camera]->setStats(
+            uiText("RX frame=%1 fps=%2 preview frame=%3 JPEG=%4 KiB "
+                   "exposure=%5 us analog gain=%6",
+                   "接收帧=%1 帧率=%2 预览帧=%3 JPEG=%4 KiB "
+                   "曝光=%5 微秒 模拟增益=%6")
+                .arg(frame_id)
+                .arg(received_fps, 0, 'f', 2)
+                .arg(preview_frame)
+                .arg(static_cast<double>(jpeg_sizes[camera]) / 1024.0, 0,
+                     'f', 1)
+                .arg(metadata.exposure_us[camera])
+                .arg(cameraGainText(metadata.analog_gain_x1024[camera],
+                                    metadata.valid && camera < metadata.cameras)));
       }
     });
   }
@@ -7716,10 +8041,12 @@ class MainWindow : public QMainWindow {
       text += QStringLiteral("trigger_time_ns=%1\n")
                   .arg(meta.trigger_time_ns);
       for (int i = 0; i < 4; ++i) {
-        text += uiText("camera%1 actual exposure=%2 us\n",
-                       "相机%1 实际曝光=%2 微秒\n")
+        text += uiText("camera%1 actual exposure=%2 us analog gain=%3\n",
+                       "相机%1 实际曝光=%2 微秒 模拟增益=%3\n")
                     .arg(i)
-                    .arg(meta.exposure_us[i]);
+                    .arg(meta.exposure_us[i])
+                    .arg(cameraGainText(meta.analog_gain_x1024[i],
+                                        meta.valid && i < meta.cameras));
       }
       text += QStringLiteral("meta_crc32=0x%1\n")
                   .arg(meta.meta_crc32, 8, 16, QLatin1Char('0'));
@@ -7999,6 +8326,7 @@ class MainWindow : public QMainWindow {
           updateDeviceInfo(info, status.time_sync_provider);
           updateGnssTimingStatus(withClientIo(
               [this]() { return client_.gnssTimingStatus(); }));
+          withClientIo([this]() { queryGnssReceptionStatus(); });
           sensor_board_link_ready = info.sensor_board_online;
         } catch (const std::exception&) {
         }
@@ -8099,7 +8427,7 @@ class MainWindow : public QMainWindow {
               queueCameraFrameSetStatus(
                   completed.frame_id, received_camera_frame_sets,
                   received_camera_fps, jpeg_sizes,
-                  completed.metadata.exposure_us);
+                  completed.metadata);
             }
             processFrameSet(
                 completed.frame_id, completed.timestamp_us,
@@ -8504,6 +8832,8 @@ class MainWindow : public QMainWindow {
            * expires. Version data is static for an open session and is
            * therefore not refreshed from the capture loop.
            */
+          if (camera_progress_age < kCameraControlCommandFreshnessLimit)
+            withClientIo([this](){queryGnssObservations();});
           if (loop_now >= next_device_info_query &&
               camera_progress_age < kCameraControlCommandFreshnessLimit) {
             const auto query_started_at = std::chrono::steady_clock::now();
@@ -8516,6 +8846,7 @@ class MainWindow : public QMainWindow {
               updateDeviceInfo(info, status.time_sync_provider);
               updateGnssTimingStatus(withClientIo(
                   [this]() { return client_.gnssTimingStatus(); }));
+              withClientIo([this]() { queryGnssReceptionStatus(); });
               if (!info.sensor_board_online) {
                 appendLog(QStringLiteral(
                     "DeviceInfo reports sensor-board offline; stopping camera "
@@ -8793,10 +9124,13 @@ class MainWindow : public QMainWindow {
   prism_viewer::LidarPointCloudWidget* lidar_point_cloud_widget_ = nullptr;
   WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
   CorsPanel* cors_panel_ = nullptr;
+  prism_viewer::ui::GnssVisualization* gnss_visualization_ = nullptr;
+  uint64_t gnss_observation_cursor_=0,gnss_observation_session_=0;
+  std::chrono::steady_clock::time_point next_gnss_observation_query_{};
   QWidget* dataset_page_ = nullptr;
   QTabWidget* dataset_sensor_tabs_ = nullptr;
   std::array<ImageViewLabel*, 4> image_labels_{};
-  std::array<QLabel*, 4> frame_labels_{};
+  std::array<CameraStatsLabel*, 4> frame_labels_{};
   CameraZoomDialog* live_camera_zoom_dialog_ = nullptr;
   std::array<QImage, 4> latest_camera_images_{};
   uint32_t latest_camera_frame_id_ = 0;
@@ -8878,6 +9212,7 @@ class MainWindow : public QMainWindow {
   std::atomic<uint64_t> cors_usb_command_time_us_{0};
   std::chrono::steady_clock::time_point next_idle_rtk_navigation_query_{};
   std::chrono::steady_clock::time_point next_idle_gnss_timing_query_{};
+  std::atomic<bool> gnss_reception_query_supported_{true};
   std::array<std::thread, 2> camera_preview_workers_;
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> worker_running_{false};
@@ -9067,8 +9402,23 @@ int runViewerApplication(int argc, char** argv) {
     unsynced_imu0.timestamp_synced = false;
     prism::ImuSample unsynced_imu1 = imu1;
     unsynced_imu1.timestamp_synced = false;
+    const auto warmRecorder = [](DatasetRecorder& target, uint64_t first_recorded_us,
+                                 unsigned mask) {
+      for (uint32_t i = 0; i <= 200; ++i) {
+        for (unsigned id = 0; id < 2; ++id) {
+          if (!(mask & (1u << id))) continue;
+          prism::ImuSample startup;
+          startup.sensor_id = static_cast<uint8_t>(id);
+          startup.timestamp_synced = true;
+          startup.timestamp_us = first_recorded_us - 251250 + i * 1250 + id * 100;
+          startup.sample_id = i;
+          target.appendImu(startup);
+        }
+      }
+    };
     recorder.appendImu(unsynced_imu0);
     recorder.appendImu(unsynced_imu1);
+    warmRecorder(recorder, imu0.timestamp_us, 3);
     recorder.appendImu(imu0);
     recorder.appendImu(imu1);
     std::array<std::vector<uint8_t>, 4> jpeg;
@@ -9485,6 +9835,7 @@ int runViewerApplication(int argc, char** argv) {
     if (no_lidar_ok) {
       no_lidar_recorder.appendTimeSync(
           time_sync_info, communication::TimeSyncProvider::RkPtp, 0u);
+      warmRecorder(no_lidar_recorder, imu0.timestamp_us, 3);
       no_lidar_recorder.appendImu(imu0);
       no_lidar_recorder.appendImu(imu1);
       no_lidar_recorder.appendFrameSet(
@@ -9543,7 +9894,7 @@ int runViewerApplication(int argc, char** argv) {
         shouldTakeFrameJob(true, true, 100, 100) &&
         !shouldTakeFrameJob(true, true, 300, 200);
 
-    // One synchronized onboard IMU is sufficient. The other index remains
+    // A board with one present onboard IMU is sufficient. The other index remains
     // present but empty so stream identity is stable for readers/exporters.
     const std::filesystem::path single_imu_root =
         test_root / "single-synced-imu";
@@ -9551,10 +9902,11 @@ int runViewerApplication(int argc, char** argv) {
     std::string single_imu_error;
     bool single_imu_ok = single_imu_recorder.start(
         single_imu_root, true, DatasetRecordingMode::ImuOnly, false,
-        DatasetTimestampDomain::UnixUtc, &single_imu_error);
+        DatasetTimestampDomain::UnixUtc, &single_imu_error, 1);
     if (single_imu_ok) {
       single_imu_recorder.appendTimeSync(
           time_sync_info, communication::TimeSyncProvider::RkPtp, 0u);
+      warmRecorder(single_imu_recorder, imu0.timestamp_us, 1);
       single_imu_recorder.appendImu(imu0);
       single_imu_recorder.appendImu(unsynced_imu1);
       const DatasetRecordingSummary single_imu_summary =
@@ -9576,10 +9928,11 @@ int runViewerApplication(int argc, char** argv) {
       DatasetRecorder xt_recorder;
       std::string xt_error;
       if (!xt_recorder.start(xt_root, true, DatasetRecordingMode::Full, true,
-                            DatasetTimestampDomain::UnixUtc, &xt_error, false)) {
+                            DatasetTimestampDomain::UnixUtc, &xt_error, 3, false)) {
         std::cerr << "XT32 recorder start: " << xt_error << '\n'; return 23;
       }
       xt_recorder.appendTimeSync(time_sync_info, communication::TimeSyncProvider::Gps, 0u);
+      warmRecorder(xt_recorder, imu0.timestamp_us, 3);
       xt_recorder.appendImu(imu0);xt_recorder.appendImu(imu1);
       xt_recorder.appendFrameSet(7,1780000000000500ULL,metadata,jpeg);
       auto xt = lidar;
@@ -9644,7 +9997,7 @@ int runViewerApplication(int argc, char** argv) {
     std::string internal_time_error;
     bool internal_time_ok = internal_time_recorder.start(
         internal_time_root, true, DatasetRecordingMode::ImuOnly, false,
-        DatasetTimestampDomain::SensorBoardBoot, &internal_time_error);
+        DatasetTimestampDomain::SensorBoardBoot, &internal_time_error, 1);
     if (internal_time_ok) {
       time_sync_info.sensor_board_time_synced = true;
       time_sync_info.imu_time_synced_mask = 0x03u;
@@ -9653,6 +10006,7 @@ int runViewerApplication(int argc, char** argv) {
           communication::TimeSyncProvider::SensorBoardInternal, 1000000u);
       prism::ImuSample internal_imu = imu0;
       internal_imu.timestamp_us = 1000000u;
+      warmRecorder(internal_time_recorder, internal_imu.timestamp_us, 1);
       internal_time_recorder.appendImu(internal_imu);
       const DatasetRecordingSummary internal_summary =
           internal_time_recorder.stop();
@@ -9687,7 +10041,27 @@ int runViewerApplication(int argc, char** argv) {
           domain_change_summary.error.find("time domain changed") !=
               std::string::npos;
     }
-    const bool success = summary.success && mode_ok && manifest_mode_ok &&
+    // A later FSYNC regression must not be repaired or hidden by warming again.
+    DatasetRecorder regression_recorder;
+    bool regression_fails = regression_recorder.start(test_root / "late-regression", true,
+        DatasetRecordingMode::ImuOnly, false, DatasetTimestampDomain::UnixUtc, &error, 1);
+    if (regression_fails) {
+      regression_recorder.appendTimeSync(time_sync_info, communication::TimeSyncProvider::Gps, 0);
+      warmRecorder(regression_recorder, imu0.timestamp_us, 1);
+      regression_recorder.appendImu(imu0);
+      auto backwards = imu0;
+      backwards.timestamp_us -= 12;
+      regression_recorder.appendImu(backwards);
+      const auto failed = regression_recorder.stop();
+      regression_fails = !failed.success && failed.sample_count[0] == 1 &&
+          failed.error.find("backwards") != std::string::npos;
+      std::ifstream diagnostics(test_root / "late-regression" / "imu_metadata.csv");
+      bool rejected = false;
+      for (std::string row; std::getline(diagnostics, row);)
+        rejected = rejected || row.find("rejected,0,") == 0;
+      regression_fails = regression_fails && rejected;
+    }
+    const bool success = regression_fails && summary.success && mode_ok && manifest_mode_ok &&
                          manifest_complete_ok &&
                          manifest_time_domain_ok && manifest_epoch_ok &&
                          manifest_alignment_ok && manifest_gps_rtk_ok &&
@@ -9967,7 +10341,7 @@ int runViewerApplication(int argc, char** argv) {
             QStringLiteral("4294967294"), 1310720, 995000));
         common::setChineseUi(original_chinese);
         for (int step = 0; step < 12; ++step) {
-          stats[step % 4]->setText(samples[(step + step / 4) % samples.size()]);
+          static_cast<CameraStatsLabel*>(stats[step % 4])->setStats(samples[(step + step / 4) % samples.size()]);
           settle_layout();
           camera_stats_layout_ok = camera_stats_layout_ok &&
               window.size() == window_size &&
@@ -9990,7 +10364,7 @@ int runViewerApplication(int argc, char** argv) {
           }
         }
         for (int camera = 0; camera < 4; ++camera) {
-          stats[camera]->setText(original_text[camera]);
+          static_cast<CameraStatsLabel*>(stats[camera])->setStats(original_text[camera]);
         }
         settle_layout();
       }
@@ -10196,9 +10570,14 @@ int runViewerApplication(int argc, char** argv) {
     QString imu_window_report;
     const bool imu_window_ok =
         window.runImuPlotWindowSelfTest(&imu_window_report);
+    const int camera_screenshot_arg = command_line.indexOf(
+        QStringLiteral("--camera-gain-screenshot"));
+    const bool camera_gain_ok = window.runCameraGainSelfTest(
+        camera_screenshot_arg >= 0 && camera_screenshot_arg + 1 < command_line.size()
+            ? command_line[camera_screenshot_arg + 1] : QString());
     const bool success = playback_controls_ok && camera_stats_layout_ok && imu_layout_ok &&
         lidar_layout_ok && dataset_frame_layout_ok && dataset_overview_ok &&
-        imu_window_ok &&
+        imu_window_ok && camera_gain_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
         minimum.height() <= kMaximumMainWindowMinimumHeight;
     std::cout << "main_window_layout_self_test="
@@ -10223,6 +10602,7 @@ int runViewerApplication(int argc, char** argv) {
               << (dataset_frame_layout_ok ? "PASS" : "FAIL")
               << " imu_10s_window="
               << (imu_window_ok ? "PASS" : "FAIL")
+              << " camera_gain=" << (camera_gain_ok ? "PASS" : "FAIL")
               << " " << imu_window_report.toStdString() << "\n";
     window.close();
     app.processEvents();

@@ -51,6 +51,19 @@ const QVector<CorsServiceProvider>& corsServiceProviders() {
                QStringLiteral("RTCM30_GR（双星）")},
           },
       },
+      {
+          QStringLiteral("qianxun"),
+          QStringLiteral("千寻 CORS"),
+          {{QStringLiteral("主服务"), QStringLiteral("203.107.45.154"), 8002}},
+          {
+              {QStringLiteral("AUTO"), QStringLiteral("AUTO（五星十六频）")},
+              {QStringLiteral("RTCM32_GGB"),
+               QStringLiteral("RTCM32_GGB（三星八频）")},
+              {QStringLiteral("RTCM30_GG"),
+               QStringLiteral("RTCM30_GG（双星）")},
+          },
+          8003,
+      },
   };
   return providers;
 }

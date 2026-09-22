@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 1.1.1 LANGUAGES CXX)
+project(prism_viewer VERSION 1.2.0 LANGUAGES CXX)
 
 # Viewer and its pinned binary SDK are versioned independently.
 set(PRISM_USB_SDK_VERSION "1.2.0")
@@ -196,17 +196,20 @@ add_executable(prism-viewer
   src/dataset/dataset_playback.cpp
   src/dataset/dataset_playback_timing.cpp
   src/dataset/rosbag_exporter.cpp
+  src/dataset/rk_dataset_client.cpp
   src/main.cpp
   src/transfer/camera_frame_assembler.cpp
   src/ui/camera_zoom_dialog.cpp
   src/ui/camera_encoding_panel.cpp
   src/ui/camera_exposure_panel.cpp
   src/ui/cors_panel.cpp
+  src/ui/gnss_visualization.cpp
   src/ui/device_info_panel.cpp
   src/ui/image_view_label.cpp
   src/ui/lidar_point_cloud_widget.cpp
   src/ui/main_window.cpp
   src/ui/preview_image_decoder.cpp
+  src/ui/rk_dataset_dialog.cpp
   src/ui/wifi_hotspot_panel.cpp
   src/ui/zoomable_image_view.cpp
 )
@@ -367,6 +370,30 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(gnss-visualization-test src/ui/gnss_visualization.cpp src/common/ui_text.cpp tests/gnss_visualization_test.cpp)
+  target_include_directories(gnss-visualization-test PRIVATE src)
+  target_link_libraries(gnss-visualization-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Widgets)
+  add_test(NAME gnss-visualization COMMAND gnss-visualization-test)
+  set_tests_properties(gnss-visualization PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  add_executable(rk-dataset-test
+    src/common/ui_text.cpp src/dataset/dataset_browser.cpp
+    src/dataset/rk_dataset_client.cpp src/dataset/rosbag_exporter.cpp
+    tests/rk_dataset_test.cpp)
+  target_include_directories(rk-dataset-test PRIVATE src)
+  target_compile_features(rk-dataset-test PRIVATE cxx_std_17)
+  target_link_libraries(rk-dataset-test PRIVATE prism-viewer-sdk
+    ${QT_PACKAGE}::Gui ${QT_PACKAGE}::Network ${QT_PACKAGE}::Sql)
+  add_test(NAME rk-dataset COMMAND rk-dataset-test)
+  add_executable(rk-dataset-dialog-test
+    src/common/ui_text.cpp src/ui/app_theme.cpp src/ui/rk_dataset_dialog.cpp
+    src/dataset/dataset_browser.cpp src/dataset/rk_dataset_client.cpp
+    src/dataset/rosbag_exporter.cpp tests/rk_dataset_dialog_test.cpp)
+  target_include_directories(rk-dataset-dialog-test PRIVATE src)
+  target_compile_features(rk-dataset-dialog-test PRIVATE cxx_std_17)
+  target_link_libraries(rk-dataset-dialog-test PRIVATE prism-viewer-sdk
+    ${QT_PACKAGE}::Widgets ${QT_PACKAGE}::Network ${QT_PACKAGE}::Sql)
+  add_test(NAME rk-dataset-dialog COMMAND rk-dataset-dialog-test)
+  set_tests_properties(rk-dataset-dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   add_executable(sdk-runtime-test tests/sdk_runtime_test.cpp)
   target_compile_features(sdk-runtime-test PRIVATE cxx_std_17)
   target_link_libraries(sdk-runtime-test PRIVATE prism-viewer-sdk)
@@ -477,6 +504,11 @@ if(BUILD_TESTING)
   target_include_directories(imu-timestamp-policy-test PRIVATE src)
   target_compile_features(imu-timestamp-policy-test PRIVATE cxx_std_17)
   add_test(NAME imu-timestamp-policy COMMAND imu-timestamp-policy-test)
+
+  add_executable(recording-startup-gate-test tests/recording_startup_gate_test.cpp)
+  target_include_directories(recording-startup-gate-test PRIVATE src)
+  target_compile_features(recording-startup-gate-test PRIVATE cxx_std_17)
+  add_test(NAME recording-startup-gate COMMAND recording-startup-gate-test)
 
   add_executable(camera-frame-assembler-test
     src/transfer/camera_frame_assembler.cpp

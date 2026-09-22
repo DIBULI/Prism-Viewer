@@ -29,6 +29,23 @@ int main() {
   ok &= require(provider->mountpoints.size() == 5,
                 "China Mobile mountpoint catalog is incomplete");
 
+  ok &= require(provider->cgcs2000_port == 8001,
+                "China Mobile CGCS2000 port changed");
+  const auto* qianxun = findCorsServiceProvider(QStringLiteral("qianxun"));
+  ok &= require(qianxun != nullptr, "Qianxun provider is missing");
+  if (qianxun == nullptr) return 1;
+  ok &= require(qianxun->endpoints.size() == 1 &&
+                    qianxun->endpoints.front().host ==
+                        QStringLiteral("203.107.45.154") &&
+                    qianxun->endpoints.front().port == 8002 &&
+                    qianxun->cgcs2000_port == 8003,
+                "Qianxun endpoint or coordinate-system ports are incorrect");
+  ok &= require(qianxun->mountpoints.size() == 3 &&
+                    qianxun->mountpoints.at(0).id == QStringLiteral("AUTO") &&
+                    qianxun->mountpoints.at(1).id == QStringLiteral("RTCM32_GGB") &&
+                    qianxun->mountpoints.at(2).id == QStringLiteral("RTCM30_GG"),
+                "Qianxun mountpoints are incorrect");
+
   auto parsed = parseCorsEndpointAddress(
       QStringLiteral("120.253.226.97"), 8002);
   ok &= require(parsed.valid() &&
@@ -129,6 +146,25 @@ int main() {
                 "NTRIP Basic authorization is missing");
   ok &= require(request.contains("Ntrip-GGA: $GPGGA,"),
                 "NTRIP GGA header is missing");
+
+  auto qianxun_configuration = configuration;
+  qianxun_configuration.service_provider = qianxun->id;
+  qianxun_configuration.endpoints = qianxun->endpoints;
+  for (const quint16 port : {quint16(8002), quint16(8003)}) {
+    qianxun_configuration.endpoints.front().port = port;
+    for (const auto& mount : qianxun->mountpoints) {
+      qianxun_configuration.mountpoint = mount.id;
+      ok &= require(validateCorsConfiguration(qianxun_configuration).isEmpty(),
+                    "Valid Qianxun configuration was rejected");
+      const auto qianxun_request = buildNtripRequest(
+          qianxun_configuration, qianxun_configuration.endpoints.front(), gga);
+      ok &= require(qianxun_request.startsWith(
+                        "GET /" + mount.id.toUtf8() + " HTTP/1.0\r\n") &&
+                        qianxun_request.contains("Authorization: Basic ") &&
+                        qianxun_request.contains("Ntrip-GGA: $GPGGA,"),
+                    "Qianxun request lost mountpoint, credentials or live GGA");
+    }
+  }
 
   QByteArray response("ICY 200 OK\r\nServer: test\r\n\r\n");
   response.append(char(0xd3));

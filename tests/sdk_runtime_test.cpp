@@ -1,4 +1,5 @@
 #include "prism/usb/runtime_api.hpp"
+#include "prism/usb/gnss_reception_runtime_api.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -8,10 +9,12 @@
 #include <Windows.h>
 #else
 extern "C" const prism::RuntimeApi* prism_usb_sdk_get_runtime_api(uint32_t);
+extern "C" const prism::GnssReceptionRuntimeApi* prism_usb_sdk_get_gnss_reception_api(uint32_t);
 #endif
 
 int main() {
   try {
+    // XT32 metadata changes LidarPoint's layout; reject mixed header/library ABIs.
     static_assert(prism::kRuntimeApiVersion == 13,
                   "Review the Viewer bindings when updating the SDK ABI");
 #ifdef _WIN32
@@ -40,6 +43,18 @@ int main() {
         !api->start_rover_rtcm || !api->stop_rover_rtcm ||
         !api->parse_rover_rtcm_chunk_view) {
       throw std::runtime_error("SDK GPS/RTK/RTCM API is incomplete");
+    }
+#ifdef _WIN32
+    const auto get_reception = reinterpret_cast<prism::GetGnssReceptionRuntimeApiFunction>(
+        GetProcAddress(module, prism::kGnssReceptionRuntimeApiEntryPoint));
+#else
+    const auto get_reception = &prism_usb_sdk_get_gnss_reception_api;
+#endif
+    const auto* reception = get_reception ? get_reception(1) : nullptr;
+    if (!reception || reception->abi_version != 1 ||
+        reception->struct_size != sizeof(prism::GnssReceptionRuntimeApi) ||
+        !reception->gnss_reception_status || get_reception(0) || get_reception(2)) {
+      throw std::runtime_error("Independent reception extension is incomplete");
     }
     // No enumeration, connection, capture, or time/configuration mutation.
     auto* client = api->client_create();
