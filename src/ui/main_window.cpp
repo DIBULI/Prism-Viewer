@@ -2957,12 +2957,22 @@ class MainWindow : public QMainWindow {
     auto* rk_download = new QPushButton(uiText("Download from RK...", "从 RK 导出……"), dataset_page_);
     rk_download->setObjectName(QStringLiteral("datasetDownloadRkButton"));
     connect(rk_download, &QPushButton::clicked, this, [this] {
-      if (worker_running_ || rosbag_export_running_ || dataset_recorder_.isActive()) {
+      if (!client_.isOpen()) { showOpenDeviceHint(uiText("RK datasets", "RK 数据集")); return; }
+      if (worker_running_ || rosbag_export_running_ || dataset_recorder_.isActive() ||
+          time_sync_running_ || wifi_operation_running_ || camera_exposure_operation_running_ ||
+          camera_encoding_operation_running_ || lidar_network_operation_running_ ||
+          upgrade_running_ || cors_session_.active() || client_.streamTransferActive()) {
         QMessageBox::information(this, uiText("RK dataset export", "RK 数据集导出"),
-          uiText("Stop this Viewer capture/recording before opening RK dataset export.", "请先停止此 Viewer 的采集/录制，再从 RK 导出数据。"));
+          uiText("Stop capture/recording and host CORS, and wait for device operations to finish before downloading.", "请先停止采集/录制和主机 CORS，并等待设备操作完成，再下载数据。"));
         return;
       }
-      prism_viewer::ui::showRkDatasetDialog(this, [this](const QString& path) { loadRecordedDataset(path, true); });
+      prism_viewer::dataset::RkDatasetAccess access;
+      access.list = [this] { return withClientIo([this] { return client_.recordedDatasets(); }); };
+      access.download = [this](const std::string& name, const std::string& parent,
+          const prism::DatasetProgress& progress, const prism::DatasetCancel& cancel) {
+        return withClientIo([&] { return client_.downloadRecordedDataset(name,parent,progress,cancel); });
+      };
+      prism_viewer::ui::showRkDatasetDialog(this, std::move(access), [this](const QString& path) { loadRecordedDataset(path, true); });
     });
     dataset_controls->addWidget(rk_download);
     dataset_controls->addWidget(dataset_validate_button_);

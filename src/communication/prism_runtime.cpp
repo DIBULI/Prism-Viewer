@@ -82,12 +82,28 @@ const prism::GnssReceptionRuntimeApi* receptionApi() {
   return api;
 }
 
+const prism::DatasetRuntimeApi* datasetApi() {
+  const auto get=reinterpret_cast<prism::GetDatasetRuntimeApiFunction>(
+      GetProcAddress(loadModule(),prism::kDatasetRuntimeApiEntryPoint));
+  const auto* api=get?get(prism::kDatasetRuntimeApiVersion):nullptr;
+  if(!api || api->abi_version!=prism::kDatasetRuntimeApiVersion ||
+      api->struct_size<sizeof(*api) || !api->list || !api->files || !api->read || !api->download)
+    throw std::runtime_error("Raw dataset SDK extension unavailable; update the complete Viewer package");
+  return api;
+}
+
 }  // namespace
 
 prism::GnssReceptionStatus Client::gnssReceptionStatus() {
   const auto* api = receptionApi();
   if (!api) throw std::runtime_error("GNSS reception extension unavailable");
   return api->gnss_reception_status(handle_);
+}
+
+std::vector<prism::RecordedDataset> Client::recordedDatasets() {return datasetApi()->list(handle_);}
+std::string Client::downloadRecordedDataset(const std::string& name,const std::string& parent,
+    const prism::DatasetProgress& progress,const prism::DatasetCancel& cancel) {
+  return datasetApi()->download(handle_,name,parent,progress,cancel);
 }
 
 prism::GnssObservations Client::gnssObservations(uint64_t cursor,uint64_t session) {

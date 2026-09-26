@@ -55,6 +55,9 @@ class Client {
   bool streamTransferActive() const noexcept;
 
   prism::HelloInfo hello();
+  std::vector<prism::RecordedDataset> recordedDatasets();
+  std::string downloadRecordedDataset(const std::string& name,const std::string& parent,
+      const prism::DatasetProgress& progress={},const prism::DatasetCancel& cancel={});
   prism::DeviceInfo deviceInfo();
   prism::DeviceVersions deviceVersions();
   prism::SystemTimeSyncResult synchronizeSystemTime(

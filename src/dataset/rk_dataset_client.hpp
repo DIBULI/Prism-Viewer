@@ -1,22 +1,20 @@
 #pragma once
+#include "prism/usb/datasets.hpp"
 #include <QtCore/QJsonArray>
 #include <QtCore/QString>
-#include <QtCore/QUrl>
 #include <functional>
-#include <stdexcept>
 
 namespace prism_viewer::dataset {
-class RkDownloadCancelled : public std::runtime_error {
- public:
-  RkDownloadCancelled() : std::runtime_error("Download cancelled") {}
-};
-using RkDownloadCancel = std::function<bool()>;
+using RkDownloadCancelled = prism::DatasetDownloadCancelled;
+using RkDownloadCancel = prism::DatasetCancel;
 using RkDownloadProgress = std::function<void(quint64, quint64, const QString&)>;
-QUrl rkDatasetEndpoint(const QString& text);
-QJsonArray listRkDatasets(const QUrl& base, const RkDownloadCancel& cancel = {});
-// Creates a fresh child directory. A failure leaves a clearly named .partial
-// directory; an existing dataset is never replaced. Does not stop/delete RK data.
-QString downloadRkDataset(const QUrl& base, const QString& name, const QString& parent,
-                          const RkDownloadProgress& progress = {},
-                          const RkDownloadCancel& cancel = {});
-}  // namespace prism_viewer::dataset
+// Supplied by MainWindow's existing serialized USB connection. No HTTP fallback.
+struct RkDatasetAccess {
+  std::function<std::vector<prism::RecordedDataset>()> list;
+  std::function<std::string(const std::string&, const std::string&,
+                           const prism::DatasetProgress&, const prism::DatasetCancel&)> download;
+};
+QJsonArray listRkDatasets(const RkDatasetAccess&, const RkDownloadCancel& cancel = {});
+QString downloadRkDataset(const RkDatasetAccess&, const QString& name, const QString& parent,
+                         const RkDownloadProgress& progress = {}, const RkDownloadCancel& cancel = {});
+}

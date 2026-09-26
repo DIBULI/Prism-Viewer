@@ -90,7 +90,7 @@ The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
 Viewer 1.2.0 uses Prism SDK **v1.2.0**, commit
-`6ed74f83fdcb7c1e6f76dc7954bb64d140cb0bd9` (Runtime API 18), on every
+`84ed73e3a1e17dc6425c6b44e890f3098af59d3b` (Runtime API 18 + raw dataset extension 1), on every
 platform. It requires Agent 1.2.0, with Sensor Board 0.4.27. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
@@ -123,10 +123,12 @@ git submodule update --init --recursive
 
 ## Local Datasets
 
-The RK download dialog does not yet implement authenticated Web login. For a
-device with Web authentication enabled, log in and download through its browser
-UI, extract the dataset, then open it in Viewer for playback or ROS export.
-Do not disable device authentication to use this dialog.
+The RK download dialog uses the currently connected **USB** device and the
+SDK's raw-file transfer APIs, not HTTP or port 80. Stop RK capture before
+browsing/downloading. SDK downloads preserve original files; optional ROS1/ROS2
+bag conversion runs locally in Viewer. No Web address or login is needed.
+Use the refreshed Agent/SDK 1.2.0 build with dataset transfer support; an older
+1.2.0 binary without the extension reports unsupported, without HTTP fallback.
 
 Recorded **Camera**, **IMU**, and **LiDAR** previews have separate tabs; each
 uses the full preview area. Play/pause, speed and the timeline are shared.

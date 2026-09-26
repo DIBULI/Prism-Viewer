@@ -3,6 +3,7 @@
 #include "dataset/rk_dataset_client.hpp"
 #include "dataset/rosbag_exporter.hpp"
 #include <QtCore/QDir>
+#include <QtCore/QDateTime>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonObject>
@@ -33,7 +34,8 @@ struct Result {
   QString path, bag, error;
 };
 class Dialog final : public QDialog {
-  QLineEdit *address_, *folder_;
+  QLineEdit *folder_;
+  dataset::RkDatasetAccess access_;
   QPushButton *refresh_, *browse_, *download_, *cancel_, *open_;
   QTableWidget* table_;
   QComboBox* format_;
@@ -46,7 +48,7 @@ class Dialog final : public QDialog {
   std::function<void(const QString&)> open_dataset_;
   bool busy() const { return thread_ != nullptr; }
   void controls() {
-    address_->setEnabled(!busy()); folder_->setEnabled(!busy()); refresh_->setEnabled(!busy());
+    folder_->setEnabled(!busy()); refresh_->setEnabled(!busy());
     browse_->setEnabled(!busy()); table_->setEnabled(!busy()); format_->setEnabled(!busy());
     download_->setEnabled(!busy() && table_->currentRow() >= 0);
     open_->setEnabled(!busy() && QFileInfo::exists(QDir(downloaded_).filePath(QStringLiteral("dataset.info"))) && !downloaded_.isEmpty());
@@ -85,8 +87,7 @@ class Dialog final : public QDialog {
           QStringList text{entry.value(QStringLiteral("name")).toString(),
             complete ? uiText("Complete", "完整") : uiText("Incomplete", "未完成"),
             m.value(QStringLiteral("viewer_format")).toString().isEmpty() ? uiText("Legacy raw", "旧版原始格式") : QStringLiteral("Prism v6"),
-            QString::number(m.value(QStringLiteral("frame_sets")).toDouble(), 'f', 0),
-            QString::number(m.value(QStringLiteral("lidar_points")).toDouble(), 'f', 0)};
+            QDateTime::fromSecsSinceEpoch(entry.value(QStringLiteral("modified")).toString().toLongLong(),Qt::UTC).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'"))};
           for (int col=0; col<text.size(); ++col) table_->setItem(row,col,new QTableWidgetItem(text[col]));
         }
         if (!rows_.isEmpty()) table_->selectRow(0);
@@ -104,17 +105,14 @@ class Dialog final : public QDialog {
   }
   void refresh() {
     try {
-      const auto base=dataset::rkDatasetEndpoint(address_->text());
-      QSettings(QStringLiteral("DIBULI"),QStringLiteral("PrismViewer")).setValue(QStringLiteral("rkDataset/address"),base.toString());
       status_->setText(uiText("Reading RK recordings...", "正在读取 RK 数据集列表……"));
-      launch([this,base](Result& r) { r.listing=true; r.rows=dataset::listRkDatasets(base,[this]{return cancelled_.load();}); });
+      launch([this](Result& r) { r.listing=true; r.rows=dataset::listRkDatasets(access_,[this]{return cancelled_.load();}); });
     } catch (const std::exception& error) { status_->setText(QString::fromUtf8(error.what())); }
   }
   void download() {
     const int row=table_->currentRow();
     if (row < 0 || row >= rows_.size()) return;
     try {
-      const auto base=dataset::rkDatasetEndpoint(address_->text());
       const auto entry=rows_.at(row).toObject(), manifest=entry.value(QStringLiteral("manifest")).toObject();
       const QString name=entry.value(QStringLiteral("name")).toString(), parent=folder_->text();
       const int format=format_->currentIndex();
@@ -125,9 +123,9 @@ class Dialog final : public QDialog {
       }
       QSettings(QStringLiteral("DIBULI"),QStringLiteral("PrismViewer")).setValue(QStringLiteral("rkDataset/folder"),parent);
       status_->setText(uiText("Downloading original RK chunks...", "正在下载 RK 原始 CHUNK……"));
-      launch([this,base,name,parent,format](Result& r) {
+      launch([this,name,parent,format](Result& r) {
         QElapsedTimer throttle; throttle.start();
-        r.path=dataset::downloadRkDataset(base,name,parent,[this,&throttle](quint64 n,quint64 total,const QString& file) {
+        r.path=dataset::downloadRkDataset(access_,name,parent,[this,&throttle](quint64 n,quint64 total,const QString& file) {
           if (throttle.elapsed() < 100 && n != total) return;
           throttle.restart(); report(n,total,uiText("Downloading %1\n%2 / %3 MiB", "正在下载 %1\n%2 / %3 MiB")
             .arg(file).arg(n/1048576.0,0,'f',1).arg(total/1048576.0,0,'f',1));
@@ -148,27 +146,26 @@ class Dialog final : public QDialog {
     } catch (const std::exception& error) { status_->setText(QString::fromUtf8(error.what())); }
   }
  public:
-  Dialog(QWidget* parent, std::function<void(const QString&)> open_dataset)
-      : QDialog(parent), open_dataset_(std::move(open_dataset)) {
+  Dialog(QWidget* parent, dataset::RkDatasetAccess access, std::function<void(const QString&)> open_dataset)
+      : QDialog(parent), access_(std::move(access)), open_dataset_(std::move(open_dataset)) {
     setObjectName(QStringLiteral("rkDatasetDialog"));
     setWindowTitle(uiText("Download RK recordings", "从 RK 导出数据集")); resize(940,560);
     auto* layout=new QVBoxLayout(this);
-    auto* note=new QLabel(uiText("Download recordings from the RK local disk. Original chunks are preserved; ROS conversion runs on this computer. No USB capture connection is needed.",
-      "下载 RK 本地磁盘上的录制数据，保留原始 CHUNK；ROS 转换在当前电脑完成，不需要连接 USB 采集。"),this);
+    auto* note=new QLabel(uiText("Download RK recordings through the connected USB device. The SDK transfers original files only; optional ROS conversion runs in Viewer on this computer.",
+      "通过当前 USB 连接下载 RK 数据集。SDK 只传输原始文件；可选的 ROS 转换由当前电脑上的 Viewer 完成。"),this);
     note->setWordWrap(true); layout->addWidget(note);
     auto* connection=new QHBoxLayout();
-    connection->addWidget(new QLabel(uiText("RK address", "RK 地址"),this));
+    connection->addWidget(new QLabel(uiText("Current USB device", "当前 USB 设备"),this));
+    connection->addStretch();
     QSettings settings(QStringLiteral("DIBULI"),QStringLiteral("PrismViewer"));
-    address_=new QLineEdit(settings.value(QStringLiteral("rkDataset/address"),QStringLiteral("http://10.42.200.1:80")).toString(),this);
-    address_->setObjectName(QStringLiteral("rkDatasetAddress")); connection->addWidget(address_,1);
     refresh_=new QPushButton(uiText("Refresh", "刷新列表"),this); refresh_->setObjectName(QStringLiteral("rkDatasetRefresh")); connection->addWidget(refresh_);
     layout->addLayout(connection);
-    table_=new QTableWidget(0,5,this); table_->setObjectName(QStringLiteral("rkDatasetTable"));
-    table_->setHorizontalHeaderLabels({uiText("Dataset", "数据集"),uiText("State", "状态"),uiText("Format", "格式"),uiText("Frame sets", "帧集"),uiText("LiDAR points", "雷达点数")});
+    table_=new QTableWidget(0,4,this); table_->setObjectName(QStringLiteral("rkDatasetTable"));
+    table_->setHorizontalHeaderLabels({uiText("Dataset", "数据集"),uiText("State", "状态"),uiText("Format", "格式"),uiText("Modified (device clock)", "修改时间（设备时钟）")});
     table_->setSelectionBehavior(QAbstractItemView::SelectRows); table_->setSelectionMode(QAbstractItemView::SingleSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers); table_->verticalHeader()->hide();
     table_->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);
-    for(int col=1;col<5;++col) table_->horizontalHeader()->setSectionResizeMode(col,QHeaderView::ResizeToContents);
+    for(int col=1;col<4;++col) table_->horizontalHeader()->setSectionResizeMode(col,QHeaderView::ResizeToContents);
     layout->addWidget(table_,1);
     auto* destination=new QHBoxLayout(); destination->addWidget(new QLabel(uiText("Save to", "保存到"),this));
     folder_=new QLineEdit(settings.value(QStringLiteral("rkDataset/folder"),QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString(),this);
@@ -180,8 +177,8 @@ class Dialog final : public QDialog {
     open_=new QPushButton(uiText("Open downloaded dataset", "打开已下载数据集"),this); actions->addWidget(open_); actions->addStretch();
     cancel_=new QPushButton(uiText("Close", "关闭"),this); actions->addWidget(cancel_); layout->addLayout(actions);
     progress_=new QProgressBar(this); progress_->setRange(0,1000); progress_->setValue(0); layout->addWidget(progress_);
-    status_=new QLabel(uiText("Use RK Wi-Fi or Ethernet IP, port 80. If Web login is required, download in your browser and open the extracted dataset in Viewer; this dialog does not implement login.",
-                              "填写 RK 的 Wi-Fi 或有线 IP，端口 80。若设备要求网页登录，请在浏览器下载并解压后导入 Viewer；此窗口尚未提供登录。"),this);
+    status_=new QLabel(uiText("Stop RK capture before refreshing or downloading. No network or Web login is used. The device must run the updated Agent 1.2.0 with dataset transfer support.",
+                              "刷新或下载前请停止 RK 采集；无需网络或网页登录。设备需运行包含数据集传输接口的新版 Agent 1.2.0。"),this);
     status_->setWordWrap(true); status_->setTextInteractionFlags(Qt::TextSelectableByMouse); layout->addWidget(status_);
     status_->setTextFormat(Qt::PlainText);
     connect(refresh_,&QPushButton::clicked,this,[this]{refresh();});
@@ -192,11 +189,14 @@ class Dialog final : public QDialog {
     connect(open_,&QPushButton::clicked,this,[this]{if(!downloaded_.isEmpty()){open_dataset_(downloaded_);accept();}});
     controls();
   }
+  ~Dialog() override {
+    if (thread_) { cancelled_=true; thread_->disconnect(this); thread_->wait(); delete thread_; }
+  }
   void reject() override { if(busy()){cancelled_=true; status_->setText(uiText("Cancelling...", "正在取消……"));} else QDialog::reject(); }
   void closeEvent(QCloseEvent* event) override { if(busy()){reject();event->ignore();}else QDialog::closeEvent(event); }
 };
 }  // namespace
-void showRkDatasetDialog(QWidget* parent, const std::function<void(const QString&)>& open_dataset) {
-  Dialog dialog(parent,open_dataset); dialog.exec();
+void showRkDatasetDialog(QWidget* parent, dataset::RkDatasetAccess access, const std::function<void(const QString&)>& open_dataset) {
+  Dialog dialog(parent,std::move(access),open_dataset); dialog.exec();
 }
 }  // namespace prism_viewer::ui
