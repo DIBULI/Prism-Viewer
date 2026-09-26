@@ -123,6 +123,11 @@ git submodule update --init --recursive
 
 ## Local Datasets
 
+The RK download dialog does not yet implement authenticated Web login. For a
+device with Web authentication enabled, log in and download through its browser
+UI, extract the dataset, then open it in Viewer for playback or ROS export.
+Do not disable device authentication to use this dialog.
+
 Recorded **Camera**, **IMU**, and **LiDAR** previews have separate tabs; each
 uses the full preview area. Play/pause, speed and the timeline are shared.
 Switching tabs does not restart playback or clear recorded IMU/point-cloud

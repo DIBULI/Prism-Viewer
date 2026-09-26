@@ -180,8 +180,8 @@ class Dialog final : public QDialog {
     open_=new QPushButton(uiText("Open downloaded dataset", "打开已下载数据集"),this); actions->addWidget(open_); actions->addStretch();
     cancel_=new QPushButton(uiText("Close", "关闭"),this); actions->addWidget(cancel_); layout->addLayout(actions);
     progress_=new QProgressBar(this); progress_->setRange(0,1000); progress_->setValue(0); layout->addWidget(progress_);
-    status_=new QLabel(uiText("Use RK Wi-Fi or Ethernet IP, port 80. This LAN service has no authentication.",
-                              "填写 RK 的 Wi-Fi 或有线 IP，端口 80。此局域网服务没有访问认证。"),this);
+    status_=new QLabel(uiText("Use RK Wi-Fi or Ethernet IP, port 80. If Web login is required, download in your browser and open the extracted dataset in Viewer; this dialog does not implement login.",
+                              "填写 RK 的 Wi-Fi 或有线 IP，端口 80。若设备要求网页登录，请在浏览器下载并解压后导入 Viewer；此窗口尚未提供登录。"),this);
     status_->setWordWrap(true); status_->setTextInteractionFlags(Qt::TextSelectableByMouse); layout->addWidget(status_);
     status_->setTextFormat(Qt::PlainText);
     connect(refresh_,&QPushButton::clicked,this,[this]{refresh();});
