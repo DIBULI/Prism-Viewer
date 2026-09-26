@@ -47,6 +47,7 @@ class CameraExposurePanel final : public QWidget {
 
   QLabel* message_label_ = nullptr;
   QSpinBox* target_brightness_ = nullptr;
+  QComboBox* exposure_group_mode_ = nullptr;
   QSpinBox* min_exposure_us_ = nullptr;
   QSpinBox* max_exposure_us_ = nullptr;
   QDoubleSpinBox* min_gain_ = nullptr;

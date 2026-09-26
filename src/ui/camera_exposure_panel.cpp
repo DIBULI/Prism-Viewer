@@ -50,6 +50,26 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
   message_label_->setSizePolicy(
       QSizePolicy::Preferred, QSizePolicy::Maximum);
   group_layout->addWidget(message_label_);
+  exposure_group_mode_ = new QComboBox(group);
+  exposure_group_mode_->setObjectName(QStringLiteral("cameraExposureGroupMode"));
+  exposure_group_mode_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+  exposure_group_mode_->setMinimumContentsLength(12);
+  exposure_group_mode_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  exposure_group_mode_->addItem(uiText("Independent exposure", "独立曝光"), false);
+  exposure_group_mode_->addItem(uiText("Unified auto · highlight guard",
+      "四相机统一自动曝光（过曝保护）"), true);
+  exposure_group_mode_->setToolTip(uiText(
+      "The brightest camera limits a shared exposure; RAW highlight protection can darken other cameras. Gains remain independent. Requires updated Sensor Board firmware.",
+      "以最亮一路约束公共曝光，并检查 RAW 高亮饱和比例；暗的一路可能偏暗。增益仍独立调节。需要新版 Sensor Board 固件。"));
+  group_layout->addWidget(exposure_group_mode_);
+  connect(exposure_group_mode_, qOverload<int>(&QComboBox::currentIndexChanged),
+          this, [this](int index) {
+            if (index == 1) for (auto* mode : camera_mode_) {
+              const QSignalBlocker blocker(mode);
+              mode->setCurrentIndex(mode->findData(kAutomaticModeValue));
+            }
+            refreshView();
+          });
 
   auto* automatic_limits = new QGridLayout();
   automatic_limits->setHorizontalSpacing(10);
@@ -354,6 +374,8 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
 
 void CameraExposurePanel::clear() {
   configuration_ = {};
+  const QSignalBlocker group_blocker(exposure_group_mode_);
+  exposure_group_mode_->setCurrentIndex(0);
   limits_ = {};
   {
     const QSignalBlocker min_blocker(min_exposure_us_);
@@ -420,6 +442,8 @@ void CameraExposurePanel::setConfiguration(
     const prism::ExposureConfiguration& configuration,
     const prism::ExposureLimits& limits) {
   configuration_ = configuration;
+  const QSignalBlocker group_blocker(exposure_group_mode_);
+  exposure_group_mode_->setCurrentIndex(configuration.unified_automatic ? 1 : 0);
   limits_ = limits;
   has_configuration_ = true;
   operation_error_.clear();
@@ -474,11 +498,12 @@ void CameraExposurePanel::setError(const QString& error) {
 prism::ExposureConfiguration
 CameraExposurePanel::editedConfiguration() const {
   prism::ExposureConfiguration edited = configuration_;
+  edited.unified_automatic = exposure_group_mode_->currentData().toBool();
   edited.automatic_camera_mask = 0;
   edited.target_brightness =
       static_cast<uint8_t>(target_brightness_->value());
   for (int camera = 0; camera < 4; ++camera) {
-    if (camera_mode_[camera]->currentData().toInt() ==
+    if (edited.unified_automatic || camera_mode_[camera]->currentData().toInt() ==
         kAutomaticModeValue) {
       edited.automatic_camera_mask |=
           static_cast<uint8_t>(1u << camera);
@@ -573,6 +598,7 @@ bool CameraExposurePanel::isDirty() const {
          edited.automatic_camera_mask !=
              configuration_.automatic_camera_mask ||
          edited.target_brightness != configuration_.target_brightness ||
+         edited.unified_automatic != configuration_.unified_automatic ||
          edited.manual_exposure_time_us !=
              configuration_.manual_exposure_time_us ||
          edited.gain_x1024 != configuration_.gain_x1024;
@@ -641,14 +667,16 @@ void CameraExposurePanel::refreshView() {
   const bool can_interact =
       device_open_ && has_configuration_ && !busy_ && !controls_locked_;
   target_brightness_->setEnabled(can_interact);
+  exposure_group_mode_->setEnabled(can_interact);
+  const bool unified = exposure_group_mode_->currentData().toBool();
   min_exposure_us_->setEnabled(can_interact);
   max_exposure_us_->setEnabled(can_interact);
   min_gain_->setEnabled(can_interact);
   max_gain_->setEnabled(can_interact);
   for (int camera = 0; camera < 4; ++camera) {
-    camera_mode_[camera]->setEnabled(can_interact);
+    camera_mode_[camera]->setEnabled(can_interact && !unified);
     const bool manual =
-        camera_mode_[camera]->currentData().toInt() == kManualModeValue;
+        !unified && camera_mode_[camera]->currentData().toInt() == kManualModeValue;
     manual_exposure_us_[camera]->setEnabled(can_interact && manual);
     sensor_gain_[camera]->setEnabled(can_interact && manual);
   }

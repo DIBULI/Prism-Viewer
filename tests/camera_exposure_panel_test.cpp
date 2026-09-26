@@ -161,6 +161,17 @@ int main(int argc, char** argv) {
 
   panel.setControlsLocked(true);
   require(!gain0->isEnabled(), "gain locks during conflicting operations");
+  panel.setControlsLocked(false);
+  auto* group = panel.findChild<QComboBox*>(QStringLiteral("cameraExposureGroupMode"));
+  require(group != nullptr,"unified exposure option exists");
+  group->setCurrentIndex(1);
+  require(!mode0->isEnabled() && !exposure0->isEnabled() && !gain0->isEnabled(),
+          "unified mode blocks per-camera manual settings");
+  apply_called=false; apply->click();
+  require(apply_called && requested.unified_automatic && requested.automatic_camera_mask==15,
+          "unified apply forces all four cameras automatic");
+  group->setCurrentIndex(0);
+  require(mode0->isEnabled(),"independent controls recover");
 
   std::cout << "camera exposure panel tests passed\n";
   return 0;
