@@ -15,7 +15,6 @@ enum class DatasetPlaybackEventType {
   OnboardImu1,
   LidarPoints,
   LidarImu,
-  GpsRtk,
 };
 
 struct DatasetPlaybackImuSample {
@@ -51,6 +50,8 @@ struct DatasetPlaybackLidarPoint {
   int32_t offset_ns = 0;
   uint8_t return_id = 0;
   uint8_t confidence = 0;
+  uint8_t line = 0;
+  bool line_valid = false;
 };
 
 struct DatasetPlaybackLidarImuSample {
@@ -67,36 +68,6 @@ struct DatasetPlaybackLidarImuSample {
   bool has_time_source = false;
 };
 
-struct DatasetPlaybackGpsRtkSample {
-  uint64_t timestamp_us = 0;
-  uint16_t solution = 0;
-  uint16_t confidence = 0;
-  uint16_t satellites = 0;
-  uint16_t confidence_score = 0;
-  uint32_t confidence_reasons = 0;
-  uint16_t base_source = 0;
-  int32_t base_station_id = 0;
-  uint32_t consecutive_fix_epochs = 0;
-  uint32_t consecutive_float_epochs = 0;
-  double latitude_deg = 0.0;
-  double longitude_deg = 0.0;
-  double ellipsoidal_height_m = 0.0;
-  double east_std_m = 0.0;
-  double north_std_m = 0.0;
-  double up_std_m = 0.0;
-  double differential_age_s = 0.0;
-  double ambiguity_ratio = 0.0;
-  double position_jump_m = 0.0;
-  uint64_t solution_count = 0;
-  uint64_t fix_count = 0;
-  uint64_t float_count = 0;
-  uint64_t rover_observation_epochs = 0;
-  uint64_t base_observation_epochs = 0;
-  uint64_t decoder_errors = 0;
-  bool confidence_valid = false;
-  bool position_jump_valid = false;
-  bool base_position_valid = false;
-};
 
 struct DatasetPlaybackEvent {
   uint64_t timestamp_us = 0;
@@ -108,7 +79,6 @@ struct DatasetPlaybackData {
   std::array<std::vector<DatasetPlaybackImuSample>, 2> onboard_imus;
   std::vector<DatasetPlaybackLidarBatch> lidar_batches;
   std::vector<DatasetPlaybackLidarImuSample> lidar_imu_samples;
-  std::vector<DatasetPlaybackGpsRtkSample> gps_rtk_samples;
   std::vector<DatasetPlaybackEvent> timeline;
 
   bool empty() const noexcept { return timeline.empty(); }

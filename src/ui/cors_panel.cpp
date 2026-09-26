@@ -1,12 +1,16 @@
 #include "ui/cors_panel.hpp"
 
 #include "common/ui_text.hpp"
+#include "ui/rtk_error_help.hpp"
 
 #include <QtCore/QSettings>
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTime>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
+#include <QtWidgets/QTextBrowser>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
@@ -67,24 +71,6 @@ QString nmeaFixModeName(uint8_t mode) {
   }
 }
 
-QString smoothingStateName(uint32_t flags) {
-  using namespace prism_viewer::communication;
-  if ((flags & RtkSmoothingJumpGated) != 0u) {
-    return uiText("jump gated", "跳变门控");
-  }
-  if ((flags & RtkSmoothingTransitionGated) != 0u) {
-    return uiText("quality transition gated", "解状态切换门控");
-  }
-  if ((flags & RtkSmoothingResetEpochGap) != 0u) {
-    return uiText("reset after epoch gap", "历元断档后重置");
-  }
-  if ((flags & RtkSmoothingResetBaseSource) != 0u) {
-    return uiText("reset after base change", "基站源切换后重置");
-  }
-  return (flags & RtkSmoothingDynamicsEnabled) != 0u
-             ? uiText("active", "运行中")
-             : uiText("disabled", "未启用");
-}
 
 struct CartesianPosition {
   double x = 0.0;
@@ -268,20 +254,6 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   forwarded_value_ = new QLabel(QStringLiteral("-"), status_group);
   source_value_ = new QLabel(QStringLiteral("-"), status_group);
   solution_value_ = new QLabel(QStringLiteral("-"), status_group);
-  update_rate_value_ = new QLabel(QStringLiteral("-"), status_group);
-  update_rate_value_->setObjectName(QStringLiteral("rtkUpdateRate"));
-  epoch_value_ = new QLabel(QStringLiteral("-"), this);
-  epoch_value_->setObjectName(QStringLiteral("rtkSolutionEpoch"));
-  position_value_ = new QLabel(QStringLiteral("-"), this);
-  position_value_->setObjectName(QStringLiteral("rtkPosition"));
-  raw_position_value_ = new QLabel(QStringLiteral("-"), this);
-  raw_position_value_->setObjectName(QStringLiteral("rtkRawPosition"));
-  precision_value_ = new QLabel(QStringLiteral("-"), this);
-  precision_value_->setObjectName(QStringLiteral("rtkPrecision"));
-  confidence_value_ = new QLabel(QStringLiteral("-"), this);
-  confidence_value_->setObjectName(QStringLiteral("rtkConfidence"));
-  differential_value_ = new QLabel(QStringLiteral("-"), status_group);
-  differential_value_->setObjectName(QStringLiteral("rtkDifferential"));
   gnss_receiver_value_ = new QLabel(QStringLiteral("-"), this);
   gnss_receiver_value_->setObjectName(QStringLiteral("gnssReceiverQuality"));
   gnss_reception_value_ = new QLabel(QStringLiteral("-"), this);
@@ -303,8 +275,6 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   endpoint_value_->setWordWrap(true);
   source_value_->setWordWrap(true);
   solution_value_->setWordWrap(true);
-  update_rate_value_->setWordWrap(true);
-  differential_value_->setWordWrap(true);
   agent_value_ = new QLabel(QStringLiteral("-"), status_group);
   agent_value_->setObjectName(QStringLiteral("rtkAgentCounters"));
   agent_value_->setWordWrap(true);
@@ -327,10 +297,6 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   addStatusField(status_layout, status_group,
                  uiText("RTK solution", "RTK 解状态"),
                  solution_value_);
-  addStatusField(status_layout, status_group,
-                 uiText("Navigation rate", "导航更新率"), update_rate_value_);
-  addStatusField(status_layout, status_group,
-                 uiText("Differential", "差分状态"), differential_value_);
   addStatusField(status_layout, status_group,
                  uiText("Agent counters", "Agent 计数"), agent_value_);
   status_layout->addStretch(1);
@@ -370,13 +336,8 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   const auto gps_tab = make_scroll_tab(
       QStringLiteral("gpsStatusTab"), QStringLiteral("gpsStatusScroll"),
       uiText("GPS / GNSS", "GPS / GNSS"));
-  const auto rtk_tab = make_scroll_tab(
-      QStringLiteral("rtkStatusTab"), QStringLiteral("rtkStatusScroll"),
-      QStringLiteral("RTK"));
   QWidget* const gps_content = gps_tab.first;
   QVBoxLayout* const gps_layout = gps_tab.second;
-  QWidget* const rtk_content = rtk_tab.first;
-  QVBoxLayout* const rtk_layout = rtk_tab.second;
   auto* gnss_heading = new QLabel(
       uiText("Live receiver and position at 10 Hz; basic PPS status at 1 Hz",
              "接收机与位置按 10 Hz 刷新；基础 PPS 状态按 1 Hz 更新"),
@@ -385,6 +346,54 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   gnss_heading->setStyleSheet(
       QStringLiteral("color:#475467;padding:2px 0 6px 0;"));
   gps_layout->addWidget(gnss_heading);
+
+  auto* timesync_group = new QGroupBox(uiText("Timesync port mode", "Timesync 接口模式"), gps_content);
+  auto* timesync_layout = new QVBoxLayout(timesync_group);
+  auto* timesync_hint = new QLabel(uiText(
+      "Saved on RK; restored after reboot. Stop capture before switching. RTK mode does not start CORS. Status is a manually refreshed snapshot.",
+      "保存在 RK 本地，重启后恢复。停止采集后切换；进入 RTK 模式不启动 CORS。状态为手动刷新时的快照。"), timesync_group);
+  timesync_hint->setWordWrap(true);
+  timesync_layout->addWidget(timesync_hint);
+  auto* timesync_actions = new QHBoxLayout();
+  timesync_mode_ = new QComboBox(timesync_group);
+  timesync_mode_->setObjectName(QStringLiteral("timesyncMode"));
+  timesync_mode_->addItem(uiText("GNSS / PPS + NMEA input", "GNSS / PPS + NMEA 输入"), 0);
+  timesync_mode_->addItem(uiText("PPS + NMEA output", "PPS + NMEA 输出"), 1);
+  timesync_mode_->addItem(uiText("RTK mode", "RTK 模式"), 2);
+  timesync_refresh_ = new QPushButton(uiText("Read status", "读取实际状态"), timesync_group);
+  timesync_apply_ = new QPushButton(uiText("Apply mode", "应用模式"), timesync_group);
+  timesync_refresh_->setObjectName(QStringLiteral("timesyncRefresh"));
+  timesync_apply_->setObjectName(QStringLiteral("timesyncApply"));
+  timesync_actions->addWidget(timesync_mode_, 1);
+  timesync_actions->addWidget(timesync_refresh_);
+  timesync_actions->addWidget(timesync_apply_);
+  timesync_layout->addLayout(timesync_actions);
+  timesync_status_ = new QLabel(uiText("Not read", "尚未读取"), timesync_group);
+  timesync_status_->setObjectName(QStringLiteral("timesyncStatus"));
+  timesync_status_->setWordWrap(true);
+  timesync_layout->addWidget(timesync_status_);
+  module_versions_ = new QLabel(timesync_group);
+  module_versions_->setObjectName(QStringLiteral("rtkModuleVersions"));
+  module_versions_->setWordWrap(true);
+  module_versions_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  timesync_layout->addWidget(module_versions_);
+  setRtkModuleVersions(std::nullopt);
+  auto* error_help = new QPushButton(uiText("ⓘ LED / error help", "ⓘ LED / 错误说明"), timesync_group);
+  error_help->setObjectName(QStringLiteral("rtkErrorHelp"));
+  error_help->setToolTip(uiText("RTK-module LED patterns, priority and error explanations; read-only", "RTK-module LED 闪烁规则、优先级和错误说明；只读，不发送命令"));
+  timesync_layout->addWidget(error_help, 0, Qt::AlignLeft);
+  connect(error_help, &QPushButton::clicked, this, [this] { showRtkErrorHelp(); });
+  gps_layout->addWidget(timesync_group);
+  connect(timesync_refresh_, &QPushButton::clicked, this, [this] {
+    if(on_timesync) on_timesync(std::nullopt);
+  });
+  connect(timesync_apply_, &QPushButton::clicked, this, [this] {
+    if(on_timesync && timesync_known_)
+      on_timesync(static_cast<prism::TimeSyncPortMode>(timesync_mode_->currentData().toUInt()));
+  });
+  connect(timesync_mode_, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
+    timesync_dirty_ = true;
+  });
 
   auto* gnss_input_group =
       new QGroupBox(uiText("GNSS Input", "GNSS 输入"), gps_content);
@@ -432,11 +441,6 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   gnss_input_layout->addLayout(gnss_actions);
   gps_layout->addWidget(gnss_input_group);
 
-  epoch_value_->setParent(gnss_group);
-  position_value_->setParent(gnss_group);
-  raw_position_value_->setParent(gnss_group);
-  precision_value_->setParent(gnss_group);
-  confidence_value_->setParent(gnss_group);
   gnss_receiver_value_->setParent(gnss_group);
   gnss_reception_value_->setParent(gnss_group);
   gnss_sync_value_->setParent(gnss_group);
@@ -468,19 +472,6 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
                  gnss_timing_value_);
   gps_layout->addStretch(1);
 
-  addStatusField(rtk_layout, rtk_content,
-                 uiText("RTK position (smoothed)", "RTK 位置（平滑）"),
-                 position_value_);
-  addStatusField(rtk_layout, rtk_content,
-                 uiText("RTK position (raw)", "RTK 位置（原始）"),
-                 raw_position_value_);
-  addStatusField(rtk_layout, rtk_content,
-                 uiText("RTK solution epoch", "RTK 解算历元"), epoch_value_);
-  addStatusField(rtk_layout, rtk_content,
-                 uiText("Estimated precision", "估计精度"), precision_value_);
-  addStatusField(rtk_layout, rtk_content,
-                 uiText("Credibility", "可信度"), confidence_value_);
-  rtk_layout->addStretch(1);
   gnss_group_layout->addWidget(gnss_tabs);
 
   root->addWidget(config_group, 1);
@@ -520,6 +511,7 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
           QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           [this](int) { refreshView(); });
   refreshView();
+  setTimeSyncLocked(true);
 }
 
 void CorsPanel::populateProviders() {
@@ -528,6 +520,106 @@ void CorsPanel::populateProviders() {
     provider_selector_->addItem(provider.display_name, provider.id);
   }
   populateProviderOptions();
+}
+
+void CorsPanel::setTimeSyncLocked(bool locked) {
+  timesync_locked_ = locked;
+  timesync_mode_->setEnabled(!locked);
+  timesync_refresh_->setEnabled(!locked);
+  timesync_apply_->setEnabled(!locked && timesync_known_);
+  if (!device_open_) setTimeSyncError(uiText("Not connected", "未连接"));
+}
+
+void CorsPanel::setTimeSyncError(const QString& error) {
+  setRtkModuleVersions(std::nullopt);
+  error_help_port_.reset();
+  error_help_module_.reset();
+  timesync_known_ = false;
+  timesync_status_->setText(error);
+  timesync_apply_->setEnabled(false);
+}
+
+void CorsPanel::setRtkModuleVersions(std::optional<prism::TimeSyncRtkVersions> s) {
+  const auto version = [&](const prism::RtkModuleVersion& v) {
+    if (!s || !s->linked || !v.valid) return uiText("Unavailable", "未提供");
+    return QStringLiteral("%1.%2.%3%4").arg(v.major).arg(v.minor).arg(v.patch)
+        .arg(v.diagnostic ? uiText(" (diagnostic)", "（诊断版）") : QString());
+  };
+  const prism::RtkModuleVersion empty;
+  module_versions_->setText(uiText("RTK-module firmware: %1\nBootloader: %2",
+                                  "RTK-module 固件版本：%1\n引导程序版本：%2")
+      .arg(version(s ? s->application : empty)).arg(version(s ? s->bootloader : empty)));
+  module_versions_->setToolTip(uiText("Read-only snapshot; refresh with Read status. No GNSS fix required.",
+      "只读快照；点击“读取实际状态”刷新。不要求 GNSS 已定位。"));
+}
+
+void CorsPanel::setTimeSyncStatus(const prism::TimeSyncPortStatus& s,
+                                 std::optional<prism::TimeSyncRtkStatus> r,
+                                 const QString& module_error) {
+  error_help_port_ = s;
+  error_help_module_ = r;
+  error_help_read_at_ = std::chrono::steady_clock::now();
+  timesync_known_ = true;
+  if (!timesync_dirty_) timesync_mode_->setCurrentIndex(timesync_mode_->findData(static_cast<uint32_t>(s.mode)));
+  const QString name = timesync_mode_->itemText(timesync_mode_->findData(static_cast<uint32_t>(s.mode)));
+  QStringList lines;
+  lines << uiText("Saved on RK: %1", "RK 本地保存：%1").arg(s.persisted ? name : uiText("Not saved", "未保存"));
+  lines << uiText("Applied mode: %1", "实际应用：%1").arg(s.applied && s.sensor_board_online && !s.error_code ? name : uiText("Unconfirmed", "未确认"));
+  lines << QStringLiteral("Sensor Board: %1 | error=%2").arg(s.sensor_board_online ? uiText("online", "在线") : uiText("offline", "离线")).arg(s.error_code);
+  lines << QStringLiteral("RTK-module: %1").arg(!r ? uiText("Unavailable: ", "不可用：") + module_error :
+      r->linked ? uiText("Connected", "已连接") : uiText("Disconnected", "未连接"));
+  if (r && r->linked) {
+    const QStringList states{uiText("unknown", "未知"),uiText("starting", "启动中"),uiText("running", "运行中"),uiText("stopping", "停止中"),uiText("stopped", "已停止"),uiText("error", "错误")};
+    const bool gnss_no_fix = r->device_status_fresh && r->control_status_fresh &&
+        r->error_code == -11 && r->control_state == 0 && r->control_error == 0 &&
+        (r->device_flags & 3u) == 3u && r->gnss_age_ms <= 2000 && r->fix == 0;
+    lines << uiText("Control: %1 | error=%2 / %3", "控制状态：%1 | 错误=%2 / %3")
+        .arg(!r->control_status_fresh ? uiText("Stale / unavailable", "已过期 / 未提供") :
+             gnss_no_fix ? uiText("GNSS has no position fix", "GNSS 未定位成功") : states.value(r->control_state))
+        .arg(r->error_code).arg(r->control_error);
+  }
+  timesync_status_->setText(lines.join(QStringLiteral("\n")));
+  timesync_apply_->setEnabled(!timesync_locked_);
+}
+
+void CorsPanel::showRtkErrorHelp() {
+  if (auto* existing = findChild<QDialog*>(QStringLiteral("rtkErrorDialog"))) {
+    existing->raise(); existing->activateWindow(); return;
+  }
+  const auto& p = error_help_port_;
+  const auto& r = error_help_module_;
+  const bool live = device_open_ && p && std::chrono::steady_clock::now() - error_help_read_at_ < std::chrono::seconds(15);
+  const auto code = [](int64_t value) { return std::optional<int64_t>(value); };
+  QString html = "<p>" + uiText(
+      "Snapshots from the last read. This popup sends no commands. Refresh status and reopen for an update; error codes and cumulative counts are different.",
+      "以下为上次读取的快照。弹窗不发送命令；刷新状态后重新打开可查看更新。错误码与累计计数请分别判断。").toHtmlEscaped() + "</p>";
+  html += rtkErrorSection("port", p ? code(p->error_code) : std::nullopt, live);
+  html += rtkErrorSection("module", r ? code(r->error_code) : std::nullopt, live && r && r->linked);
+  html += rtkErrorSection("control", r && r->control_status_fresh ? code(r->control_error) : std::nullopt, live && r && r->linked && r->control_status_fresh);
+  html += rtkErrorSection("rtcm", r && r->device_status_fresh ? code(r->rtcm_errors) : std::nullopt, live && r && r->linked && r->device_status_fresh);
+  auto* dialog = new QDialog(this);
+  dialog->setObjectName(QStringLiteral("rtkErrorDialog"));
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setWindowTitle(uiText("RTK-module LED / error help", "RTK-module LED / 错误说明"));
+  dialog->setStyleSheet(QStringLiteral("QDialog{background:#fff;color:#182b40;} QTextBrowser{background:#fff;color:#182b40;border:0;} QPushButton{background:#edf5ff;color:#245c9b;border:1px solid #bbd4ee;border-radius:7px;padding:8px 16px;} QPushButton:focus{border:2px solid #155cb3;} QTabWidget::pane{background:#fff;border:1px solid #c6d8ea;} QTabBar::tab{background:#edf5ff;color:#245c9b;padding:8px 14px;} QTabBar::tab:selected{background:#fff;color:#155cb3;}"));
+  auto* layout = new QVBoxLayout(dialog);
+  auto* tabs = new QTabWidget(dialog);
+  for (const auto& page : {std::make_pair(uiText("LED patterns", "LED 闪烁说明"), rtkLedReference()),
+                           std::make_pair(uiText("Current snapshot", "当前快照"), html),
+                           std::make_pair(uiText("Error code reference", "错误码说明"), rtkErrorReference())}) {
+    auto* text = new QTextBrowser(tabs);
+    text->setOpenExternalLinks(false);
+    text->setOpenLinks(false);
+    text->setHtml(page.second);
+    tabs->addTab(text, page.first);
+  }
+  layout->addWidget(tabs);
+  auto* buttons = new QDialogButtonBox(dialog);
+  buttons->addButton(uiText("Close", "关闭"), QDialogButtonBox::RejectRole);
+  connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+  layout->addWidget(buttons);
+  dialog->resize(680, 520);
+  dialog->show();
 }
 
 void CorsPanel::populateProviderOptions() {
@@ -776,12 +868,11 @@ QString CorsPanel::formatPosition(double latitude_degrees,
 void CorsPanel::setDeviceOpen(bool open) {
   device_open_ = open;
   if (!open) {
-    device_time_anchor_us_ = 0;
-    device_time_valid_ = false;
+    error_help_port_.reset();
+    error_help_module_.reset();
     gnss_timing_status_.reset();
     gnss_reception_status_.reset();
     resetLocalOrigin();
-    setNavigationUnavailable();
     device_configuration_ = {};
     has_device_configuration_ = false;
     configuration_busy_ = false;
@@ -836,45 +927,6 @@ void CorsPanel::setSessionStatus(const cors::CorsSessionStatus& status) {
   refreshView();
 }
 
-void CorsPanel::setNavigationStatus(
-    const communication::RtkNavigationStatus& status,
-    bool from_dataset) {
-  if (navigation_status_valid_ && navigation_from_dataset_ != from_dataset) {
-    resetLocalOrigin();
-  }
-  if (status.smoothed_position_valid) {
-    ensureLocalOrigin(
-        status.smoothed_latitude_deg, status.smoothed_longitude_deg,
-        status.smoothed_ellipsoidal_height_m,
-        from_dataset ? uiText("first dataset RTK fix", "数据集首个 RTK 定位")
-                     : uiText("first live RTK fix", "实时首个 RTK 定位"));
-  } else if (status.solution_valid) {
-    ensureLocalOrigin(
-        status.latitude_deg, status.longitude_deg,
-        status.ellipsoidal_height_m,
-        from_dataset ? uiText("first dataset RTK fix", "数据集首个 RTK 定位")
-                     : uiText("first live RTK fix", "实时首个 RTK 定位"));
-  }
-  if (status.solution_epoch_us > previous_navigation_epoch_us_ &&
-      status.solution_count > previous_navigation_solution_count_) {
-    const int64_t elapsed_us =
-        status.solution_epoch_us - previous_navigation_epoch_us_;
-    const uint64_t elapsed_solutions =
-        status.solution_count - previous_navigation_solution_count_;
-    if (previous_navigation_epoch_us_ > 0 && elapsed_us > 0) {
-      navigation_rate_hz_ =
-          static_cast<double>(elapsed_solutions) * 1000000.0 /
-          static_cast<double>(elapsed_us);
-    }
-  }
-  previous_navigation_epoch_us_ = status.solution_epoch_us;
-  previous_navigation_solution_count_ = status.solution_count;
-  navigation_status_ = status;
-  navigation_status_valid_ = true;
-  navigation_from_dataset_ = from_dataset;
-  navigation_unavailable_reason_.clear();
-  refreshView();
-}
 
 void CorsPanel::setGnssReceptionStatus(
     std::optional<prism::GnssReceptionStatus> status) {
@@ -894,22 +946,7 @@ void CorsPanel::setGnssTimingStatus(const prism::GnssTimingStatus& status) {
   refreshView();
 }
 
-void CorsPanel::setDeviceTimeUs(uint64_t device_time_us) {
-  device_time_anchor_us_ = device_time_us;
-  device_time_anchor_received_at_ = std::chrono::steady_clock::now();
-  device_time_valid_ = device_time_us != 0u;
-  refreshView();
-}
 
-void CorsPanel::setNavigationUnavailable(const QString& reason) {
-  navigation_status_valid_ = false;
-  navigation_from_dataset_ = false;
-  navigation_unavailable_reason_ = reason;
-  previous_navigation_epoch_us_ = 0;
-  previous_navigation_solution_count_ = 0;
-  navigation_rate_hz_ = 0.0;
-  refreshView();
-}
 
 void CorsPanel::refreshView() {
   const bool active = sessionInProgress(status_.phase);
@@ -997,21 +1034,7 @@ void CorsPanel::refreshView() {
       status_.endpoint.isEmpty() ? QStringLiteral("-") : status_.endpoint);
   received_value_->setText(byteCount(status_.received_bytes));
   forwarded_value_->setText(byteCount(status_.forwarded_bytes));
-  if (navigation_status_valid_) {
-    source_value_->setText(QString::fromLatin1(
-        communication::rtkBaseSourceName(navigation_status_.base_source)));
-    const QString raw_solution = QString::fromLatin1(
-        communication::rtkSolutionName(navigation_status_.solution));
-    solution_value_->setText(
-        navigation_status_.smoothed_position_valid
-            ? QStringLiteral("smoothed=%1 | raw=%2")
-                  .arg(QString::fromLatin1(communication::rtkSolutionName(
-                           navigation_status_.smoothed_solution)),
-                       raw_solution)
-            : uiText("raw=%1 | smoothed unavailable",
-                     "原始=%1 | 平滑解不可用")
-                  .arg(raw_solution));
-  } else if (status_.rtk_status_valid) {
+  if (status_.rtk_status_valid) {
     source_value_->setText(QString::fromLatin1(
         communication::rtkBaseSourceName(status_.rtk_status.base_source)));
     solution_value_->setText(QString::fromLatin1(
@@ -1032,134 +1055,6 @@ void CorsPanel::refreshView() {
             .arg(status_.rtk_status.decoder_errors));
   } else {
     agent_value_->setText(QStringLiteral("-"));
-  }
-
-  if (navigation_status_valid_) {
-    update_rate_value_->setText(
-        navigation_rate_hz_ > 0.0
-            ? QStringLiteral("%1 Hz (solution epoch driven)")
-                  .arg(navigation_rate_hz_, 0, 'f', 2)
-            : uiText("waiting for the next epoch", "等待下一解算历元"));
-    const auto format_epoch = [this](int64_t epoch_us, bool valid) {
-      if (!valid || epoch_us <= 0) return QStringLiteral("-");
-      QString epoch_text =
-          QDateTime::fromMSecsSinceEpoch(epoch_us / 1000)
-              .toUTC()
-              .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz 'UTC'"));
-      if (!navigation_from_dataset_ && device_time_valid_) {
-        const double elapsed_us =
-            std::chrono::duration<double, std::micro>(
-                std::chrono::steady_clock::now() -
-                device_time_anchor_received_at_)
-                .count();
-        const double age_seconds =
-            (static_cast<double>(device_time_anchor_us_) + elapsed_us -
-             static_cast<double>(epoch_us)) /
-            1000000.0;
-        if (age_seconds >= -0.001) {
-          epoch_text = uiText("%1 | %2 s ago (device clock)",
-                              "%1 | 设备时间 %2 秒前")
-                           .arg(epoch_text)
-                           .arg(std::max(0.0, age_seconds), 0, 'f', 3);
-        } else {
-          epoch_text = uiText(
-                           "%1 | %2 s ahead of device clock",
-                           "%1 | 比设备时间快 %2 秒")
-                           .arg(epoch_text)
-                           .arg(-age_seconds, 0, 'f', 3);
-        }
-      }
-      return epoch_text;
-    };
-    const QString raw_epoch = format_epoch(
-        navigation_status_.solution_epoch_us,
-        navigation_status_.solution_valid);
-    epoch_value_->setText(
-        navigation_status_.smoothed_position_valid
-            ? uiText("smoothed: %1\nraw: %2", "平滑：%1\n原始：%2")
-                  .arg(format_epoch(
-                           navigation_status_.smoothed_solution_epoch_us,
-                           true),
-                       raw_epoch)
-            : uiText("raw: %1\nsmoothed: unavailable",
-                     "原始：%1\n平滑：不可用")
-                  .arg(raw_epoch));
-    position_value_->setText(
-        navigation_status_.smoothed_position_valid
-            ? formatPosition(
-                  navigation_status_.smoothed_latitude_deg,
-                  navigation_status_.smoothed_longitude_deg,
-                  navigation_status_.smoothed_ellipsoidal_height_m,
-                  uiText("Satellites: %1", "卫星数：%1")
-                      .arg(navigation_status_.satellites))
-            : uiText("Waiting for a quality-gated smoothed solution",
-                     "等待通过质量门控的平滑解"));
-    raw_position_value_->setText(
-        navigation_status_.solution_valid
-            ? formatPosition(
-                  navigation_status_.latitude_deg,
-                  navigation_status_.longitude_deg,
-                  navigation_status_.ellipsoidal_height_m,
-                  uiText("Satellites: %1", "卫星数：%1")
-                      .arg(navigation_status_.satellites))
-            : uiText("No valid raw RTK solution", "尚无有效原始 RTK 解"));
-    precision_value_->setText(
-        navigation_status_.smoothed_position_valid
-            ? QStringLiteral("smoothed E=%1 m N=%2 m U=%3 m | "
-                             "raw E=%4 m N=%5 m U=%6 m")
-                  .arg(navigation_status_.smoothed_east_std_m, 0, 'f', 3)
-                  .arg(navigation_status_.smoothed_north_std_m, 0, 'f', 3)
-                  .arg(navigation_status_.smoothed_up_std_m, 0, 'f', 3)
-                  .arg(navigation_status_.east_std_m, 0, 'f', 3)
-                  .arg(navigation_status_.north_std_m, 0, 'f', 3)
-                  .arg(navigation_status_.up_std_m, 0, 'f', 3)
-            : navigation_status_.solution_valid
-                  ? QStringLiteral("raw E=%1 m N=%2 m U=%3 m")
-                        .arg(navigation_status_.east_std_m, 0, 'f', 3)
-                        .arg(navigation_status_.north_std_m, 0, 'f', 3)
-                        .arg(navigation_status_.up_std_m, 0, 'f', 3)
-                  : QStringLiteral("-"));
-    confidence_value_->setText(
-        navigation_status_.confidence_valid
-            ? QStringLiteral("%1 (%2/1000, reasons=0x%3)")
-                  .arg(QString::fromLatin1(communication::rtkConfidenceName(
-                           navigation_status_.confidence)))
-                  .arg(navigation_status_.confidence_score)
-                  .arg(navigation_status_.confidence_reasons, 0, 16)
-            : uiText("unavailable", "不可用"));
-    differential_value_->setText(
-        QStringLiteral("age=%1 s ratio=%2 station=%3 jump=%4")
-            .arg(navigation_status_.differential_age_s, 0, 'f', 2)
-            .arg(navigation_status_.ambiguity_ratio, 0, 'f', 2)
-            .arg(navigation_status_.base_station_id)
-            .arg(navigation_status_.position_jump_valid
-                     ? QStringLiteral("%1 m")
-                           .arg(navigation_status_.position_jump_m, 0, 'f', 3)
-                     : QStringLiteral("-")));
-    agent_value_->setText(
-        QStringLiteral("rover epochs=%1 base epochs=%2 solutions=%3 "
-                       "fix=%4 float=%5 errors=%6 | smoothing=%7 "
-                       "resets=%8 gated=%9")
-            .arg(navigation_status_.rover_observation_epochs)
-            .arg(navigation_status_.base_observation_epochs)
-            .arg(navigation_status_.solution_count)
-            .arg(navigation_status_.fix_count)
-            .arg(navigation_status_.float_count)
-            .arg(navigation_status_.decoder_errors)
-            .arg(smoothingStateName(navigation_status_.smoothing_flags))
-            .arg(navigation_status_.smoothing_reset_count)
-            .arg(navigation_status_.smoothing_gated_epoch_count));
-  } else {
-    update_rate_value_->setText(QStringLiteral("-"));
-    epoch_value_->setText(QStringLiteral("-"));
-    position_value_->setText(
-        navigation_unavailable_reason_.isEmpty()
-            ? QStringLiteral("-")
-            : navigation_unavailable_reason_);
-    raw_position_value_->setText(QStringLiteral("-"));
-    precision_value_->setText(QStringLiteral("-"));
-    confidence_value_->setText(QStringLiteral("-"));
-    differential_value_->setText(QStringLiteral("-"));
   }
 
   local_origin_value_->setText(
@@ -1279,11 +1174,7 @@ void CorsPanel::refreshView() {
   QString message;
   bool error = false;
   bool warning = false;
-  if (navigation_from_dataset_) {
-    message = uiText(
-        "Playing GPS/RTK from the loaded dataset at recorded epochs",
-        "正在按录制历元回放数据集 GPS/RTK");
-  } else if (!device_open_) {
+  if (!device_open_) {
     message = uiText("Open a device before connecting CORS",
                      "请先打开设备，再连接 CORS");
     warning = true;

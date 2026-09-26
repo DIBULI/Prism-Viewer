@@ -5,6 +5,7 @@
 #include "communication/rtk_corrections.hpp"
 #include "prism/usb/configuration.hpp"
 #include "prism/usb/gnss_reception.hpp"
+#include "prism/usb/timesync_port.hpp"
 
 #include <QtWidgets/QWidget>
 
@@ -32,19 +33,21 @@ class CorsPanel final : public QWidget {
       const prism::DeviceConfiguration& configuration);
   void setConfigurationError(const QString& error);
   bool gnssBaudDirty() const;
+  void setTimeSyncLocked(bool locked);
+  void setTimeSyncStatus(const prism::TimeSyncPortStatus& status,
+                         std::optional<prism::TimeSyncRtkStatus> module,
+                         const QString& module_error = {});
+  void setTimeSyncError(const QString& error);
+  void setRtkModuleVersions(std::optional<prism::TimeSyncRtkVersions> versions);
   void setSessionStatus(const cors::CorsSessionStatus& status);
-  void setNavigationStatus(
-      const communication::RtkNavigationStatus& status,
-      bool from_dataset = false);
   void setGnssTimingStatus(const prism::GnssTimingStatus& status);
   void setGnssReceptionStatus(std::optional<prism::GnssReceptionStatus> status);
-  void setDeviceTimeUs(uint64_t device_time_us);
-  void setNavigationUnavailable(const QString& reason = {});
   cors::CorsConfiguration configuration(QString* error = nullptr) const;
 
   std::function<void(const cors::CorsConfiguration&)> on_connect;
   std::function<void()> on_disconnect;
   std::function<void()> on_gnss_refresh;
+  std::function<void(std::optional<prism::TimeSyncPortMode>)> on_timesync;
   std::function<void(const prism::DeviceConfiguration&)> on_gnss_apply;
 
  private:
@@ -62,6 +65,7 @@ class CorsPanel final : public QWidget {
                          double ellipsoidal_height_meters,
                          const QString& details = {}) const;
   void refreshView();
+  void showRtkErrorHelp();
 
   QComboBox* provider_selector_ = nullptr;
   QComboBox* endpoint_selector_ = nullptr;
@@ -76,13 +80,6 @@ class CorsPanel final : public QWidget {
   QLabel* forwarded_value_ = nullptr;
   QLabel* source_value_ = nullptr;
   QLabel* solution_value_ = nullptr;
-  QLabel* update_rate_value_ = nullptr;
-  QLabel* epoch_value_ = nullptr;
-  QLabel* position_value_ = nullptr;
-  QLabel* raw_position_value_ = nullptr;
-  QLabel* precision_value_ = nullptr;
-  QLabel* confidence_value_ = nullptr;
-  QLabel* differential_value_ = nullptr;
   QLabel* gnss_receiver_value_ = nullptr;
   QLabel* gnss_reception_value_ = nullptr;
   QLabel* gnss_sync_value_ = nullptr;
@@ -94,6 +91,17 @@ class CorsPanel final : public QWidget {
   QLabel* agent_value_ = nullptr;
   QLabel* gnss_configuration_message_label_ = nullptr;
   QComboBox* gnss_baud_combo_ = nullptr;
+  QComboBox* timesync_mode_ = nullptr;
+  QPushButton* timesync_refresh_ = nullptr;
+  QPushButton* timesync_apply_ = nullptr;
+  QLabel* timesync_status_ = nullptr;
+  QLabel* module_versions_ = nullptr;
+  std::optional<prism::TimeSyncPortStatus> error_help_port_;
+  std::optional<prism::TimeSyncRtkStatus> error_help_module_;
+  std::chrono::steady_clock::time_point error_help_read_at_{};
+  bool timesync_locked_ = true;
+  bool timesync_known_ = false;
+  bool timesync_dirty_ = false;
   QPushButton* gnss_refresh_button_ = nullptr;
   QPushButton* gnss_apply_button_ = nullptr;
   QPushButton* connect_button_ = nullptr;
@@ -101,18 +109,8 @@ class CorsPanel final : public QWidget {
 
   prism::DeviceConfiguration device_configuration_;
   cors::CorsSessionStatus status_;
-  communication::RtkNavigationStatus navigation_status_;
   std::optional<prism::GnssTimingStatus> gnss_timing_status_;
   std::optional<prism::GnssReceptionStatus> gnss_reception_status_;
-  QString navigation_unavailable_reason_;
-  bool navigation_status_valid_ = false;
-  bool navigation_from_dataset_ = false;
-  int64_t previous_navigation_epoch_us_ = 0;
-  uint64_t previous_navigation_solution_count_ = 0;
-  double navigation_rate_hz_ = 0.0;
-  uint64_t device_time_anchor_us_ = 0;
-  std::chrono::steady_clock::time_point device_time_anchor_received_at_{};
-  bool device_time_valid_ = false;
   bool device_open_ = false;
   bool controls_locked_ = false;
   bool configuration_busy_ = false;

@@ -1,4 +1,5 @@
 #include "ui/device_info_panel.hpp"
+#include "ui/time_source_text.hpp"
 
 #include "common/ui_text.hpp"
 #include "communication/prism_runtime.hpp"
@@ -44,22 +45,6 @@ QString runningStopped(bool value) {
 QString maskText(uint8_t value) {
   return QStringLiteral("0x%1")
       .arg(static_cast<unsigned int>(value), 2, 16, QLatin1Char('0'));
-}
-
-QString timeSyncProviderText(
-    communication::TimeSyncProvider provider) {
-  switch (provider) {
-    case communication::TimeSyncProvider::SensorBoardInternal:
-      return uiText("Sensor Board internal", "Sensor Board 内部时钟");
-    case communication::TimeSyncProvider::RkPtp:
-      return uiText("Host via Sensor Board", "主机经 Sensor Board");
-    case communication::TimeSyncProvider::Gps:
-      return QStringLiteral("GPS");
-    case communication::TimeSyncProvider::LegacyUnknown:
-      return uiText("Unknown (legacy DeviceInfo)",
-                    "未知（旧版 DeviceInfo）");
-  }
-  return uiText("Unknown", "未知");
 }
 
 QString deviceListText(uint8_t mask, int device_count,
@@ -171,6 +156,7 @@ void DeviceInfoPanel::clear() {
       communication::TimeSyncProvider::Unsynced;
   has_info_ = false;
   has_versions_ = false;
+  rtk_versions_.reset();
   controls_locked_ = false;
   error_.clear();
   version_error_.clear();
@@ -202,6 +188,11 @@ void DeviceInfoPanel::setVersions(const prism::DeviceVersions& versions) {
   versions_ = versions;
   has_versions_ = true;
   version_error_.clear();
+  refreshView();
+}
+
+void DeviceInfoPanel::setRtkModuleVersions(std::optional<prism::TimeSyncRtkVersions> versions) {
+  rtk_versions_ = versions;
   refreshView();
 }
 
@@ -278,6 +269,13 @@ void DeviceInfoPanel::refreshView() {
                   "padding: 9px 11px; font-weight: 600;"));
   }
 
+  const auto moduleVersion = [&](bool boot) {
+    if (!rtk_versions_ || !rtk_versions_->linked) return uiText("Unavailable", "未提供");
+    const auto& v=boot?rtk_versions_->bootloader:rtk_versions_->application;
+    if(!v.valid)return uiText("Unavailable", "未提供");
+    return QStringLiteral("%1.%2.%3%4").arg(v.major).arg(v.minor).arg(v.patch)
+        .arg(v.diagnostic?uiText(" (diagnostic)","（诊断版）"):QString());
+  };
   std::vector<DeviceInfoRow> rows{
       {uiText("Identity", "身份"),
        uiText("Product serial", "产品序列号"),
@@ -295,6 +293,8 @@ void DeviceInfoPanel::refreshView() {
       {uiText("Versions", "版本"), uiText("Combined", "组合版本"),
        has_versions_ ? valueOrDash(versions_.combined)
                      : QStringLiteral("-")},
+      {uiText("Versions", "版本"), uiText("RTK-module firmware", "RTK-module 固件版本"), moduleVersion(false)},
+      {uiText("Versions", "版本"), uiText("RTK-module bootloader", "RTK-module 引导程序版本"), moduleVersion(true)},
       {QStringLiteral("USB"), uiText("Link speed", "连接速率"),
        QString::fromLatin1(prism_runtime::usbLinkSpeedName(info_.usb_speed))},
       {QStringLiteral("USB"), uiText("USB 3 connected", "USB 3 已连接"),
@@ -305,10 +305,12 @@ void DeviceInfoPanel::refreshView() {
        yesNo(info_.sensor_board_time_synced)},
       {QStringLiteral("sensor-board"),
        uiText("External time synchronized", "外部授时已同步"),
-       yesNo(time_sync_provider_ == communication::TimeSyncProvider::Gps)},
+       yesNo(info_.sensor_board_online && info_.sensor_board_time_synced &&
+             time_sync_provider_ == communication::TimeSyncProvider::Gps)},
       {QStringLiteral("sensor-board"),
-       uiText("Time sync provider", "时间同步提供方"),
-       timeSyncProviderText(time_sync_provider_)},
+       uiText("Time source", "时间来源"),
+       timeSourceText(time_sync_provider_, info_.sensor_board_online,
+                      info_.sensor_board_time_synced)},
       {QStringLiteral("sensor-board"), uiText("Transfer error", "传输错误"),
        sensorBoardErrorText(info_)},
       {QStringLiteral("IMU"), uiText("Detected count", "检测数量"),

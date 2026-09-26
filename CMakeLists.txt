@@ -503,6 +503,28 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME device-info-compat COMMAND device-info-compat-test)
 
+  add_executable(time-source-display-test
+    src/common/ui_text.cpp
+    src/communication/prism_runtime.cpp
+    src/ui/device_info_panel.cpp
+    tests/time_source_display_test.cpp
+  )
+  target_include_directories(time-source-display-test PRIVATE src)
+  target_compile_features(time-source-display-test PRIVATE cxx_std_17)
+  if(MSVC)
+    target_compile_options(time-source-display-test PRIVATE /utf-8)
+  endif()
+  target_link_libraries(time-source-display-test PRIVATE
+    prism-viewer-sdk ${QT_PACKAGE}::Widgets)
+  if(WIN32)
+    prism_copy_sdk_runtime(time-source-display-test)
+  endif()
+  add_test(NAME time-source-display COMMAND time-source-display-test)
+  if(UNIX)
+    set_tests_properties(time-source-display PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  endif()
+
 
   add_executable(imu-timestamp-policy-test
     tests/imu_timestamp_policy_test.cpp
@@ -611,6 +633,13 @@ if(BUILD_TESTING)
   target_compile_features(xt32-dataset-test PRIVATE cxx_std_17)
   target_link_libraries(xt32-dataset-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Gui ${QT_PACKAGE}::Sql)
   add_test(NAME xt32-dataset COMMAND xt32-dataset-test)
+
+  add_executable(mid-line-dataset-test tests/mid_line_dataset_test.cpp
+    src/dataset/dataset_playback.cpp src/dataset/dataset_browser.cpp src/common/ui_text.cpp)
+  target_include_directories(mid-line-dataset-test PRIVATE src)
+  target_compile_features(mid-line-dataset-test PRIVATE cxx_std_17)
+  target_link_libraries(mid-line-dataset-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Gui ${QT_PACKAGE}::Sql)
+  add_test(NAME mid-line-dataset COMMAND mid-line-dataset-test)
 
   add_test(
     NAME dataset-recorder-full

@@ -125,6 +125,18 @@ bool Client::streamTransferActive() const noexcept {
   return api_->stream_transfer_active(handle_);
 }
 prism::HelloInfo Client::hello() { return api_->hello(handle_); }
+prism::TimeSyncPortStatus Client::timeSyncPortStatus() {
+  return api_->timesync_port_status(handle_);
+}
+prism::TimeSyncPortStatus Client::setTimeSyncPortMode(prism::TimeSyncPortMode mode) {
+  return api_->set_timesync_port_mode(handle_, mode);
+}
+prism::TimeSyncRtkStatus Client::timeSyncRtkStatus() {
+  return api_->timesync_rtk_status(handle_);
+}
+prism::TimeSyncRtkVersions Client::timeSyncRtkVersions() {
+  return api_->timesync_rtk_versions(handle_);
+}
 prism::DeviceInfo Client::deviceInfo() { return api_->device_info(handle_); }
 prism::DeviceVersions Client::deviceVersions() {
   return api_->device_versions(handle_);
@@ -176,9 +188,6 @@ prism::RtkCorrectionStatus Client::endRtkCorrections() {
 }
 prism::RtkCorrectionStatus Client::rtkCorrectionStatus() {
   return api_->rtk_correction_status(handle_);
-}
-prism::RtkNavigationStatus Client::rtkNavigationStatus() {
-  return api_->rtk_navigation_status(handle_);
 }
 prism::RoverRtcmStatus Client::startRoverRtcm() {
   return api_->start_rover_rtcm(handle_);

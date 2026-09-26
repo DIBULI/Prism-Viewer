@@ -59,11 +59,9 @@ struct DatasetValidationResult {
   bool cameras_present = false;
   bool lidar_present = false;
   bool lidar_imu_present = false;
-  bool gps_rtk_present = false;
   bool rover_rtcm_present = false;
   bool base_rtcm_present = false;
   bool time_sync_present = false;
-  uint64_t gps_rtk_navigation_samples = 0;
   uint64_t rover_rtcm_batches = 0;
   uint64_t rover_rtcm_bytes = 0;
   uint64_t rover_rtcm_agent_dropped_bytes = 0;
@@ -76,7 +74,6 @@ struct DatasetValidationResult {
   std::array<DatasetTimestampSummary, 2> onboard_imus{};
   DatasetTimestampSummary lidar;
   DatasetTimestampSummary lidar_imu;
-  DatasetTimestampSummary gps_rtk;
   size_t total_errors = 0;
   size_t total_warnings = 0;
   std::vector<DatasetValidationIssue> issues;
@@ -99,7 +96,6 @@ bool loadDatasetImageIndex(const std::filesystem::path& root, size_t camera,
                            std::string* error);
 QImage loadDatasetImage(const DatasetImageEntry& entry);
 TumFileSummary summarizeTumFile(const std::filesystem::path& path);
-TumFileSummary summarizeGpsRtkFile(const std::filesystem::path& path);
 DatasetValidationResult validatePrismDataset(
     const std::filesystem::path& root,
     const DatasetValidationProgressCallback& progress = {},

@@ -1,10 +1,14 @@
 #include "ui/cors_panel.hpp"
+#include "common/ui_text.hpp"
+#include "ui/rtk_error_help.hpp"
 
 #include <QtCore/QSettings>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QStringList>
 #include <QtGui/QPixmap>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QTextBrowser>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
@@ -36,6 +40,119 @@ int main(int argc, char** argv) {
 
   prism_viewer::ui::CorsPanel panel;
   bool ok = true;
+  auto* ts_mode=panel.findChild<QComboBox*>("timesyncMode");
+  auto* ts_apply=panel.findChild<QPushButton*>("timesyncApply");
+  auto* ts_text=panel.findChild<QLabel*>("timesyncStatus");
+  auto* module_versions=panel.findChild<QLabel*>("rtkModuleVersions");
+  ok &= require(module_versions!=nullptr,"module version field missing");
+  if(!ok)return 1;
+  prism::TimeSyncRtkVersions v;
+  v.linked=true;v.application={true,false,1,0,0};v.bootloader={true,false,0,1,1};
+  for(const bool chinese:{false,true}) {
+    prism_viewer::common::setChineseUi(chinese);
+    panel.setRtkModuleVersions(v);
+    ok &= require(module_versions->text().contains("1.0.0")&&module_versions->text().contains("0.1.1"),"module versions not rendered");
+    v.linked=false;panel.setRtkModuleVersions(v);
+    ok &= require(!module_versions->text().contains("1.0.0"),"disconnected version remained current");
+    v.linked=true;
+    panel.setRtkModuleVersions(std::nullopt);
+    ok &= require(module_versions->text().contains(chinese?QStringLiteral("未提供"):QStringLiteral("Unavailable")),"missing version translation");
+  }
+  prism_viewer::common::setChineseUi(false);
+  ok &= require(ts_mode && ts_mode->count()==3 && ts_apply && !ts_apply->isEnabled(), "Timesync controls missing or unsafe initial state");
+  if (!ok) return 1;
+  panel.setDeviceOpen(true);
+  prism::TimeSyncPortStatus ts;
+  ts.mode=prism::TimeSyncPortMode::Rtk;ts.persisted=true;
+  panel.setTimeSyncLocked(false);
+  panel.setTimeSyncStatus(ts,std::nullopt,QStringLiteral("unavailable"));
+  ok &= require(ts_mode->currentData().toInt()==2 && ts_apply->isEnabled(), "RTK mode not loaded");
+  prism::TimeSyncRtkStatus module;
+  module.linked = module.device_status_fresh = module.control_status_fresh = true;
+  module.error_code = -11;
+  module.device_flags = 3;
+  module.gnss_age_ms = 50;
+  for (const bool chinese : {false, true}) {
+    prism_viewer::common::setChineseUi(chinese);
+    const QString no_fix = chinese ? QStringLiteral("GNSS 未定位成功") :
+        QStringLiteral("GNSS has no position fix");
+    panel.setTimeSyncStatus(ts, module, {});
+    ok &= require(ts_text->text().contains(no_fix), "Fresh invalid GNSS fix needs an explicit message");
+    const auto check_not_no_fix = [&](prism::TimeSyncRtkStatus sample) {
+      panel.setTimeSyncStatus(ts, sample, {});
+      ok &= require(!ts_text->text().contains(no_fix), "Stale, missing or unrelated state must not imply GNSS fix failure");
+    };
+    auto sample = module; sample.fix = 1; check_not_no_fix(sample);
+    sample = module; sample.gnss_age_ms = 3000; check_not_no_fix(sample);
+    sample = module; sample.device_status_fresh = false; check_not_no_fix(sample);
+    sample = module; sample.control_status_fresh = false; check_not_no_fix(sample);
+    ok &= require(ts_text->text().contains(chinese ? QStringLiteral("已过期 / 未提供") : QStringLiteral("Stale / unavailable")), "Stale control message was hidden");
+    sample = module; sample.linked = false; check_not_no_fix(sample);
+    sample = module; sample.device_flags = 1; check_not_no_fix(sample);
+    sample = module; sample.error_code = -121; check_not_no_fix(sample);
+    sample = module; sample.control_error = 2; sample.control_state = 5; check_not_no_fix(sample);
+    ok &= require(ts_text->text().contains(chinese ? QStringLiteral("控制状态：错误") : QStringLiteral("Control: error")), "Real control error was hidden");
+    panel.setTimeSyncStatus(ts, std::nullopt, QStringLiteral("unavailable"));
+    ok &= require(!ts_text->text().contains(no_fix), "Absent module must not imply GNSS fix failure");
+  }
+  prism_viewer::common::setChineseUi(false);
+  auto* error_help = panel.findChild<QPushButton*>(QStringLiteral("rtkErrorHelp"));
+  ok &= require(error_help != nullptr, "RTK error help button missing");
+  if (!ok) return 1;
+  unsigned commands = 0;
+  panel.on_timesync = [&](auto) { ++commands; };
+  for (const bool chinese : {false, true}) {
+    prism_viewer::common::setChineseUi(chinese);
+    for (const auto& entry : prism_viewer::ui::rtkErrorEntries)
+      ok &= require(prism_viewer::ui::rtkErrorExplanation(entry.kind, entry.code) == QString::fromUtf8(chinese ? entry.zh : entry.en), "Incorrect error catalog translation");
+    ok &= require(prism_viewer::ui::rtkErrorExplanation("port", -11) != prism_viewer::ui::rtkErrorExplanation("module", -11), "Error domains conflated");
+    ts.error_code = -11;
+    module.rtcm_errors = 4294967295u;
+    panel.setTimeSyncStatus(ts, module, {});
+    error_help->click();application.processEvents();
+    auto* dialog = panel.findChild<QDialog*>(QStringLiteral("rtkErrorDialog"));
+    ok &= require(dialog && dialog->isVisible(), "RTK error popup did not open");
+    if (!dialog) return 1;
+    const auto pages = dialog->findChildren<QTextBrowser*>();
+    ok &= require(pages.size() == 3, "LED, current status and error reference must be separate pages");
+    auto* help_tabs = dialog->findChild<QTabWidget*>();
+    ok &= require(help_tabs && help_tabs->tabText(0).contains(QStringLiteral("LED")), "LED reference must be easy to find");
+    QString text;for (auto* page : pages) text += page->toPlainText();
+    const auto led = prism_viewer::ui::rtkLedReference();
+    ok &= require(!led.contains(QStringLiteral("UM980")), "LED help must use generic GNSS/RTK chip terminology");
+    ok &= require(QString::fromUtf8(chinese ? prism_viewer::ui::rtkLedEntries[0].zh : prism_viewer::ui::rtkLedEntries[0].en) ==
+                      (chinese ? QStringLiteral("GNSS/RTK 芯片未检测到") : QStringLiteral("GNSS/RTK chip not detected")), "Timeout and absent receiver must share one status name");
+    ok &= require(text.contains(chinese ? QStringLiteral("超过 3 秒未收到有效数据") : QStringLiteral("more than 3 seconds")), "Missing receiver timeout rule");
+    const unsigned periods[] = {2000, 1000, 500, 4000, 125, 2000, 250};
+    const unsigned on_times[] = {1000, 500, 250, 200, 62, 100, 125};
+    unsigned led_index = 0;
+    for (const auto& entry : prism_viewer::ui::rtkLedEntries) {
+      ok &= require(entry.period_ms == periods[led_index] && entry.on_ms == on_times[led_index], "LED priority/duration differs from firmware");
+      ok &= require(led.contains(QString::fromUtf8(chinese ? entry.zh : entry.en)), "Missing LED translation");
+      ++led_index;
+    }
+    ok &= require(led_index == 7 && text.contains(chinese ? QStringLiteral("状态优先级") : QStringLiteral("Priority is top to bottom")), "Missing LED priority warning");
+    ok &= require(text.contains(chinese ? QStringLiteral("并非实时") : QStringLiteral("not a live")), "LED guide must not claim live telemetry");
+    ok &= require(text.contains(chinese ? QStringLiteral("硬件及 SIM/入网检查优先于 CORS") : QStringLiteral("checks take priority over CORS")), "Hardware-first LED priority is not explained");
+    ok &= require(text.contains(chinese ? QStringLiteral("旧固件") : QStringLiteral("older firmware")), "LED guide must identify the firmware dependency");
+    ok &= require(text.contains(QStringLiteral("4294967295")) && text.contains(chinese ? QStringLiteral("累计") : QStringLiteral("Cumulative")), "RTCM counter not explained separately");
+    if (argc == 2) dialog->grab().save(QString::fromLocal8Bit(argv[1]) + (chinese ? "-errors-zh.png" : "-errors-en.png"));
+    dialog->close();application.sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    panel.setTimeSyncError(QStringLiteral("timeout"));error_help->click();application.processEvents();
+    dialog = panel.findChild<QDialog*>(QStringLiteral("rtkErrorDialog"));
+    text.clear();for (auto* page : dialog->findChildren<QTextBrowser*>()) text += page->toPlainText();
+    ok &= require(text.contains(chinese ? QStringLiteral("尚未提供") : QStringLiteral("Not provided")), "Unavailable status treated as success");
+    dialog->close();application.sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  }
+  ok &= require(commands == 0, "Opening error help sent a device command");
+  panel.on_timesync = {};
+  prism_viewer::common::setChineseUi(false);
+  panel.setTimeSyncLocked(true);
+  ok &= require(!ts_apply->isEnabled(), "Timesync apply not locked");
+  panel.setTimeSyncError(QStringLiteral("timeout"));
+  panel.setTimeSyncLocked(false);
+  ok &= require(!ts_apply->isEnabled() && ts_text->text()==QStringLiteral("timeout"), "Timesync stale state not cleared");
+  panel.setDeviceOpen(false);
   ok &= require(qobject_cast<QHBoxLayout*>(panel.layout()) != nullptr,
                 "CORS page is not arranged as three vertical columns");
   ok &= require(panel.findChild<QGroupBox*>(
@@ -51,20 +168,15 @@ int main(int argc, char** argv) {
       panel.findChild<QScrollArea*>(QStringLiteral("gpsStatusScroll"));
   auto* rtk_scroll =
       panel.findChild<QScrollArea*>(QStringLiteral("rtkStatusScroll"));
-  ok &= require(position_tabs != nullptr && position_tabs->count() == 2 &&
+  ok &= require(position_tabs != nullptr && position_tabs->count() == 1 &&
                     position_tabs->widget(0)->objectName() ==
-                        QStringLiteral("gpsStatusTab") &&
-                    position_tabs->widget(1)->objectName() ==
-                        QStringLiteral("rtkStatusTab"),
-                "GPS and RTK status are not separated into two tabs");
-  ok &= require(gps_scroll != nullptr && rtk_scroll != nullptr &&
+                        QStringLiteral("gpsStatusTab"),
+                "Retired software RTK tab must not exist");
+  ok &= require(gps_scroll != nullptr && rtk_scroll == nullptr &&
                     gps_scroll->widgetResizable() &&
-                    rtk_scroll->widgetResizable() &&
                     gps_scroll->horizontalScrollBarPolicy() ==
-                        Qt::ScrollBarAlwaysOff &&
-                    rtk_scroll->horizontalScrollBarPolicy() ==
                         Qt::ScrollBarAlwaysOff,
-                "GPS or RTK status tab is missing vertical scrolling");
+                "GNSS status must retain vertical scrolling");
   if (!ok) return 1;
   panel.resize(1500, 800);
   panel.show();
@@ -79,28 +191,18 @@ int main(int argc, char** argv) {
                    "Status field is missing or assigned to the wrong tab")) {
         return false;
       }
-      position_tabs->setCurrentIndex(1 - tab);
-      application.processEvents();
-      if (!require(!value->isVisible(), "Status field leaked into the other tab"))
-        return false;
-      position_tabs->setCurrentIndex(tab);
     }
     return true;
   };
   ok &= verify_tab_fields(0, {"gnssReceiverQuality", "gnssDop",
                               "gnssPosition", "gnssUtc", "gnssTimingQuality",
                               "gnssReceptionStatus", "gnssTimeSyncStatus"});
-  ok &= verify_tab_fields(1, {"rtkPosition", "rtkRawPosition",
-                              "rtkSolutionEpoch", "rtkPrecision", "rtkConfidence"});
   if (argc == 2) {
     auto* column = panel.findChild<QGroupBox*>(
         QStringLiteral("gpsGnssStatusColumn"));
     position_tabs->setCurrentIndex(0);
     application.processEvents();
     ok &= column->grab().save(QString::fromLocal8Bit(argv[1]) + "-gps.png");
-    position_tabs->setCurrentIndex(1);
-    application.processEvents();
-    ok &= column->grab().save(QString::fromLocal8Bit(argv[1]) + "-rtk.png");
   }
   auto* provider =
       panel.findChild<QComboBox*>(QStringLiteral("corsServiceProvider"));
@@ -292,43 +394,6 @@ int main(int argc, char** argv) {
   }
 
 
-  prism_viewer::communication::RtkNavigationStatus navigation;
-  navigation.solution_valid = true;
-  navigation.confidence_valid = true;
-  navigation.position_jump_valid = true;
-  navigation.base_source =
-      prism_viewer::communication::RtkBaseSource::HostCors;
-  navigation.solution = prism_viewer::communication::RtkSolution::Fix;
-  navigation.confidence =
-      prism_viewer::communication::RtkConfidence::High;
-  navigation.solution_epoch_us = 1780000000000000LL;
-  navigation.solution_count = 100u;
-  navigation.latitude_deg = 31.2304;
-  navigation.longitude_deg = 121.4737;
-  navigation.ellipsoidal_height_m = 12.5;
-  navigation.east_std_m = 0.01;
-  navigation.north_std_m = 0.02;
-  navigation.up_std_m = 0.03;
-  navigation.satellites = 18u;
-  navigation.confidence_score = 950u;
-  navigation.differential_age_s = 0.3;
-  navigation.ambiguity_ratio = 4.2;
-  navigation.position_jump_m = 0.004;
-  navigation.smoothed_position_valid = true;
-  navigation.smoothed_solution =
-      prism_viewer::communication::RtkSolution::Fix;
-  navigation.smoothing_flags =
-      prism_viewer::communication::RtkSmoothingDynamicsEnabled;
-  navigation.smoothed_solution_epoch_us = navigation.solution_epoch_us;
-  navigation.smoothed_latitude_deg = 31.230400001;
-  navigation.smoothed_longitude_deg = 121.473700001;
-  navigation.smoothed_ellipsoidal_height_m = 12.49;
-  navigation.smoothed_east_std_m = 0.008;
-  navigation.smoothed_north_std_m = 0.012;
-  navigation.smoothed_up_std_m = 0.019;
-  navigation.smoothing_reset_count = 3u;
-  navigation.smoothing_gated_epoch_count = 2u;
-  panel.setNavigationStatus(navigation);
   prism::GnssTimingStatus timing;
   timing.sensor_board_online = true;
   timing.gnss_input_mode = true;
@@ -363,45 +428,15 @@ int main(int argc, char** argv) {
                     live_configuration.longitude_degrees == 121.4737 &&
                     live_configuration.altitude_meters == 15.2,
                 "Panel did not prefer fresh device GNSS for CORS GGA");
-  navigation.solution_epoch_us += 100000LL;
-  navigation.smoothed_solution_epoch_us += 100000LL;
-  ++navigation.solution_count;
-  panel.setNavigationStatus(navigation);
-  panel.setDeviceTimeUs(
-      static_cast<uint64_t>(navigation.solution_epoch_us + 1250000LL));
   auto labelText = [&](const char* object_name) {
     auto* label =
         panel.findChild<QLabel*>(QString::fromLatin1(object_name));
     ok &= require(label != nullptr, object_name);
     return label == nullptr ? QString() : label->text();
   };
-  ok &= require(labelText("rtkUpdateRate").contains(QStringLiteral("10.00 Hz")),
-                "Panel did not report the solution-epoch navigation rate");
-  ok &= require(labelText("rtkSolutionEpoch").contains(
-                    QStringLiteral("s ago (device clock)")),
-                "Panel did not report solution age against device time");
-  ok &= require(labelText("rtkPosition").contains(QStringLiteral("31.230400001")) &&
-                    labelText("rtkPosition").contains(
-                        QStringLiteral("Satellites: 18")) &&
-                    labelText("rtkPosition").contains(
-                        QStringLiteral("Local ENU (m): E=")),
-                "Panel did not display smoothed RTK position and satellites");
-  ok &= require(labelText("rtkRawPosition").contains(
-                    QStringLiteral("31.230400000")) &&
-                    labelText("rtkRawPosition").contains(
-                        QStringLiteral("Local ENU (m): E=")),
-                "Panel did not preserve the raw RTK position");
-  ok &= require(labelText("rtkConfidence").contains(QStringLiteral("950/1000")),
-                "Panel did not display RTK credibility");
-  navigation.rover_observation_epochs = 205u;
-  navigation.base_observation_epochs = 101u;
-  panel.setNavigationStatus(navigation);
-  ok &= require(
-      labelText("rtkAgentCounters").contains(
-          QStringLiteral("rover epochs=205 base epochs=101")) &&
-          labelText("rtkAgentCounters").contains(
-              QStringLiteral("smoothing=active resets=3 gated=2")),
-      "Panel did not refresh Agent counters without a new solution");
+  ok &= require(panel.findChild<QLabel*>(QStringLiteral("rtkRawPosition")) == nullptr &&
+                    panel.findChild<QLabel*>(QStringLiteral("rtkPosition")) == nullptr,
+                "Retired raw/smoothed controls must not exist");
   ok &= require(labelText("gnssReceiverQuality").contains(
                     QStringLiteral("12 satellites")) &&
                     labelText("gnssReceiverQuality").contains(

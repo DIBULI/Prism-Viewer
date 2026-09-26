@@ -77,6 +77,10 @@ class Client {
       const prism::ExposureLimits& limits,
       uint32_t field_mask = prism::kExposureLimitsFieldAll);
   prism::GnssTimingStatus gnssTimingStatus();
+  prism::TimeSyncPortStatus timeSyncPortStatus();
+  prism::TimeSyncPortStatus setTimeSyncPortMode(prism::TimeSyncPortMode mode);
+  prism::TimeSyncRtkStatus timeSyncRtkStatus();
+  prism::TimeSyncRtkVersions timeSyncRtkVersions();
   prism::GnssReceptionStatus gnssReceptionStatus();
   prism::GnssObservations gnssObservations(uint64_t cursor=0, uint64_t session=0);
   prism::RtkCorrectionStatus beginRtkCorrections();
@@ -84,7 +88,6 @@ class Client {
       const uint8_t* data, size_t size, uint32_t timeout_ms = 3000);
   prism::RtkCorrectionStatus endRtkCorrections();
   prism::RtkCorrectionStatus rtkCorrectionStatus();
-  prism::RtkNavigationStatus rtkNavigationStatus();
   prism::RoverRtcmStatus startRoverRtcm();
   prism::RoverRtcmStatus stopRoverRtcm();
   prism::VideoStatus startVideo1280x1024(uint32_t fps = 0);

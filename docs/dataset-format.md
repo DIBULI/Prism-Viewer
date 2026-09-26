@@ -21,7 +21,6 @@ lidar.tum ───> lidar-data-0000.bin   点云索引按偏移和长度引用�
 imu0.tum                            直接保存板载 IMU0 的 SI 数据
 imu1.tum                            直接保存板载 IMU1 的 SI 数据
 lidar_imu.tum                       直接保存可选的雷达内置 IMU SI 数据
-gps_rtk.csv                         GPS/RTK 解算与差分链路状态快照
 rover_rtcm.bin                      GNSS 接收机上行的原始 RTCM3 字节流
 rover_rtcm.csv                      rover 原始流的接收时间与字节范围索引
 base_rtcm.bin                       CORS 下发并成功送入 Agent 的原始 RTCM 字节流
@@ -38,7 +37,6 @@ time_sync.csv                       RK/SensorBoard 时间同步状态快照
 | `lidar.tum` | LiDAR 点云批次索引及原始时间来源信息 | 否 |
 | `lidar-data-NNNN.bin` | 多个笛卡尔点云批次顺序拼接而成的二进制容器 | 是 |
 | `lidar_imu.tum` | Mid-360/Mid-360S 内置 IMU 及其时间来源信息 | 是 |
-| `gps_rtk.csv` | GPS/RTK 解算结果、置信度和差分链路状态快照 | 是 |
 | `rover_rtcm.bin` | 从设备 GNSS 流中提取并经 CRC 校验的完整 RTCM3 帧；不包含 NMEA | 是 |
 | `rover_rtcm.csv` | rover 原始 RTCM 的接收顺序、时间、偏移、长度和 Agent 丢弃计数 | 否 |
 | `base_rtcm.bin` | CORS 收到且已经成功送入 Agent 的原始 RTCM2.x/RTCM3.x 字节 | 是 |
@@ -61,7 +59,6 @@ dataset/
 ├── imu0.tum
 ├── imu1.tum
 ├── lidar_imu.tum          # 可选：Mid-360/Mid-360S 内置 IMU
-├── gps_rtk.csv
 ├── rover_rtcm.bin
 ├── rover_rtcm.csv
 ├── base_rtcm.bin
@@ -90,7 +87,6 @@ dataset/
 ├── dataset.info
 ├── imu0.tum
 ├── imu1.tum
-├── gps_rtk.csv
 ├── rover_rtcm.bin
 ├── rover_rtcm.csv
 ├── base_rtcm.bin
@@ -111,7 +107,6 @@ dataset/
 ├── imu0.tum
 ├── imu1.tum
 ├── lidar_imu.tum
-├── gps_rtk.csv
 ├── rover_rtcm.bin
 ├── rover_rtcm.csv
 ├── base_rtcm.bin
@@ -133,7 +128,6 @@ dataset/
 ├── dataset.info
 ├── imu0.tum
 ├── imu1.tum
-├── gps_rtk.csv
 ├── rover_rtcm.bin
 ├── rover_rtcm.csv
 ├── base_rtcm.bin
@@ -149,7 +143,6 @@ dataset/
 ├── imu0.tum
 ├── imu1.tum
 ├── lidar_imu.tum
-├── gps_rtk.csv
 ├── rover_rtcm.bin
 ├── rover_rtcm.csv
 ├── base_rtcm.bin
@@ -177,7 +170,6 @@ image_storage=chunk-v1
 camera_index=chunk-v2-with-actual-exposure
 lidar_storage=cartesian-mm-chunk-v2-with-time-source
 lidar_imu_storage=tum-si-v2-with-time-source
-gps_rtk_storage=csv-v1
 rover_rtcm_storage=raw-rtcm3-v1
 rover_rtcm_index=csv-v1
 base_rtcm_storage=raw-rtcm-v1
@@ -244,8 +236,11 @@ batch_index,recording_elapsed_us,host_receive_unix_us,byte_offset,byte_size
 `complete=0`，避免把缺失 rover 输入的数据集用于算法复现。
 
 两路 RTCM 文件在没有 GNSS 或未连接 CORS 时允许为空；这表示录制期间确实没有
-对应输入，不会影响 Camera、IMU 或 LiDAR 数据集本身的有效性。`gps_rtk.csv`
-继续保存当时 Agent 的解算输出，可用于和原始 RTCM 重放后的新算法结果做对照。
+对应输入，不会影响 Camera、IMU 或 LiDAR 数据集本身的有效性。
+
+旧软件 RTK raw/smoothed 结果文件 `gps_rtk.csv` 不再生成，也不再回放。
+包含此旧文件或旧结果声明的数据集会明确报告不支持；不会转换或删除原文件。
+原始 RTCM 字节及其时间索引仍保留。
 
 ## 时间同步状态
 
@@ -352,7 +347,10 @@ timestamp_s container_path byte_offset byte_size point_count model device_type t
 ```
 
 每个点在 `lidar-data-*.bin` 中固定占 16 字节：`x_mm`、`y_mm`、`z_mm` 三个
-little-endian int32，随后是 uint8 reflectivity、uint8 tag 和两个保留字节。
+little-endian int32，随后是 uint8 reflectivity、uint8 tag、uint8 line 和
+uint8 line_flags。`line_flags` bit 0 表示线号有效，其余位必须为 0；有效
+`line` 为 0–3，由 Agent 按原始 UDP 包内点序号 `% 4` 生成，合批和导出后
+不重新编号。旧数据的两个零字节表示线号不可用。详见 [line 说明](livox-line.md)。
 `model` 为 `1`（Mid-360）或 `2`（Mid-360S），与用户开始采集时的明确选择
 一致。第一列 `timestamp_s` 是 Agent 从该批次的雷达测量时间归一化到 manifest
 声明的公共传感器时间域的值；`timestamp_raw` 和 `time_type` 保留 Livox 原始
@@ -366,7 +364,8 @@ little-endian int32，随后是 uint8 reflectivity、uint8 tag 和两个保留�
 `sensor_msgs/PointCloud2`。header stamp 是帧内第一点的 Unix epoch 纳秒时间，
 每个点的 uint32 `offset_time` 字段是相对该基准的纳秒偏移；最后不足 100 ms 的
 尾帧也会输出。这里只恢复时间，不对坐标做运动去畸变，所以
-`point_deskew=none`。
+`point_deskew=none`。PointCloud2 同时输出 UINT8 `line`（偏移 14）和
+UINT8 `line_valid`（偏移 15），每点仍为 20 字节。
 
 ## 写盘和丢帧
 
@@ -397,7 +396,7 @@ little-endian int32，随后是 uint8 reflectivity、uint8 tag 和两个保留�
 “仅录制 IMU”不会启动图像/点云写盘线程，也不会创建 `cam*.tum`、
 `lidar.tum` 或相机/点云容器。原始 RTCM 文件与录制模式无关，完整模式和
 “仅录制 IMU”都会创建 `rover_rtcm.bin/.csv`、`base_rtcm.bin/.csv`。未选择
-LiDAR 时还会创建 `imu0.tum`、`imu1.tum`、`gps_rtk.csv`、`time_sync.csv` 和
+LiDAR 时还会创建 `imu0.tum`、`imu1.tum`、`time_sync.csv` 和
 `dataset.info`；选择 LiDAR 时
 额外创建 `lidar_imu.tum`。manifest
 写入 `recording_mode=imu-only`，并把 `image_storage`、`camera_index` 和

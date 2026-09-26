@@ -503,6 +503,8 @@ struct LidarFramePoint {
   uint16_t ring = 0;
   uint8_t return_id = 0;
   uint8_t confidence = 0;
+  uint8_t line = 0;
+  bool line_valid = false;
 };
 
 struct LidarFrame {
@@ -582,6 +584,9 @@ class LidarFrameAccumulator {
       if (timed && (source[15] != 0u || source[14] >= 32u ||
           source[20] < 1u || source[20] > 3u || source[22] || source[23]))
         throw std::runtime_error("invalid XT32 point metadata");
+      if (!timed && (source[15] > 1u || source[14] >= 4u ||
+                     (!source[15] && source[14])))
+        throw std::runtime_error("invalid Livox line metadata");
       frame_.explicit_point_time = timed;
       frame_.points.push_back(
           LidarFramePoint{static_cast<uint32_t>(offset_ns),
@@ -591,7 +596,9 @@ class LidarFrameAccumulator {
                            source[12], source[13],
                            static_cast<uint16_t>(timed ? source[14] : 0u),
                            static_cast<uint8_t>(timed ? source[20] : 0u),
-                           static_cast<uint8_t>(timed ? source[21] : 0u)});
+                           static_cast<uint8_t>(timed ? source[21] : 0u),
+                           static_cast<uint8_t>(timed ? 0u : source[14]),
+                           !timed && source[15] == 1u});
     }
     return completed;
   }
@@ -697,7 +704,7 @@ Bytes makeRos1PointCloud2(uint32_t sequence, const LidarFrame& frame) {
   appendRos1HeaderNs(&message, sequence, frame.timebase_ns, frame.frame_id);
   appendU32(&message, 1u);
   appendU32(&message, point_count);
-  appendU32(&message, frame.explicit_point_time ? 9u : 6u);
+  appendU32(&message, frame.explicit_point_time ? 9u : 8u);
   appendRos1PointField(&message, "x", 0u, 7u);
   appendRos1PointField(&message, "y", 4u, 7u);
   appendRos1PointField(&message, "z", 8u, 7u);
@@ -708,6 +715,9 @@ Bytes makeRos1PointCloud2(uint32_t sequence, const LidarFrame& frame) {
     appendRos1PointField(&message, "ring", 14u, 4u);
     appendRos1PointField(&message, "return_id", 20u, 2u);
     appendRos1PointField(&message, "vendor_reserved", 21u, 2u);
+  } else {
+    appendRos1PointField(&message, "line", 14u, 2u);
+    appendRos1PointField(&message, "line_valid", 15u, 2u);
   }
   appendU8(&message, 0u);
   appendU32(&message, kPointStep);
@@ -719,8 +729,8 @@ Bytes makeRos1PointCloud2(uint32_t sequence, const LidarFrame& frame) {
     appendFloat(&message, point.z_m);
     appendU8(&message, point.reflectivity);
     appendU8(&message, point.tag);
-    appendU8(&message, static_cast<uint8_t>(point.ring));
-    appendU8(&message, static_cast<uint8_t>(point.ring >> 8u));
+    appendU8(&message, frame.explicit_point_time ? static_cast<uint8_t>(point.ring) : point.line);
+    appendU8(&message, frame.explicit_point_time ? static_cast<uint8_t>(point.ring >> 8u) : point.line_valid);
     appendU32(&message, point.offset_time_ns);
     if (frame.explicit_point_time) {
       appendU8(&message, point.return_id);
@@ -878,8 +888,8 @@ Bytes makeRos2PointCloud2(const LidarFrame& frame) {
     appendFloat(&point_data, point.z_m);
     appendU8(&point_data, point.reflectivity);
     appendU8(&point_data, point.tag);
-    appendU8(&point_data, static_cast<uint8_t>(point.ring));
-    appendU8(&point_data, static_cast<uint8_t>(point.ring >> 8u));
+    appendU8(&point_data, frame.explicit_point_time ? static_cast<uint8_t>(point.ring) : point.line);
+    appendU8(&point_data, frame.explicit_point_time ? static_cast<uint8_t>(point.ring >> 8u) : point.line_valid);
     appendU32(&point_data, point.offset_time_ns);
     if (frame.explicit_point_time) {
       appendU8(&point_data, point.return_id);
@@ -893,7 +903,7 @@ Bytes makeRos2PointCloud2(const LidarFrame& frame) {
   writeRos2HeaderNs(&writer, frame.timebase_ns, frame.frame_id);
   writer.writeU32(1u);
   writer.writeU32(point_count);
-  writer.writeU32(frame.explicit_point_time ? 9u : 6u);
+  writer.writeU32(frame.explicit_point_time ? 9u : 8u);
   writeRos2PointField(&writer, "x", 0u, 7u);
   writeRos2PointField(&writer, "y", 4u, 7u);
   writeRos2PointField(&writer, "z", 8u, 7u);
@@ -904,6 +914,9 @@ Bytes makeRos2PointCloud2(const LidarFrame& frame) {
     writeRos2PointField(&writer, "ring", 14u, 4u);
     writeRos2PointField(&writer, "return_id", 20u, 2u);
     writeRos2PointField(&writer, "vendor_reserved", 21u, 2u);
+  } else {
+    writeRos2PointField(&writer, "line", 14u, 2u);
+    writeRos2PointField(&writer, "line_valid", 15u, 2u);
   }
   writer.writeU8(0u);
   writer.writeU32(kPointStep);

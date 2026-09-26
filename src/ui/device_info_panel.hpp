@@ -2,6 +2,8 @@
 
 #include "communication/device_info_compat.hpp"
 #include "prism/usb/common.hpp"
+#include "prism/usb/timesync_port.hpp"
+#include <optional>
 
 #include <QtCore/QString>
 #include <QtWidgets/QWidget>
@@ -27,6 +29,7 @@ class DeviceInfoPanel final : public QWidget {
   void setInfo(const prism::DeviceInfo& info,
                communication::TimeSyncProvider time_sync_provider);
   void setVersions(const prism::DeviceVersions& versions);
+  void setRtkModuleVersions(std::optional<prism::TimeSyncRtkVersions> versions);
   void setError(const QString& error);
   void setVersionError(const QString& error);
 
@@ -45,6 +48,7 @@ class DeviceInfoPanel final : public QWidget {
   communication::TimeSyncProvider time_sync_provider_ =
       communication::TimeSyncProvider::Unsynced;
   prism::DeviceVersions versions_;
+  std::optional<prism::TimeSyncRtkVersions> rtk_versions_;
   bool device_open_ = false;
   bool controls_locked_ = false;
   bool has_info_ = false;

@@ -26,8 +26,7 @@ QByteArray read(const QString& path) { QFile file(path); require(file.open(QIODe
 std::filesystem::path fsPath(const QString& path) { return std::filesystem::u8path(path.toUtf8().constData()); }
 
 QByteArray headerValue(const QByteArray& request, const QByteArray& name) {
-  // HTTP field names are case-insensitive. Qt 6 serializes some names in
-  // lowercase; the opaque ETag value must still be compared byte-for-byte.
+  // HTTP field names are case-insensitive; opaque ETags are not.
   for (const auto& line : request.split('\n')) {
     const int colon = line.indexOf(':');
     if (colon > 0 && line.left(colon).trimmed().compare(name, Qt::CaseInsensitive) == 0)

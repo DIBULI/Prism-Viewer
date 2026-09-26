@@ -15,7 +15,7 @@ extern "C" const prism::GnssReceptionRuntimeApi* prism_usb_sdk_get_gnss_receptio
 int main() {
   try {
     // XT32 metadata changes LidarPoint's layout; reject mixed header/library ABIs.
-    static_assert(prism::kRuntimeApiVersion == 13,
+    static_assert(prism::kRuntimeApiVersion == 18,
                   "Review the Viewer bindings when updating the SDK ABI");
 #ifdef _WIN32
     // Load the pinned package, not a DLL supplied by PATH or the host machine.
@@ -38,8 +38,7 @@ int main() {
         !api->client_create || !api->client_destroy ||
         !api->gnss_timing_status || !api->begin_rtk_corrections ||
         !api->send_rtk_corrections || !api->end_rtk_corrections ||
-        !api->rtk_correction_status ||
-        !api->rtk_navigation_status || !api->parse_rtk_navigation_status ||
+        !api->rtk_correction_status || !api->timesync_rtk_versions ||
         !api->start_rover_rtcm || !api->stop_rover_rtcm ||
         !api->parse_rover_rtcm_chunk_view) {
       throw std::runtime_error("SDK GPS/RTK/RTCM API is incomplete");

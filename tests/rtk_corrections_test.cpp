@@ -1,7 +1,6 @@
 #include "communication/rtk_corrections.hpp"
 
 #include <iostream>
-#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -17,12 +16,6 @@ void writeLe(std::vector<uint8_t>* bytes, size_t offset,
 bool require(bool condition, const char* message) {
   if (!condition) std::cerr << message << '\n';
   return condition;
-}
-void writeDouble(std::vector<uint8_t>* bytes, size_t offset, double value) {
-  uint64_t bits = 0;
-  static_assert(sizeof(bits) == sizeof(value), "unexpected double width");
-  std::memcpy(&bits, &value, sizeof(bits));
-  writeLe(bytes, offset, bits, sizeof(bits));
 }
 }  // namespace
 
@@ -90,125 +83,5 @@ int main() {
   }
   ok &= require(rejected, "Unknown RTK correction format was accepted");
 
-  prism::Frame navigation;
-  navigation.type = static_cast<prism::FrameType>(0x96);
-  navigation.payload.assign(248u, 0u);
-  writeLe(&navigation.payload, 0, 2u, 2u);
-  writeLe(&navigation.payload, 2, 248u, 2u);
-  writeLe(&navigation.payload, 4, 0x1fu, 4u);
-  writeLe(&navigation.payload, 12,
-          static_cast<uint16_t>(RtkBaseSource::HostCors), 2u);
-  writeLe(&navigation.payload, 14,
-          static_cast<uint16_t>(RtkSolution::Fix), 2u);
-  writeLe(&navigation.payload, 16,
-          static_cast<uint16_t>(RtkConfidence::High), 2u);
-  writeLe(&navigation.payload, 18, 17u, 2u);
-  writeLe(&navigation.payload, 20, 932u, 2u);
-  writeLe(&navigation.payload, 24, 0x12u, 4u);
-  writeLe(&navigation.payload, 28, 42u, 4u);
-  writeLe(&navigation.payload, 32, 7u, 4u);
-  writeLe(&navigation.payload, 40, 1780000000000000ULL, 8u);
-  writeDouble(&navigation.payload, 48, 31.2304);
-  writeDouble(&navigation.payload, 56, 121.4737);
-  writeDouble(&navigation.payload, 64, 12.5);
-  writeDouble(&navigation.payload, 72, 0.021);
-  writeDouble(&navigation.payload, 80, 0.013);
-  writeDouble(&navigation.payload, 88, 0.025);
-  writeDouble(&navigation.payload, 96, 0.4);
-  writeDouble(&navigation.payload, 104, 4.018);
-  writeDouble(&navigation.payload, 112, 0.006);
-  writeLe(&navigation.payload, 120, 20u, 8u);
-  writeLe(&navigation.payload, 128, 18u, 8u);
-  writeLe(&navigation.payload, 136, 2u, 8u);
-  writeLe(&navigation.payload, 144, 25u, 8u);
-  writeLe(&navigation.payload, 152, 24u, 8u);
-  writeLe(&navigation.payload, 160, 1u, 8u);
-  writeLe(&navigation.payload, 168, RtkSmoothingDynamicsEnabled, 4u);
-  writeLe(&navigation.payload, 172,
-          static_cast<uint16_t>(RtkSolution::Fix), 2u);
-  writeLe(&navigation.payload, 176, 1780000000000000ULL, 8u);
-  writeDouble(&navigation.payload, 184, 31.230400001);
-  writeDouble(&navigation.payload, 192, 121.473700001);
-  writeDouble(&navigation.payload, 200, 12.49);
-  writeDouble(&navigation.payload, 208, 0.018);
-  writeDouble(&navigation.payload, 216, 0.011);
-  writeDouble(&navigation.payload, 224, 0.021);
-  writeLe(&navigation.payload, 232, 3u, 8u);
-  writeLe(&navigation.payload, 240, 2u, 8u);
-  const auto navigation_status =
-      prism_viewer::communication::parseViewerRtkNavigationStatus(navigation);
-  ok &= require(navigation_status.solution_valid &&
-                    navigation_status.confidence_valid &&
-                    navigation_status.position_jump_valid &&
-                    navigation_status.solution == RtkSolution::Fix &&
-                    navigation_status.confidence == RtkConfidence::High &&
-                    navigation_status.confidence_score == 932u &&
-                    navigation_status.satellites == 17u &&
-                    navigation_status.solution_epoch_us ==
-                        1780000000000000LL &&
-                    navigation_status.latitude_deg == 31.2304 &&
-                    navigation_status.ambiguity_ratio == 4.018 &&
-                    navigation_status.solution_count == 20u &&
-                    navigation_status.smoothed_position_valid &&
-                    navigation_status.smoothed_solution == RtkSolution::Fix &&
-                    navigation_status.smoothed_latitude_deg ==
-                        31.230400001 &&
-                    navigation_status.smoothing_reset_count == 3u &&
-                    navigation_status.smoothing_gated_epoch_count == 2u,
-                "RTK navigation fields were not parsed");
-
-  navigation.type = static_cast<prism::FrameType>(0x97);
-  const auto navigation_event =
-      prism_viewer::communication::parseViewerRtkNavigationStatus(navigation);
-  ok &= require(prism_viewer::communication::isViewerRtkNavigationFrame(navigation) &&
-                    navigation_event.solution_epoch_us ==
-                        navigation_status.solution_epoch_us &&
-                    navigation_event.solution_count ==
-                        navigation_status.solution_count,
-                "RTK navigation event was not accepted");
-
-  prism::Frame legacy_navigation;
-  legacy_navigation.type = static_cast<prism::FrameType>(0x96);
-  legacy_navigation.payload.assign(168u, 0u);
-  writeLe(&legacy_navigation.payload, 0, 1u, 2u);
-  writeLe(&legacy_navigation.payload, 2, 168u, 2u);
-  std::string mismatch_message;
-  try {
-    (void)prism_viewer::communication::parseViewerRtkNavigationStatus(
-        legacy_navigation);
-  } catch (const std::runtime_error& error) {
-    mismatch_message = error.what();
-  }
-  ok &= require(
-      mismatch_message.find("payload=168 bytes, version=1") !=
-              std::string::npos &&
-          mismatch_message.find("payload=248 bytes, version=2") !=
-              std::string::npos,
-      "RTK protocol mismatch did not report received and expected layouts");
-
-  navigation.payload.at(20) = 0xe9u;
-  navigation.payload.at(21) = 0x03u;
-  rejected = false;
-  try {
-    (void)prism_viewer::communication::parseViewerRtkNavigationStatus(
-        navigation);
-  } catch (const std::runtime_error&) {
-    rejected = true;
-  }
-  ok &= require(rejected, "Out-of-range RTK confidence was accepted");
-
-  navigation = prism::Frame{};
-  navigation.type = static_cast<prism::FrameType>(0x96);
-  navigation.payload.assign(248u, 0u);
-  writeLe(&navigation.payload, 0, 2u, 2u);
-  writeLe(&navigation.payload, 2, 248u, 2u);
-  rejected = false;
-  try {
-    (void)prism_viewer::communication::parseViewerRtkNavigationStatus(
-        navigation);
-  } catch (const std::runtime_error&) {
-    rejected = true;
-  }
-  ok &= require(rejected, "Missing RTK dynamics flag was accepted");
   return ok ? 0 : 1;
 }

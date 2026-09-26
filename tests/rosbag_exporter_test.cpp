@@ -363,8 +363,8 @@ int main(int argc, char** argv) {
       }
       lidar_points.push_back(static_cast<uint8_t>(70u + point));
       lidar_points.push_back(static_cast<uint8_t>(4u + point));
-      lidar_points.push_back(0u);
-      lidar_points.push_back(0u);
+      lidar_points.push_back(static_cast<uint8_t>(3u - point));
+      lidar_points.push_back(1u);
     }
     Bytes lidar_container = lidar_points;
     lidar_container.insert(lidar_container.end(), lidar_points.begin(),
@@ -514,14 +514,14 @@ int main(int argc, char** argv) {
         ros1_lidar_nanoseconds != 700000u ||
         ros1_lidar_frame != "livox_mid360s" ||
         ros1_lidar.readU32() != 1u || ros1_lidar.readU32() != 2u ||
-        ros1_lidar.readU32() != 6u) {
+        ros1_lidar.readU32() != 8u) {
       throw std::runtime_error("ROS1 PointCloud2 header is incorrect");
     }
-    const std::array<std::string, 6> expected_names = {
-        "x", "y", "z", "intensity", "tag", "offset_time"};
-    const std::array<uint32_t, 6> expected_offsets = {0u, 4u, 8u, 12u, 13u,
-                                                       16u};
-    const std::array<uint8_t, 6> expected_types = {7u, 7u, 7u, 2u, 2u, 6u};
+    const std::array<std::string, 8> expected_names = {
+        "x", "y", "z", "intensity", "tag", "offset_time", "line", "line_valid"};
+    const std::array<uint32_t, 8> expected_offsets = {0u, 4u, 8u, 12u, 13u,
+                                                       16u, 14u, 15u};
+    const std::array<uint8_t, 8> expected_types = {7u, 7u, 7u, 2u, 2u, 6u, 2u, 2u};
     for (size_t field = 0; field < expected_names.size(); ++field) {
       if (ros1_lidar.readString() != expected_names[field] ||
           ros1_lidar.readU32() != expected_offsets[field] ||
@@ -539,13 +539,13 @@ int main(int argc, char** argv) {
         !nearlyEqual(ros1_points.readFloat(), -2.0) ||
         !nearlyEqual(ros1_points.readFloat(), 3.0) ||
         ros1_points.readU8() != 70u || ros1_points.readU8() != 4u ||
-        ros1_points.readU8() != 0u || ros1_points.readU8() != 0u ||
+        ros1_points.readU8() != 3u || ros1_points.readU8() != 1u ||
         ros1_points.readU32() != 0u ||
         !nearlyEqual(ros1_points.readFloat(), 4.0) ||
         !nearlyEqual(ros1_points.readFloat(), 5.0) ||
         !nearlyEqual(ros1_points.readFloat(), -6.0) ||
         ros1_points.readU8() != 71u || ros1_points.readU8() != 5u ||
-        ros1_points.readU8() != 0u || ros1_points.readU8() != 0u ||
+        ros1_points.readU8() != 2u || ros1_points.readU8() != 1u ||
         ros1_points.readU32() != 10000u || !ros1_points.atEnd() ||
         ros1_lidar.readU8() != 1u || !ros1_lidar.atEnd()) {
       throw std::runtime_error(
@@ -859,7 +859,7 @@ int main(int argc, char** argv) {
         lidar_message.readU32() != 700000u ||
         lidar_message.readString() != "livox_mid360s" ||
         lidar_message.readU32() != 1u || lidar_message.readU32() != 2u ||
-        lidar_message.readU32() != 6u) {
+        lidar_message.readU32() != 8u) {
       throw std::runtime_error("ROS2 PointCloud2 header is incorrect");
     }
     for (size_t field = 0; field < expected_names.size(); ++field) {
@@ -879,13 +879,13 @@ int main(int argc, char** argv) {
         !nearlyEqual(ros2_points.readFloat(), -2.0) ||
         !nearlyEqual(ros2_points.readFloat(), 3.0) ||
         ros2_points.readU8() != 70u || ros2_points.readU8() != 4u ||
-        ros2_points.readU8() != 0u || ros2_points.readU8() != 0u ||
+        ros2_points.readU8() != 3u || ros2_points.readU8() != 1u ||
         ros2_points.readU32() != 0u ||
         !nearlyEqual(ros2_points.readFloat(), 4.0) ||
         !nearlyEqual(ros2_points.readFloat(), 5.0) ||
         !nearlyEqual(ros2_points.readFloat(), -6.0) ||
         ros2_points.readU8() != 71u || ros2_points.readU8() != 5u ||
-        ros2_points.readU8() != 0u || ros2_points.readU8() != 0u ||
+        ros2_points.readU8() != 2u || ros2_points.readU8() != 1u ||
         ros2_points.readU32() != 10000u || !ros2_points.atEnd() ||
         lidar_message.readU8() != 1u || !lidar_message.atEnd()) {
       throw std::runtime_error(
