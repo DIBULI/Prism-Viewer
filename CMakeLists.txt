@@ -268,6 +268,8 @@ function(prism_copy_sdk_runtime target)
   endif()
 endfunction()
 prism_copy_sdk_runtime(prism-viewer)
+target_compile_definitions(prism-viewer PRIVATE
+  PRISM_VIEWER_VERSION="${PROJECT_VERSION}")
 
 if(APPLE)
   set_target_properties(prism-viewer PROPERTIES
@@ -370,6 +372,10 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_test(NAME viewer-version COMMAND prism-viewer --version)
+  set_tests_properties(viewer-version PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    PASS_REGULAR_EXPRESSION "Prism Viewer 1.2.0.*Prism SDK 1.2.0")
   add_executable(gnss-visualization-test src/ui/gnss_visualization.cpp src/common/ui_text.cpp tests/gnss_visualization_test.cpp)
   target_compile_features(gnss-visualization-test PRIVATE cxx_std_17)
   target_include_directories(gnss-visualization-test PRIVATE src)

@@ -2339,7 +2339,8 @@ class CameraStatsLabel final : public QLabel {
 class MainWindow : public QMainWindow {
  public:
   MainWindow() {
-    setWindowTitle(QStringLiteral("Prism Viewer"));
+    setWindowTitle(QStringLiteral("Prism Viewer %1")
+                       .arg(QCoreApplication::applicationVersion()));
     setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
     resize(1480, 940);
 
@@ -8960,9 +8961,15 @@ int runViewerApplication(int argc, char** argv) {
   QApplication app(argc, argv);
   ui::applyLightApplicationTheme(app);
   app.setApplicationName(QStringLiteral("Prism Viewer"));
+  app.setApplicationVersion(QStringLiteral(PRISM_VIEWER_VERSION));
   app.setOrganizationName(QStringLiteral("Prism"));
   app.setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
   const QStringList command_line = QCoreApplication::arguments();
+  if (command_line.contains(QStringLiteral("--version"))) {
+    std::cout << "Prism Viewer " << PRISM_VIEWER_VERSION
+              << " | Prism SDK " << PRISM_REQUIRED_USB_SDK_VERSION << '\n';
+    return 0;
+  }
   const int device_open_self_test =
       command_line.indexOf(QStringLiteral("--device-open-self-test"));
   if (device_open_self_test >= 0) {
