@@ -2,7 +2,7 @@ name: Build and release Prism Viewer
 
 on:
   push:
-    branches: [master]
+    branches: [master, codex/viewer-1.2.0]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -23,7 +23,27 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  package-metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify version and pinned SDK
+        run: |
+          set -euo pipefail
+          test "$(cat VERSION)" = 1.2.0
+          grep -Fq 'project(prism_viewer VERSION 1.2.0 LANGUAGES CXX)' CMakeLists.txt
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 6ed74f83fdcb7c1e6f76dc7954bb64d140cb0bd9
+          test "$(cat third_party/Prism-SDK/VERSION)" = "$(cat VERSION)"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
+          fi
+          python3 third_party/Prism-SDK/scripts/test_all_examples.py --verify-only
+
   windows-x64:
+    needs: package-metadata
     runs-on: windows-2022
     steps:
       - name: Check out Viewer
@@ -54,7 +74,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "846c6e23153e3c869b0cc570d5c68a98ffd2e90cf2a02fc582abfbf9842983c9"
+          $expected = "dbbb8029debe49b495484e32f758de4db76774657de73beb74d8b5bda34c5f80"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -173,6 +193,7 @@ jobs:
           path: Prism-Viewer-1.2.0-windows-x64.zip
 
   linux:
+    needs: package-metadata
     name: linux-${{ matrix.package_arch }}
     # Build and collect every non-glibc runtime inside Ubuntu 20.04. This keeps
     # the host ABI at GLIBC_2.31 while remaining forward-compatible with newer
@@ -186,13 +207,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: dc9c5695583052b67e92b0fa402a157856035e36b2054c7e157de537ce69aecb
+            sdk_sha256: e7b793d0bd46ba7c69fb0f2bec55547a1a5cd06517f16632bcf7c9984569822d
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: ace28e3ea5b4542dc5a00afd766ae1aff0034b365f699543ff2fb9a86380bc8d
+            sdk_sha256: 9de9debe4b264c86413541f968e3d99eb891507161d5448d73b66d78dc308514
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -461,7 +482,7 @@ jobs:
           sdk_commit="$(git -C third_party/Prism-SDK rev-parse HEAD)"
           {
             echo "Prism Viewer version: 1.2.0"
-            echo "Prism SDK version: 1.2.0 (Runtime API ABI 13)"
+            echo "Prism SDK version: 1.2.0 (Runtime API ABI 18)"
             echo "Prism SDK commit: $sdk_commit"
             echo "Prism SDK linkage: $LINUX_SDK_LINKAGE"
             echo "Prism SDK source: third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
@@ -606,6 +627,7 @@ jobs:
           '
 
   macos-arm64:
+    needs: package-metadata
     # GitHub's runner-images catalog maps this fixed label to the standard
     # Apple Silicon image. Do not use macos-latest here: its OS version moves
     # independently, while this package must keep using the arm64 SDK runtime.
@@ -655,7 +677,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="6d9bccbed4360b72cfe8459b14ad944b9b6975e48c49ea5588b87301b573a928"
+          sdk_expected="c6739c242ca63a8c414e85aa368e529803513d45724abf67b5cd57041599c9f0"
           libusb_expected="30cfce3b736acdd5e3e4d276614d7ef917b42d8eddada4932561198bdd4ae414"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
@@ -799,14 +821,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
+          set -euo pipefail
+          test "$RELEASE_TAG" = "v$(cat VERSION)"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
+          for package in Prism-Viewer-1.2.0-windows-x64.zip Prism-Viewer-1.2.0-macos-arm64.zip Prism-Viewer-1.2.0-linux-x64.tar.gz Prism-Viewer-1.2.0-linux-arm64.tar.gz; do
+            test -s "release-assets/$package"
+          done
+          (cd release-assets && sha256sum *.zip *.tar.gz > SHA256SUMS.txt)
           if gh release view "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Prism Viewer $RELEASE_TAG" \
+              --notes-file "docs/release-notes/$RELEASE_TAG.md"
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
+              --title "Prism Viewer $RELEASE_TAG" --latest \
               --notes-file "docs/release-notes/$RELEASE_TAG.md"
           fi

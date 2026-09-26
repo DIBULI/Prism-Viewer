@@ -1,4 +1,4 @@
-# Prism Viewer
+# Prism Viewer 1.2.0
 
 ![Prism](branding/prism-logo.svg)
 
@@ -7,7 +7,7 @@ It provides four-camera MJPEG preview, two onboard IMUs plus optional
 Mid-360/Mid-360S IMU recording, LiDAR point-cloud display with adjustable point
 rendering plus top/reset view presets, switchable live onboard-IMU display
 units, per-camera runtime SC130GS exposure/gain control, device configuration,
-system upgrade, CORS/NTRIP correction forwarding for RK-side RTK, synchronized
+system upgrade, CORS/NTRIP correction forwarding to the Agent, synchronized
 camera/onboard-IMU/LiDAR/LiDAR-IMU dataset playback
 at 0.25x through 8x, and ROS1/ROS2 bag export. IMU display units
 are independent from the fixed SI units used by datasets and ROS bags. New v6
@@ -34,11 +34,17 @@ ENU metres. It uses SDK read-only telemetry and never starts CORS. See
 [GNSS / RTK visualization](docs/gnss-visualization.md) for data requirements,
 freshness, gaps, and the distinction between GGA and the receiver's RTK solution.
 
-GPS/GNSS and RTK position details have separate scrollable tabs. GPS shows
-receiver fix, satellites/DOP, position, UTC, and basic PPS timing. RTK shows
-raw and independently smoothed positions, solution age against device time,
-and precision. Positions include latitude/longitude, ellipsoidal height and local ENU in
-metres relative to the first valid fix.
+GPS/GNSS details show receiver fix, satellites/DOP, position, UTC, and basic
+PPS timing. Receiver-native GGA and ADRNAV results remain separate in the
+graphics tab. The retired Agent software RTK raw/smoothed queries, result
+widgets and `gps_rtk.csv` recording/playback are removed; legacy result
+datasets are unsupported. Existing files are never migrated or deleted.
+This source requires matching SDK headers/libraries with Runtime ABI 18.
+Camera settings now include four-camera unified automatic exposure with
+brightest-camera and RAW highlight protection (requires Sensor Board EX4 firmware).
+
+MID360/MID360S recordings and ROS exports preserve per-point `line` and
+`line_valid`; see [point metadata](docs/livox-line.md).
 
 Open a USB device, then use the **CORS / RTK** tab to configure and start an
 NTRIP correction session. Select **中国移动 CORS** or **千寻 CORS** in
@@ -83,17 +89,14 @@ in the current user's local Qt settings.
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
-Viewer master uses Prism SDK **1.2.0**, commit
-`dabcb9bf37983260f97e8072a8e08054971b6de1` (Runtime API ABI 13), on every
-platform. It requires Agent 1.2.0. The build's `sdk-runtime` test checks the
+Viewer 1.2.0 uses Prism SDK **v1.2.0**, commit
+`6ed74f83fdcb7c1e6f76dc7954bb64d140cb0bd9` (Runtime API 18), on every
+platform. It requires Agent 1.2.0, with Sensor Board 0.4.27. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
-This update adds [Hesai PandarXT-32](docs/xt32.md) preview, recording, playback
-and ROS PointCloud2 export, including signed per-point time offsets and dual
-returns. XT32 has no built-in IMU. Viewer continues to use the prebuilt Host
-SDK, not SDK implementation sources. Replace the headers and runtime together
-and rebuild; older ABI 12 libraries are not compatible. Existing tags and
-Releases are unchanged by this mainline update.
+The SDK release also provides the aligned C++ RK-local API for applications on
+the RK device. Viewer uses the Host USB API; updating Viewer does not flash or
+restart any connected device. Device firmware must be upgraded separately.
 The package contains:
 
 - public headers under `include/prism`;
@@ -244,8 +247,7 @@ glibc and display drivers come from the host.
 
 ## Documentation
 
-- [Viewer 1.1.1 release notes](docs/release-notes/v1.1.1.md)
-- [Viewer 1.1.0 release notes](docs/release-notes/v1.1.0.md)
+- [Viewer 1.2.0 release notes](docs/release-notes/v1.2.0.md)
 
 - [Prism Viewer 1.0.1 update notes](docs/update/v1.0.1.md)
 - [Prism Viewer 1.0.1 更新说明](docs/update/v1.0.1.zh-CN.md)
