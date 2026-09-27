@@ -90,7 +90,7 @@ The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
 Viewer 1.2.0 uses Prism SDK **v1.2.0**, commit
-`84ed73e3a1e17dc6425c6b44e890f3098af59d3b` (Runtime API 18 + raw dataset extension 1), on every
+`1e7d6f756887be45c406209b3cd46e90d11bdeae` (Runtime API 18 + raw dataset extension 1), on every
 platform. It requires Agent 1.2.0, with Sensor Board 0.4.27. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
