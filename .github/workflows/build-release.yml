@@ -74,13 +74,16 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "79dd48b5dbe287e64371dfe5377fbf49a4c780062bb2b5f1965c3f9e35cec890"
+          $expected = "f68d4276b50da89e2d12f3bad07815725b7030c99890a896a5208decf9770243"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
           }
           $contents = [Text.Encoding]::ASCII.GetString(
             [IO.File]::ReadAllBytes($dll))
+          if (-not $contents.Contains('prism_usb_sdk_get_lidar_power_api')) {
+            throw "Bundled SDK is missing the LiDAR power runtime extension"
+          }
           if (-not $contents.Contains(
               'camera exposure time must be 50..995000 us')) {
             throw "Bundled SDK does not accept the 50 us exposure limit"
@@ -207,13 +210,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: 1630411c61207ed0fa05e112eec55dcd78800164983ff76f4b6ee178f676d3c8
+            sdk_sha256: 2cc180db20c9826ce002e136deb559840837e7c959e4c7a81a2f778f00f1a41a
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: f37b50a809acb28540f9cd52775d99dd7bfbdad456af36b3a365a0b82e0cb51f
+            sdk_sha256: 028828020ccad76d38bc0f0eda6a14fb50d40a53d9e38ae0a0c24658a8a2a77b
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -677,7 +680,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="79a1708408c474325bc92e69fe44343eed7e2f06d3e9418e21a418286de6f677"
+          sdk_expected="31f6fcb965b7a94b177ca3770329eb7b5019120562cf2df5b7c3c1d2d9c03e26"
           libusb_expected="30cfce3b736acdd5e3e4d276614d7ef917b42d8eddada4932561198bdd4ae414"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
