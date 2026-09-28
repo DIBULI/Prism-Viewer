@@ -216,7 +216,7 @@ jobs:
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: 028828020ccad76d38bc0f0eda6a14fb50d40a53d9e38ae0a0c24658a8a2a77b
+            sdk_sha256: 84cc052cff2e91ad1d69493925c648270d91b8b77471356e25c0078c2b2bfd41
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:

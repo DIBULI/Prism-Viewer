@@ -10,6 +10,7 @@
 #else
 extern "C" const prism::RuntimeApi* prism_usb_sdk_get_runtime_api(uint32_t);
 extern "C" const prism::GnssReceptionRuntimeApi* prism_usb_sdk_get_gnss_reception_api(uint32_t);
+extern "C" const prism::LidarPowerRuntimeApi* prism_usb_sdk_get_lidar_power_api(uint32_t);
 #endif
 
 int main() {
@@ -54,6 +55,19 @@ int main() {
         reception->struct_size != sizeof(prism::GnssReceptionRuntimeApi) ||
         !reception->gnss_reception_status || get_reception(0) || get_reception(2)) {
       throw std::runtime_error("Independent reception extension is incomplete");
+    }
+    // Validate the independent power extension without accessing hardware.
+#ifdef _WIN32
+    const auto get_power = reinterpret_cast<prism::GetLidarPowerRuntimeApiFunction>(
+        GetProcAddress(module, prism::kLidarPowerRuntimeApiEntryPoint));
+#else
+    const auto get_power = &prism_usb_sdk_get_lidar_power_api;
+#endif
+    const auto* power = get_power ? get_power(1) : nullptr;
+    if (!power || power->abi_version != 1 ||
+        power->struct_size != sizeof(prism::LidarPowerRuntimeApi) ||
+        !power->query || !power->set_standby || get_power(0) || get_power(2)) {
+      throw std::runtime_error("Independent LiDAR power extension is incomplete");
     }
     // No enumeration, connection, capture, or time/configuration mutation.
     auto* client = api->client_create();
