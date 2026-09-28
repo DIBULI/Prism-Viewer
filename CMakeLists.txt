@@ -207,6 +207,7 @@ add_executable(prism-viewer
   src/ui/device_info_panel.cpp
   src/ui/image_view_label.cpp
   src/ui/lidar_point_cloud_widget.cpp
+  src/ui/lidar_power_panel.cpp
   src/ui/main_window.cpp
   src/ui/preview_image_decoder.cpp
   src/ui/rk_dataset_dialog.cpp
@@ -684,6 +685,15 @@ if(BUILD_TESTING)
       main-window-layout-compact
       PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
+  endif()
+
+  add_executable(lidar-power-panel-test src/common/ui_text.cpp src/ui/lidar_power_panel.cpp tests/lidar_power_panel_test.cpp)
+  target_include_directories(lidar-power-panel-test PRIVATE src)
+  target_compile_features(lidar-power-panel-test PRIVATE cxx_std_17)
+  target_link_libraries(lidar-power-panel-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Widgets)
+  add_test(NAME lidar-power-panel COMMAND lidar-power-panel-test)
+  if(UNIX)
+    set_tests_properties(lidar-power-panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   endif()
 
   add_executable(camera-encoding-panel-test

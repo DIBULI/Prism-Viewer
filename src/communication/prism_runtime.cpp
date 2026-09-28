@@ -217,6 +217,23 @@ prism::VideoStatus Client::startVideo1280x1024(uint32_t fps) {
 void Client::stopVideo() { api_->stop_video(handle_); }
 void Client::sendVideoAck(uint32_t id) { api_->send_video_ack(handle_, id); }
 prism::LidarStatus Client::lidarStatus() { return api_->lidar_status(handle_); }
+namespace {
+const prism::LidarPowerRuntimeApi* powerApi() {
+  const auto get=reinterpret_cast<prism::GetLidarPowerRuntimeApiFunction>(
+      GetProcAddress(loadModule(),prism::kLidarPowerRuntimeApiEntryPoint));
+  const auto* api=get?get(prism::kLidarPowerRuntimeApiVersion):nullptr;
+  if(!api || api->abi_version!=prism::kLidarPowerRuntimeApiVersion ||
+      api->struct_size<sizeof(*api) || !api->query || !api->set_standby)
+    throw std::runtime_error("LiDAR power SDK extension unavailable; update the complete Viewer package");
+  return api;
+}
+}
+prism::LidarPowerStatus Client::lidarPowerStatus(prism::LidarModel model,uint32_t timeout) {
+  return powerApi()->query(handle_,model,timeout);
+}
+prism::LidarPowerStatus Client::setLidarStandby(prism::LidarModel model,bool standby,uint32_t timeout) {
+  return powerApi()->set_standby(handle_,model,standby,timeout);
+}
 prism::LidarNetworkStatus Client::lidarNetworkStatus() {
   return api_->lidar_network_status(handle_);
 }

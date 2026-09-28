@@ -97,6 +97,8 @@ class Client {
   void stopVideo();
   void sendVideoAck(uint32_t last_frame_id);
   prism::LidarStatus lidarStatus();
+  prism::LidarPowerStatus lidarPowerStatus(prism::LidarModel model, uint32_t timeout_ms=3000);
+  prism::LidarPowerStatus setLidarStandby(prism::LidarModel model, bool standby, uint32_t timeout_ms=15000);
   prism::LidarNetworkStatus lidarNetworkStatus();
   prism::LidarNetworkStatus saveLidarNetworkConfiguration(
       const prism::LidarNetworkConfiguration& configuration);

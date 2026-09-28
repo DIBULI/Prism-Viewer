@@ -24,6 +24,7 @@
 #include "ui/time_source_text.hpp"
 #include "ui/image_view_label.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
+#include "ui/lidar_power_panel.hpp"
 #include "ui/main_window.hpp"
 #include "ui/preview_image_decoder.hpp"
 #include "ui/rk_dataset_dialog.hpp"
@@ -2770,6 +2771,12 @@ class MainWindow : public QMainWindow {
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
     lidar_network_root->addWidget(lidar_network_status_label_);
     lidar_sidebar_layout->addWidget(lidar_network_group);
+    auto* power_group=new QGroupBox(uiText("LiDAR standby / wake","雷达待机 / 唤醒"),lidar_sidebar);
+    auto* power_layout=new QVBoxLayout(power_group);
+    lidar_power_panel_=new prism_viewer::ui::LidarPowerPanel(power_group);
+    power_layout->addWidget(lidar_power_panel_);
+    lidar_power_panel_->on_action=[this](prism::LidarModel model,int action){startLidarPowerOperation(model,action);};
+    lidar_sidebar_layout->addWidget(power_group);
     lidar_sidebar_layout->addStretch(1);
     lidar_point_cloud_widget_ =
         new prism_viewer::LidarPointCloudWidget(lidar_splitter);
@@ -5863,6 +5870,8 @@ class MainWindow : public QMainWindow {
     const bool lidar_network_controls_enabled =
         device_open && !busy && !upgrading && !cors_active &&
         !client_.streamTransferActive();
+    lidar_power_panel_->setAvailable(lidar_network_controls_enabled,
+        !device_open || running || client_.streamTransferActive());
     if (lidar_network_enabled_checkbox_ != nullptr) {
       lidar_network_enabled_checkbox_->setEnabled(
           lidar_network_controls_enabled);
@@ -5883,7 +5892,7 @@ class MainWindow : public QMainWindow {
       wifi_hotspot_panel_->setDeviceOpen(device_open);
       wifi_hotspot_panel_->setControlsLocked(
           running || time_syncing || exposure_busy || encoding_busy ||
-          upgrading || cors_active ||
+          upgrading || cors_active || lidar_network_busy ||
           client_.streamTransferActive());
     }
     if (cors_panel_ != nullptr) {
@@ -5904,7 +5913,7 @@ class MainWindow : public QMainWindow {
       camera_exposure_panel_->setDeviceOpen(device_open);
       camera_exposure_panel_->setCaptureActive(running && !upgrading);
       camera_exposure_panel_->setControlsLocked(
-          time_syncing || wifi_busy || encoding_busy || upgrading);
+          time_syncing || wifi_busy || encoding_busy || upgrading || lidar_network_busy);
     }
     if (camera_encoding_panel_ != nullptr) {
       camera_encoding_panel_->setDeviceOpen(device_open);
@@ -5912,7 +5921,7 @@ class MainWindow : public QMainWindow {
           running || client_.streamTransferActive());
       camera_encoding_panel_->setControlsLocked(
           time_syncing || wifi_busy || exposure_busy || upgrading ||
-          cors_active);
+          cors_active || lidar_network_busy);
     }
     const bool imu_available = device_open || hasDatasetImuPlayback();
     if (imu0_selector_ != nullptr) imu0_selector_->setEnabled(imu_available);
@@ -6106,6 +6115,27 @@ class MainWindow : public QMainWindow {
     });
   }
 
+  void startLidarPowerOperation(prism::LidarModel model,int action) {
+    if(!client_.isOpen() || worker_running_ || time_sync_running_ || wifi_operation_running_ ||
+       camera_exposure_operation_running_ || camera_encoding_operation_running_ ||
+       cors_session_.active() || lidar_network_operation_running_ || upgrade_running_ || client_.streamTransferActive())return;
+    if(action && QMessageBox::question(this,uiText("LiDAR hardware state","雷达硬件状态"),
+        action==2?uiText("Put the LiDAR into hardware standby?","确认让雷达进入硬件待机？"):
+        uiText("Wake the LiDAR? Motor startup can take more than ten seconds.","确认唤醒雷达？电机启动可能需要十余秒。"),
+        QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
+    operation_controller_.join();lidar_network_operation_running_=true;
+    lidar_power_panel_->setBusy(true);refreshControls();
+    operation_controller_.start([this,model,action]{
+      try {
+        auto state=withClientIo([&]{return action?client_.setLidarStandby(model,action==2,15000):client_.lidarPowerStatus(model,3000);});
+        post([this,state]{lidar_network_operation_running_=false;lidar_power_panel_->setBusy(false);lidar_power_panel_->setResult(state);refreshControls();});
+      } catch(const std::exception& e) {
+        const QString error=toQString(e.what());
+        post([this,error]{lidar_network_operation_running_=false;lidar_power_panel_->setBusy(false);lidar_power_panel_->setError(error);refreshControls();});
+      }
+    });
+  }
+
   void startLidarNetworkOperation(int operation) {
     if (!client_.isOpen()) {
       showOpenDeviceHint(QStringLiteral("LiDAR"));
@@ -6125,6 +6155,7 @@ class MainWindow : public QMainWindow {
       return;
     }
     prism::LidarNetworkConfiguration configuration;
+    if (lidar_power_panel_) lidar_power_panel_->clear();
     configuration.enabled = lidar_network_enabled_checkbox_->isChecked();
     configuration.host_ip = lidar_network_host_ip_->text().trimmed().toStdString();
     configuration.netmask = lidar_network_netmask_->text().trimmed().toStdString();
@@ -8806,6 +8837,7 @@ class MainWindow : public QMainWindow {
   QPushButton* lidar_network_apply_button_ = nullptr;
   QPushButton* lidar_network_probe_button_ = nullptr;
   QLabel* lidar_network_status_label_ = nullptr;
+  prism_viewer::ui::LidarPowerPanel* lidar_power_panel_=nullptr;
   prism_viewer::LidarPointCloudWidget* lidar_point_cloud_widget_ = nullptr;
   WifiHotspotPanel* wifi_hotspot_panel_ = nullptr;
   CorsPanel* cors_panel_ = nullptr;

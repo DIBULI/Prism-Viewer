@@ -254,6 +254,7 @@ glibc and display drivers come from the host.
 
 ## Documentation
 
+- [Independent LiDAR hardware standby / wake](docs/lidar-power.md)
 - [Viewer 1.2.0 release notes](docs/release-notes/v1.2.0.md)
 
 - [Prism Viewer 1.0.1 update notes](docs/update/v1.0.1.md)
