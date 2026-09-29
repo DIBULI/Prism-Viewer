@@ -8,13 +8,15 @@ namespace prism_viewer::ui {
 using common::uiText;
 LidarPowerPanel::LidarPowerPanel(QWidget* parent):QWidget(parent) {
   auto* layout=new QGridLayout(this);
+  layout->setContentsMargins(0,0,0,0);
+  layout->setSpacing(8);
   auto* hint=new QLabel(uiText("Stop all capture before changing hardware state. Wake does not start capture or recording.",
     "请先停止所有采集再切换硬件状态。唤醒不会开始采集或录制。"),this);
-  hint->setWordWrap(true);layout->addWidget(hint,0,0,1,3);
+  hint->setWordWrap(true);layout->addWidget(hint,0,0,1,2);
   model_=new QComboBox(this);model_->setObjectName("lidarPowerModel");
   model_->addItem(uiText("Select model", "选择型号"),0);
   model_->addItem("Livox Mid-360",1);model_->addItem("Livox Mid-360S",2);model_->addItem("Hesai PandarXT-32",3);
-  layout->addWidget(model_,1,0,1,3);
+  layout->addWidget(model_,1,0,1,2);
   query_=new QPushButton(uiText("Read state","读取状态"),this);
   standby_=new QPushButton(uiText("Standby","待机"),this);
   wake_=new QPushButton(uiText("Wake","唤醒"),this);
@@ -27,8 +29,10 @@ LidarPowerPanel::LidarPowerPanel(QWidget* parent):QWidget(parent) {
         on_action(static_cast<prism::LidarModel>(model_->currentData().toInt()),op);
     });
   }
-  layout->addWidget(query_,2,0);layout->addWidget(standby_,2,1);layout->addWidget(wake_,2,2);
-  status_=new QLabel(this);status_->setObjectName("lidarPowerState");status_->setWordWrap(true);layout->addWidget(status_,3,0,1,3);
+  layout->addWidget(query_,2,0,1,2);
+  layout->addWidget(standby_,3,0);layout->addWidget(wake_,3,1);
+  layout->setColumnStretch(0,1);layout->setColumnStretch(1,1);
+  status_=new QLabel(this);status_->setObjectName("lidarPowerState");status_->setWordWrap(true);layout->addWidget(status_,4,0,1,2);
   connect(model_,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this]{clear();refresh();});
   clear();refresh();
 }

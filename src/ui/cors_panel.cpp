@@ -159,7 +159,7 @@ void addStatusField(QVBoxLayout* layout, QWidget* parent,
 }  // namespace
 
 CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
-  auto* root = new QHBoxLayout(this);
+  auto* root = new QVBoxLayout(this);
   root->setContentsMargins(8, 8, 8, 8);
   root->setSpacing(10);
 
@@ -307,6 +307,7 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   auto* gnss_group_layout = new QVBoxLayout(gnss_group);
   gnss_group_layout->setContentsMargins(4, 8, 4, 4);
   auto* gnss_tabs = new QTabWidget(gnss_group);
+  pages_ = gnss_tabs;
   gnss_tabs->setObjectName(QStringLiteral("gnssRtkTabs"));
 
   auto make_scroll_tab = [&](const QString& page_name,
@@ -472,10 +473,19 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
                  gnss_timing_value_);
   gps_layout->addStretch(1);
 
+  // Keep configuration and live status out of the positioning viewport.
+  // Each page gets the full window width rather than one of three columns.
+  const auto cors_tab = make_scroll_tab(
+      QStringLiteral("corsSettingsTab"), QStringLiteral("corsSettingsScroll"),
+      uiText("CORS connection", "CORS 连接"));
+  auto* cors_columns = new QHBoxLayout();
+  cors_columns->setSpacing(12);
+  cors_columns->addWidget(config_group, 1);
+  cors_columns->addWidget(status_group, 1);
+  cors_tab.second->addLayout(cors_columns);
+  cors_tab.second->addStretch(1);
   gnss_group_layout->addWidget(gnss_tabs);
 
-  root->addWidget(config_group, 1);
-  root->addWidget(status_group, 1);
   root->addWidget(gnss_group, 1);
 
   populateProviders();
@@ -512,6 +522,18 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
           [this](int) { refreshView(); });
   refreshView();
   setTimeSyncLocked(true);
+}
+
+void CorsPanel::addVisualizationPage(QWidget* page) {
+  auto* scroll = new QScrollArea(pages_);
+  scroll->setObjectName(QStringLiteral("rtkVisualizationScroll"));
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  // Retain a usable plot height on small desktops; scroll instead of
+  // clipping the sky/table beneath nested tab headers.
+  if (page->layout()) page->layout()->setSizeConstraint(QLayout::SetMinimumSize);
+  scroll->setWidget(page);
+  pages_->addTab(scroll, uiText("Sky / trajectories", "天空图 / 轨迹"));
 }
 
 void CorsPanel::populateProviders() {

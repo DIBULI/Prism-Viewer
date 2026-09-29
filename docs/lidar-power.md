@@ -1,6 +1,9 @@
 # LiDAR hardware standby and wake
 
-In the LiDAR page, use **LiDAR standby / wake**, independently from capture.
+In the LiDAR page, select the **Power** subtab in the left sidebar, then use
+**LiDAR standby / wake**, independently from capture. **View**, **Network**,
+and **Power** have separate scrollable pages so they do not squeeze the point
+cloud or each other's controls in smaller windows.
 
 1. Connect the device and configure the LiDAR network.
 2. Stop all camera, board IMU and LiDAR capture and recording.

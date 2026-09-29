@@ -27,8 +27,12 @@ int main(int argc,char** argv){
   p.setBusy(true);check(!query->isEnabled()&&!model->isEnabled(),"busy controls unlocked");
   p.setBusy(false);prism::LidarPowerStatus s;s.model=prism::LidarModel::Mid360S;s.state=prism::LidarPowerState::Standby;p.setResult(s);
   check(state->text().contains(chinese?QStringLiteral("待机"):QStringLiteral("Standby")),"readback missing");
+  p.resize(270,320);p.show();app.processEvents();
+  check(p.width()==270,"power controls force the sidebar wider");
+  for(auto* button:{query,standby,wake})
+    check(p.rect().contains(button->geometry()),"power button clipped");
+  check(query->y()<standby->y()&&standby->y()==wake->y(),"compact power button layout wrong");
   if(argc==2){
-    p.resize(560,200);p.show();app.processEvents();
     check(p.grab().save(QString::fromLocal8Bit(argv[1])+(chinese?"-zh.png":"-en.png")),"snapshot failed");
   }
   p.setAvailable(false,true);check(!wake->isEnabled(),"capture controls unlocked");

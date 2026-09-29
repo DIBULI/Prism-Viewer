@@ -28,7 +28,7 @@ the authoritative time source.
 
 ## CORS / RTK
 
-The **GNSS / RTK graphics** tab provides a rotatable satellite sky, a sortable,
+The **RTK → Sky / trajectories** page provides a rotatable satellite sky, a sortable,
 filterable satellite table, and separate GGA and ADRNAV trajectories in local
 ENU metres. It uses SDK read-only telemetry and never starts CORS. See
 [GNSS / RTK visualization](docs/gnss-visualization.md) for data requirements,
@@ -46,7 +46,10 @@ brightest-camera and RAW highlight protection (requires Sensor Board EX4 firmwar
 MID360/MID360S recordings and ROS exports preserve per-point `line` and
 `line_valid`; see [point metadata](docs/livox-line.md).
 
-Open a USB device, then use the **CORS / RTK** tab to configure and start an
+GNSS status, CORS connection settings, and plots use separate full-width pages
+inside **RTK**, rather than three side-by-side columns.
+
+Open a USB device, then use **RTK → CORS connection** to configure and start an
 NTRIP correction session. Select **中国移动 CORS** or **千寻 CORS** in
 **Service provider**, then enter that provider's username and password.
 

@@ -671,6 +671,10 @@ if(BUILD_TESTING)
     NAME main-window-layout-compact
     COMMAND prism-viewer --window-layout-self-test --compact-layout-test
   )
+  add_test(NAME main-window-layout-zh
+    COMMAND prism-viewer --window-layout-self-test)
+  add_test(NAME main-window-layout-compact-zh
+    COMMAND prism-viewer --window-layout-self-test --compact-layout-test)
   set_tests_properties(
     dataset-recorder-full dataset-recorder-imu-only dataset-playback-ui
     PROPERTIES RUN_SERIAL TRUE
@@ -683,9 +687,15 @@ if(BUILD_TESTING)
       dataset-recorder-full dataset-recorder-imu-only dataset-playback-ui
       main-window-layout
       main-window-layout-compact
+      main-window-layout-zh main-window-layout-compact-zh
       PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
   endif()
+
+  set_property(TEST main-window-layout main-window-layout-compact
+    APPEND PROPERTY ENVIRONMENT "PRISM_VIEWER_LANG=en")
+  set_property(TEST main-window-layout-zh main-window-layout-compact-zh
+    APPEND PROPERTY ENVIRONMENT "PRISM_VIEWER_LANG=zh")
 
   add_executable(lidar-power-panel-test src/common/ui_text.cpp src/ui/lidar_power_panel.cpp tests/lidar_power_panel_test.cpp)
   target_include_directories(lidar-power-panel-test PRIVATE src)

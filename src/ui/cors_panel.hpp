@@ -19,12 +19,14 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QTabWidget;
 
 namespace prism_viewer::ui {
 
 class CorsPanel final : public QWidget {
  public:
   explicit CorsPanel(QWidget* parent = nullptr);
+  void addVisualizationPage(QWidget* page);
 
   void setDeviceOpen(bool open);
   void setControlsLocked(bool locked);
@@ -67,6 +69,7 @@ class CorsPanel final : public QWidget {
   void refreshView();
   void showRtkErrorHelp();
 
+  QTabWidget* pages_ = nullptr;
   QComboBox* provider_selector_ = nullptr;
   QComboBox* endpoint_selector_ = nullptr;
   QComboBox* coordinate_system_selector_ = nullptr;

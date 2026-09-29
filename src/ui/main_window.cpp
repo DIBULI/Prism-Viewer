@@ -2607,6 +2607,32 @@ class MainWindow : public QMainWindow {
     auto* lidar_sidebar_layout = new QVBoxLayout(lidar_sidebar);
     lidar_sidebar_layout->setContentsMargins(0, 0, 0, 0);
     lidar_sidebar_layout->setSpacing(10);
+    auto* lidar_tools = new QTabWidget(lidar_sidebar);
+    lidar_tools->setObjectName(QStringLiteral("lidarControlTabs"));
+    lidar_tools->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    lidar_tools->setUsesScrollButtons(true);
+    lidar_sidebar_layout->addWidget(lidar_tools);
+    const auto make_lidar_tool_page = [&](const QString& name,
+                                          const QString& title) {
+      auto* scroll = new QScrollArea(lidar_tools);
+      scroll->setObjectName(name);
+      scroll->setWidgetResizable(true);
+      scroll->setFrameShape(QFrame::NoFrame);
+      scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+      auto* content = new QWidget(scroll);
+      auto* layout = new QVBoxLayout(content);
+      layout->setContentsMargins(4, 8, 4, 4);
+      layout->setSpacing(8);
+      scroll->setWidget(content);
+      lidar_tools->addTab(scroll, title);
+      return layout;
+    };
+    auto* lidar_view_layout = make_lidar_tool_page(
+        QStringLiteral("lidarViewScroll"), uiText("View", "显示"));
+    auto* lidar_network_layout = make_lidar_tool_page(
+        QStringLiteral("lidarNetworkScroll"), uiText("Network", "网络"));
+    auto* lidar_power_layout = make_lidar_tool_page(
+        QStringLiteral("lidarPowerScroll"), uiText("Power", "待机 / 唤醒"));
 
     auto* lidar_controls = new QGroupBox(
         uiText("LiDAR point cloud", "LiDAR 点云"), lidar_sidebar);
@@ -2700,7 +2726,7 @@ class MainWindow : public QMainWindow {
     lidar_view_actions->addWidget(lidar_reset_view_button, 1);
     lidar_controls_layout->addLayout(lidar_view_actions);
     lidar_controls_layout->addWidget(lidar_status_label_);
-    lidar_sidebar_layout->addWidget(lidar_controls);
+    lidar_view_layout->addWidget(lidar_controls);
 
     lidar_imu_playback_label_ = new QLabel(
         uiText("Dataset LiDAR IMU: no playback sample",
@@ -2712,7 +2738,8 @@ class MainWindow : public QMainWindow {
     lidar_imu_playback_label_->setStyleSheet(QStringLiteral(
         "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
         "border-radius: 6px; padding: 7px 10px;"));
-    lidar_sidebar_layout->addWidget(lidar_imu_playback_label_);
+    lidar_view_layout->addWidget(lidar_imu_playback_label_);
+    lidar_view_layout->addStretch(1);
 
     auto* lidar_network_group = new QGroupBox(
         uiText("end0 / Mid360 network", "end0 / Mid360 网络"),
@@ -2770,14 +2797,15 @@ class MainWindow : public QMainWindow {
         "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
         "border-radius: 6px; padding: 7px 10px; font-weight: 600;"));
     lidar_network_root->addWidget(lidar_network_status_label_);
-    lidar_sidebar_layout->addWidget(lidar_network_group);
+    lidar_network_layout->addWidget(lidar_network_group);
+    lidar_network_layout->addStretch(1);
     auto* power_group=new QGroupBox(uiText("LiDAR standby / wake","雷达待机 / 唤醒"),lidar_sidebar);
     auto* power_layout=new QVBoxLayout(power_group);
     lidar_power_panel_=new prism_viewer::ui::LidarPowerPanel(power_group);
     power_layout->addWidget(lidar_power_panel_);
     lidar_power_panel_->on_action=[this](prism::LidarModel model,int action){startLidarPowerOperation(model,action);};
-    lidar_sidebar_layout->addWidget(power_group);
-    lidar_sidebar_layout->addStretch(1);
+    lidar_power_layout->addWidget(power_group);
+    lidar_power_layout->addStretch(1);
     lidar_point_cloud_widget_ =
         new prism_viewer::LidarPointCloudWidget(lidar_splitter);
     lidar_point_cloud_widget_->setObjectName(
@@ -2799,11 +2827,11 @@ class MainWindow : public QMainWindow {
     wifi_hotspot_panel_ = new WifiHotspotPanel(tabs_);
     tabs_->addTab(wifi_hotspot_panel_, uiText("Network", "网络"));
 
-    gnss_visualization_ = new prism_viewer::ui::GnssVisualization(tabs_);
-    tabs_->addTab(gnss_visualization_,uiText("GNSS / RTK plots","GNSS / RTK 图形"));
     cors_panel_ = new CorsPanel(tabs_);
-    tabs_->addTab(cors_panel_,
-                  uiText("CORS / RTK", "CORS / RTK"));
+    gnss_visualization_ = new prism_viewer::ui::GnssVisualization(cors_panel_);
+    gnss_visualization_->setObjectName(QStringLiteral("rtkVisualization"));
+    cors_panel_->addVisualizationPage(gnss_visualization_);
+    tabs_->addTab(cors_panel_, QStringLiteral("RTK"));
 
     dataset_page_ = new QWidget(tabs_);
     dataset_page_->setObjectName(QStringLiteral("datasetPage"));
@@ -10035,6 +10063,64 @@ int runViewerApplication(int argc, char** argv) {
                         lidar_sizes[1] > lidar_sizes[0] &&
                         lidar_cloud->height() >= lidar_sidebar->height() - 2;
     }
+    // Every LiDAR tool page owns a scroll viewport. Inactive network/power
+    // controls must not increase the height or width of the point-cloud page.
+    auto* lidar_tools = window.findChild<QTabWidget*>("lidarControlTabs");
+    const int sensor_screenshot_arg = command_line.indexOf(
+        QStringLiteral("--sensor-layout-screenshot"));
+    const auto sensor_snapshot = [&](QWidget* page, const QString& suffix) {
+      return sensor_screenshot_arg < 0 ||
+          sensor_screenshot_arg + 1 >= command_line.size() ||
+          page->grab().save(command_line[sensor_screenshot_arg + 1] +
+                            suffix + QStringLiteral(".png"));
+    };
+    lidar_layout_ok = lidar_layout_ok && lidar_tools && lidar_tools->count() == 3;
+    if (lidar_layout_ok) {
+      const QStringList names = {"lidarViewScroll", "lidarNetworkScroll",
+                                 "lidarPowerScroll"};
+      for (int i = 0; i < names.size(); ++i) {
+        lidar_tools->setCurrentIndex(i);
+        app.processEvents();
+        auto* scroll = qobject_cast<QScrollArea*>(lidar_tools->widget(i));
+        lidar_layout_ok = lidar_layout_ok && scroll &&
+            scroll->objectName() == names[i] && scroll->widgetResizable() &&
+            lidar_sidebar->rect().contains(lidar_tools->geometry()) &&
+            scroll->widget()->width() <= scroll->viewport()->width() &&
+            sensor_snapshot(lidar_page, QStringLiteral("-lidar-%1").arg(i));
+      }
+      lidar_tools->setCurrentIndex(0);
+    }
+    auto* rtk_pages = window.findChild<QTabWidget*>("gnssRtkTabs");
+    auto* rtk_plots = window.findChild<QWidget*>("rtkVisualization");
+    bool rtk_layout_ok = rtk_pages && rtk_plots &&
+        rtk_pages->count() == 3 &&
+        rtk_pages->widget(2)->isAncestorOf(rtk_plots) &&
+        main_tabs->indexOf(rtk_plots) == -1;
+    if (rtk_layout_ok) {
+      QWidget* rtk_page = nullptr;
+      for (int i = 0; i < main_tabs->count(); ++i)
+        if (main_tabs->widget(i)->isAncestorOf(rtk_pages))
+          rtk_page = main_tabs->widget(i);
+      rtk_layout_ok = rtk_page != nullptr;
+      if (rtk_page) {
+        rtk_page->setEnabled(true);
+        main_tabs->setCurrentWidget(rtk_page);
+        for (int i = 0; i < rtk_pages->count(); ++i) {
+          rtk_pages->setCurrentIndex(i);
+          app.processEvents();
+          rtk_layout_ok = rtk_layout_ok &&
+              rtk_pages->width() >= rtk_page->width() - 64 &&
+              sensor_snapshot(rtk_page, QStringLiteral("-rtk-%1").arg(i));
+        }
+        rtk_layout_ok = rtk_layout_ok && rtk_plots->isVisible() &&
+            rtk_plots->width() >= rtk_page->width() - 80;
+        auto* plot_scroll = qobject_cast<QScrollArea*>(rtk_pages->widget(2));
+        rtk_layout_ok = rtk_layout_ok && plot_scroll &&
+            plot_scroll->widget() == rtk_plots &&
+            rtk_plots->height() >= rtk_plots->minimumSizeHint().height();
+        rtk_pages->setCurrentIndex(0);
+      }
+    }
     bool dataset_frame_layout_ok =
         main_tabs != nullptr && dataset_page != nullptr &&
         dataset_frame_label != nullptr && dataset_frame_slider != nullptr;
@@ -10161,7 +10247,7 @@ int runViewerApplication(int argc, char** argv) {
         camera_screenshot_arg >= 0 && camera_screenshot_arg + 1 < command_line.size()
             ? command_line[camera_screenshot_arg + 1] : QString());
     const bool success = playback_controls_ok && imu_layout_ok &&
-        lidar_layout_ok && dataset_frame_layout_ok && dataset_overview_ok &&
+        lidar_layout_ok && rtk_layout_ok && dataset_frame_layout_ok && dataset_overview_ok &&
         imu_window_ok && camera_gain_ok &&
         minimum.width() <= kMaximumMainWindowMinimumWidth &&
         minimum.height() <= kMaximumMainWindowMinimumHeight;
@@ -10179,6 +10265,7 @@ int runViewerApplication(int argc, char** argv) {
               << (imu_zoom_ok ? "PASS" : "FAIL")
               << " lidar_horizontal="
               << (lidar_layout_ok ? "PASS" : "FAIL")
+              << " rtk_full_width=" << (rtk_layout_ok ? "PASS" : "FAIL")
               << " dataset_tabs="
               << (dataset_overview_ok ? "PASS" : "FAIL")
               << " dataset_frame_slider="

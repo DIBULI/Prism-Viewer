@@ -12,6 +12,7 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
@@ -153,8 +154,8 @@ int main(int argc, char** argv) {
   panel.setTimeSyncLocked(false);
   ok &= require(!ts_apply->isEnabled() && ts_text->text()==QStringLiteral("timeout"), "Timesync stale state not cleared");
   panel.setDeviceOpen(false);
-  ok &= require(qobject_cast<QHBoxLayout*>(panel.layout()) != nullptr,
-                "CORS page is not arranged as three vertical columns");
+  ok &= require(qobject_cast<QVBoxLayout*>(panel.layout()) != nullptr,
+                "RTK pages must use the full width, not three columns");
   ok &= require(panel.findChild<QGroupBox*>(
                     QStringLiteral("corsConfigurationColumn")) != nullptr &&
                     panel.findChild<QGroupBox*>(
@@ -168,10 +169,12 @@ int main(int argc, char** argv) {
       panel.findChild<QScrollArea*>(QStringLiteral("gpsStatusScroll"));
   auto* rtk_scroll =
       panel.findChild<QScrollArea*>(QStringLiteral("rtkStatusScroll"));
-  ok &= require(position_tabs != nullptr && position_tabs->count() == 1 &&
+  ok &= require(position_tabs != nullptr && position_tabs->count() == 2 &&
                     position_tabs->widget(0)->objectName() ==
-                        QStringLiteral("gpsStatusTab"),
-                "Retired software RTK tab must not exist");
+                        QStringLiteral("gpsStatusTab") &&
+                    position_tabs->widget(1)->objectName() ==
+                        QStringLiteral("corsSettingsTab"),
+                "GNSS status and CORS configuration must have separate tabs");
   ok &= require(gps_scroll != nullptr && rtk_scroll == nullptr &&
                     gps_scroll->widgetResizable() &&
                     gps_scroll->horizontalScrollBarPolicy() ==
@@ -181,6 +184,19 @@ int main(int argc, char** argv) {
   panel.resize(1500, 800);
   panel.show();
   application.processEvents();
+  ok &= require(position_tabs->width() >= panel.width() - 64,
+                "RTK status still shares its width with configuration");
+  auto* plots = new QWidget();
+  plots->setObjectName(QStringLiteral("testPlots"));
+  panel.addVisualizationPage(plots);
+  ok &= require(position_tabs->count() == 3 &&
+                    position_tabs->widget(2)->isAncestorOf(plots),
+                "Plots must be nested inside the RTK page");
+  ok &= require(position_tabs->widget(1)->isAncestorOf(
+                    panel.findChild<QGroupBox*>("corsConfigurationColumn")) &&
+                    position_tabs->widget(1)->isAncestorOf(
+                    panel.findChild<QGroupBox*>("corsRtkStatusColumn")),
+                "CORS controls escaped their own page");
   const auto verify_tab_fields = [&](int tab, const QStringList& names) {
     position_tabs->setCurrentIndex(tab);
     application.processEvents();
