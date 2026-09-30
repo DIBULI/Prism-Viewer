@@ -54,6 +54,13 @@ while IFS= read -r -d '' candidate; do
   if [[ " $(lipo -archs "${candidate}") " != *" arm64 "* ]]; then
     invalid_dependencies+="${candidate}: no arm64 image"$'\n'
   fi
+  while IFS= read -r minimum_version; do
+    if ! awk -v version="${minimum_version}" \
+        'BEGIN { exit(version + 0 <= 13.0 ? 0 : 1) }'; then
+      invalid_dependencies+="${candidate}: requires macOS ${minimum_version}, maximum 13.0"$'\n'
+    fi
+  done < <(vtool -show-build "${candidate}" |
+             awk '$1 == "minos" { print $2 }')
   while IFS= read -r dependency; do
     case "${dependency}" in
       @* | /System/Library/* | /usr/lib/*)

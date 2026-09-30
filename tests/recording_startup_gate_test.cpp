@@ -18,7 +18,6 @@ static void warm(Gate& gate, unsigned id, uint64_t base = 1000000,
 int main() {
   try {
     Gate gate(1);
-    check(!gate.admit(Gate::Camera, 9387000637));
     check(!gate.imu(0, 9387000637, 0, false, false, 0));
     check(!gate.imu(0, 9387000625, 1, false, false, 1250));
     check(!gate.ready() && gate.backsteps[0] == 1);
@@ -29,15 +28,14 @@ int main() {
     rejects([&] { gate.admit(Gate::Camera, gate.start_us + 1); });
     check(gate.imu(0, gate.start_us + 1250, 203, true, false, 253750));
     rejects([&] { gate.imu(0, gate.start_us + 1238, 204, true, false, 255000); });
-    rejects([&] { gate.imu(0, gate.start_us + 2500, 205, false, false, 256250); });
-    rejects([&] { gate.imu(0, gate.start_us + 3750, 206, true, true, 257500); });
+    check(!gate.imu(0, gate.start_us + 2500, 205, false, false, 256250));
+    check(gate.imu(0, gate.start_us + 3750, 206, true, true, 257500));
     check(gate.ready());
 
     Gate dual(3);
     warm(dual, 0);
-    check(!dual.ready());
+    check(dual.ready() && dual.start_us == 1250000);
     warm(dual, 1, 1000100);
-    check(dual.ready() && dual.start_us == 1250100);
     check(!dual.imu(0, 1250000, 201, true, false, 251250));
     check(dual.imu(0, 1251250, 202, true, false, 252500));
     check(dual.admit(Gate::Lidar, 1251251));
@@ -59,11 +57,16 @@ int main() {
     Gate stale(3);
     warm(stale, 0);
     warm(stale, 1, 2000000, 0, 1000000);
-    check(!stale.ready());
-    rejects([&] { stale.checkTimeout(Gate::kTimeoutUs); });
+    check(stale.ready());
+    stale.checkTimeout(Gate::kTimeoutUs);
     Gate silent(1);
     silent.checkTimeout(Gate::kTimeoutUs-1);
-    rejects([&] { silent.checkTimeout(Gate::kTimeoutUs); });
+    silent.checkTimeout(Gate::kTimeoutUs);
+    Gate camera_only(3);
+    check(!camera_only.admit(Gate::Camera, 0));
+    camera_only.admit(Gate::Camera, 1000000);
+    check(camera_only.admit(Gate::Camera, 1100000));
+    check(camera_only.ready());
     std::cout << "recording startup gate: PASS\n";
     return 0;
   } catch (const std::exception& e) {

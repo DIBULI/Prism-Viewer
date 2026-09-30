@@ -24,13 +24,13 @@ class RecordingStartupGate {
   bool imu(unsigned id, uint64_t timestamp, uint32_t sequence,
            bool synced, bool gap, uint64_t elapsed_us) {
     if (id >= 2 || !(required_mask_ & (1u << id))) return false;
-    if (ready_) {
-      if (!synced || gap)
-        throw std::runtime_error("IMU synchronization lost or sample gap during recording; start a new dataset");
+    auto& s = sensors_[id];
+    if (ready_ && s.started) {
+      if (!synced) { s.synced=false; return false; }
+      s.synced=true; s.received=elapsed_us; s.previous=timestamp;
       return admit(static_cast<Stream>(id), timestamp);
     }
     checkTimeout(elapsed_us);
-    auto& s = sensors_[id];
     if (s.previous && timestamp <= s.previous) ++backsteps[id];
     const auto delta = static_cast<uint16_t>(sequence - s.sequence);
     const bool continuous = synced && !gap && timestamp && s.synced &&
@@ -47,17 +47,16 @@ class RecordingStartupGate {
     s.sequence = sequence;
     s.received = elapsed_us;
     s.synced = synced && !gap;
-    if (readyMask(elapsed_us) == required_mask_) {
+    if (readyMask(elapsed_us) & (1u << id)) s.started = true;
+    if (!ready_ && s.started) {
       ready_ = true;
       ready_elapsed_us = elapsed_us;
-      for (unsigned i = 0; i < 2; ++i)
-        if (required_mask_ & (1u << i)) start_us = std::max(start_us, sensors_[i].previous);
+      start_us = timestamp;
     }
     return false;  // The boundary sample belongs to startup diagnostics.
   }
 
   unsigned readyMask(uint64_t elapsed_us) const {
-    if (ready_) return required_mask_;
     unsigned mask = 0;
     for (unsigned i = 0; i < 2; ++i) {
       const auto& s = sensors_[i];
@@ -70,7 +69,8 @@ class RecordingStartupGate {
   }
 
   bool admit(Stream stream, uint64_t timestamp) {
-    if (!ready_) return false;
+    if (!timestamp) return false;
+    if (!ready_) { ready_ = true; start_us = timestamp; }
     auto& last = last_[stream];
     if (!last && timestamp <= start_us) return false;
     if (!timestamp || (last && timestamp <= last))
@@ -80,8 +80,7 @@ class RecordingStartupGate {
   }
 
   void checkTimeout(uint64_t elapsed_us) const {
-    if (!ready_ && elapsed_us >= kTimeoutUs)
-      throw std::runtime_error("IMU startup synchronization timed out after 15 s; GPS is not required");
+    (void)elapsed_us; // Absence does not terminate recording.
   }
   bool ready() const { return ready_; }
   unsigned requiredMask() const { return required_mask_; }
@@ -92,7 +91,7 @@ class RecordingStartupGate {
   struct Sensor {
     uint64_t previous = 0, first = 0, received = 0;
     uint32_t sequence = 0, count = 0;
-    bool synced = false;
+    bool synced = false, started = false;
   };
   unsigned required_mask_;
   bool ready_ = false;

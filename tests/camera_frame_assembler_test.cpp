@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -29,9 +31,105 @@ bool isSingleDiscard(
          result.discarded_incomplete_frame_ids.front() == frame_id;
 }
 
+void require(bool condition, const char* message) {
+  if (!condition) throw std::runtime_error(message);
+}
+
+void testDiagnostics() {
+  using prism_viewer::transfer::CameraFrameAssembler;
+  using State = prism_viewer::transfer::CameraTransferState;
+  // Every non-empty missing-camera combination; protocol IDs are 0..3.
+  for (unsigned missing = 1; missing < 16; ++missing) {
+    CameraFrameAssembler assembler;
+    prism::VideoMeta metadata;
+    metadata.host_frame_id = 10;
+    assembler.addMetadata(metadata);
+    for (uint8_t camera = 0; camera < 4; ++camera) {
+      if (!(missing & (1u << camera)))
+        assembler.ingest(makeChunk(camera, 10, 0, {1, 2, 3, 4}));
+    }
+    const auto diagnostic = assembler.pendingDiagnostic();
+    require(diagnostic && diagnostic->frame_id == 10 && diagnostic->metadata_received,
+            "missing-camera snapshot lost metadata or frame identity");
+    for (uint8_t camera = 0; camera < 4; ++camera)
+      require(diagnostic->cameras[camera].state == ((missing & (1u << camera))
+                  ? State::Missing : State::Complete), "wrong missing-camera ID");
+    if (missing != 15) {
+      const auto next = assembler.ingest(makeChunk(0, 11, 0, {1, 2}));
+      require(isSingleDiscard(next, 10) && next.discarded_diagnostics.size() == 1,
+              "diagnostics changed frame credit/retirement");
+      require(next.discarded_diagnostics[0].describe() ==
+                  diagnostic->describe() + "; next frame arrived before completion",
+              "discard snapshot was taken after deleting partial state");
+      require(assembler.pendingDiagnostic()->frame_id == 11,
+              "pending snapshot reports an old discarded frame");
+    }
+    assembler.reset();
+    require(!assembler.pendingDiagnostic() && !assembler.lastDiscardedDiagnostic(),
+            "reset retained stale fault diagnostics");
+  }
+  for (uint8_t camera = 0; camera < 4; ++camera) {
+    CameraFrameAssembler assembler;
+    assembler.ingest(makeChunk(camera, 20, 0, {1, 2}));
+    const auto pending = assembler.pendingDiagnostic();
+    require(pending && pending->cameras[camera].state == State::Partial &&
+            pending->cameras[camera].received_bytes == 2 &&
+            pending->cameras[camera].expected_bytes == 4,
+            "partial-camera byte counts are incorrect");
+    assembler.ingest(makeChunk(camera, 20, 3, {4}));
+    const auto invalid = assembler.expire(std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    require(isSingleDiscard(invalid, 20) && invalid.discarded_diagnostics.size() == 1 &&
+            invalid.discarded_diagnostics[0].cameras[camera].state == State::Invalid,
+            "discontinuous chunk identified wrong camera");
+    require(!assembler.pendingDiagnostic() && assembler.lastDiscardedDiagnostic(),
+            "discarded frame masquerades as pending");
+    require(assembler.ingest(makeChunk(camera, 20, 3, {4})).discarded_diagnostics.empty(),
+            "duplicate diagnosis/ACK for a settled frame");
+    prism::VideoMeta meta;
+    meta.host_frame_id = 21;
+    assembler.addMetadata(meta);
+    for (uint8_t id = 0; id < 4; ++id)
+      assembler.ingest(makeChunk(id, 21, 0, {1, 2, 3, 4}));
+    require(!assembler.pendingDiagnostic() && !assembler.lastDiscardedDiagnostic(),
+            "successful frame did not clear stale failure");
+  }
+  CameraFrameAssembler invalid_id;
+  invalid_id.ingest(makeChunk(255, 30, 0, {1, 2}));
+  auto bad = invalid_id.expire(std::chrono::steady_clock::now() + std::chrono::seconds(2));
+  require(isSingleDiscard(bad, 30) && bad.discarded_diagnostics.size() == 1,
+          "invalid ID has no diagnostic");
+  for (const auto& camera : bad.discarded_diagnostics[0].cameras)
+    require(camera.state != State::Invalid, "invalid ID blamed a real camera");
+
+  CameraFrameAssembler metadata_missing;
+  for (uint8_t id = 0; id < 4; ++id)
+    metadata_missing.ingest(makeChunk(id, 40, 0, {1, 2, 3, 4}));
+  auto pending = metadata_missing.pendingDiagnostic();
+  require(pending && !pending->metadata_received, "missing metadata not identified");
+  for (const auto& camera : pending->cameras)
+    require(camera.state == State::Complete, "missing metadata blamed image transfer");
+  prism::VideoMeta meta;
+  meta.host_frame_id = 40;
+  require(metadata_missing.addMetadata(meta).has_value() &&
+          !metadata_missing.pendingDiagnostic(), "late metadata did not clear diagnosis");
+
+  CameraFrameAssembler wrap;
+  wrap.ingest(makeChunk(3, std::numeric_limits<uint32_t>::max(), 0, {1, 2}));
+  auto wrapped = wrap.ingest(makeChunk(2, 0, 0, {1, 2}));
+  require(isSingleDiscard(wrapped, std::numeric_limits<uint32_t>::max()) &&
+          wrapped.discarded_diagnostics[0].cameras[3].state == State::Partial &&
+          wrap.pendingDiagnostic()->frame_id == 0,
+          "frame ID wrap corrupted camera diagnosis");
+}
+
 }  // namespace
 
 int main() {
+  try { testDiagnostics(); }
+  catch (const std::exception& e) {
+    std::cerr << "camera diagnostic regression: " << e.what() << '\n';
+    return 18;
+  }
   prism_viewer::transfer::CameraFrameAssembler assembler;
   prism::VideoMeta metadata;
   metadata.valid = true;
@@ -116,8 +214,8 @@ int main() {
     std::cerr << "valid first chunk was rejected\n";
     return 10;
   }
-  auto corrupt_gap =
-      corrupt_assembler.ingest(makeChunk(0, 200, 3, {3}));
+  corrupt_assembler.ingest(makeChunk(0, 200, 3, {3}));
+  auto corrupt_gap = corrupt_assembler.expire(std::chrono::steady_clock::now() + std::chrono::seconds(2));
   if (!isSingleDiscard(corrupt_gap, 200)) {
     std::cerr << "non-contiguous chunk did not retire corrupt frame\n";
     return 11;
@@ -131,8 +229,8 @@ int main() {
 
   // Invalid camera IDs also consume and retire exactly one transmitted set.
   prism_viewer::transfer::CameraFrameAssembler invalid_camera_assembler;
-  auto invalid_camera =
-      invalid_camera_assembler.ingest(makeChunk(4, 300, 0, {1, 2}));
+  invalid_camera_assembler.ingest(makeChunk(4, 300, 0, {1, 2}));
+  auto invalid_camera = invalid_camera_assembler.expire(std::chrono::steady_clock::now() + std::chrono::seconds(2));
   if (!isSingleDiscard(invalid_camera, 300)) {
     std::cerr << "invalid camera ID did not retire frame\n";
     return 13;

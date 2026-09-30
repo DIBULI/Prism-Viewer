@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           test "$(cat VERSION)" = 1.2.0
           grep -Fq 'project(prism_viewer VERSION 1.2.0 LANGUAGES CXX)' CMakeLists.txt
-          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 970043c94131ab04f7e2f8de5267012785e4d1fd
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = a35c25fad9f8fc9b8a0c39badd10b0d519502cb5
           test "$(cat third_party/Prism-SDK/VERSION)" = "$(cat VERSION)"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
@@ -210,13 +210,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: d7d573f6ee25efc300bee6a469f2a8cb47f8f2c6347b4fb184b488cad4373cd1
+            sdk_sha256: 5f7ba5d2746d03a9fd4b4feaef421d067fc4368a6d88ef64500411e529df6142
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: 666aa09ec1fa3b347051a5b4b7092b95d4a7bff2375319740e4e627d4f6c3e03
+            sdk_sha256: 74dd8e25eb44e518bee54bb601fc9747deb3a51769973ed10e49fe9c000b7dd9
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -680,7 +680,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="bf59d5ec0701cdd45174c0b1ef0d4b54871556c25cc66b2e3a39fab5a0faf710"
+          sdk_expected="d5bfb40f91732a200039cc713cb7ba4953221e830349e658c1dee2311f711a9b"
           libusb_expected="30cfce3b736acdd5e3e4d276614d7ef917b42d8eddada4932561198bdd4ae414"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"

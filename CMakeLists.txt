@@ -553,6 +553,9 @@ if(BUILD_TESTING)
   target_compile_features(camera-frame-assembler-test PRIVATE cxx_std_17)
   target_link_libraries(camera-frame-assembler-test PRIVATE prism-viewer-sdk)
   add_test(NAME camera-frame-assembler COMMAND camera-frame-assembler-test)
+  add_test(NAME camera-transfer-ui COMMAND prism-viewer --camera-transfer-self-test)
+  set_tests_properties(camera-transfer-ui PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software" TIMEOUT 30)
 
   add_executable(preview-image-decoder-test
     src/ui/preview_image_decoder.cpp

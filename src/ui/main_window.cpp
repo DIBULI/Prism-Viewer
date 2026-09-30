@@ -528,6 +528,7 @@ class DatasetRecorder {
       imu_counts_.fill(0);
       image_counts_.fill(0);
       dropped_frame_sets_ = 0;
+      partial_frame_sets_ = 0;
       lidar_batch_count_ = 0;
       lidar_point_count_ = 0;
       dropped_lidar_batches_ = 0;
@@ -840,14 +841,12 @@ class DatasetRecorder {
           write_failed_) {
         return;
       }
-      const bool exposure_valid =
-          metadata.valid && metadata.host_frame_id == frame_id &&
-          std::all_of(
-              metadata.exposure_us.begin(), metadata.exposure_us.end(),
-              [](uint32_t exposure_us) {
-                return exposure_us >= prism::kCameraMinExposureUs &&
-                       exposure_us <= prism::kCameraMaxExposureUs;
-              });
+      bool exposure_valid = metadata.valid && metadata.host_frame_id == frame_id;
+      for (size_t i = 0; i < jpeg_set.size(); ++i)
+        if (!jpeg_set[i].empty())
+          exposure_valid = exposure_valid &&
+              metadata.exposure_us[i] >= prism::kCameraMinExposureUs &&
+              metadata.exposure_us[i] <= prism::kCameraMaxExposureUs;
       if (!exposure_valid) {
         ++dropped_frame_sets_;
         return;
@@ -1364,6 +1363,7 @@ class DatasetRecorder {
     std::array<uint64_t, 4> offsets{};
     bool payload_ok = true;
     for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
+      if (job.jpeg[camera].empty()) continue;
       offsets[camera] = camera_chunk_size_;
       camera_chunk_file_.write(
           reinterpret_cast<const char*>(job.jpeg[camera].data()),
@@ -1381,7 +1381,11 @@ class DatasetRecorder {
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (write_failed_) return;
+    if (std::any_of(job.jpeg.begin(), job.jpeg.end(),
+                    [](const auto& image) { return image.empty(); }))
+      ++partial_frame_sets_;
     for (size_t camera = 0; camera < job.jpeg.size(); ++camera) {
+      if (job.jpeg[camera].empty()) continue;
       writeTumTimestamp(camera_index_files_[camera], job.timestamp_us);
       camera_index_files_[camera]
           << ' ' << camera_chunk_name_ << ' ' << offsets[camera] << ' '
@@ -1515,6 +1519,11 @@ class DatasetRecorder {
       }
       return;
     }
+    if (partial_frame_sets_ != 0) {
+      write_failed_ = true;
+      if (write_error_.empty()) write_error_ = "Dataset preserves surviving images, but contains " +
+          std::to_string(partial_frame_sets_) + " partial camera frame sets";
+    }
     if (missing.empty()) return;
 
     write_failed_ = true;
@@ -1605,6 +1614,7 @@ class DatasetRecorder {
              << unsynced_imu_samples_dropped_[0] << "\n"
              << "unsynced_imu1_samples_dropped="
              << unsynced_imu_samples_dropped_[1] << "\n"
+             << "partial_camera_frame_sets=" << partial_frame_sets_ << "\n"
              << "dropped_frame_sets=" << dropped_frame_sets_ << "\n"
              << "unsynced_camera_frame_sets_dropped="
              << unsynced_camera_frame_sets_dropped_ << "\n"
@@ -1777,6 +1787,7 @@ class DatasetRecorder {
   uint64_t start_unix_us_ = 0;
   std::chrono::steady_clock::time_point start_steady_time_{};
   uint64_t dropped_frame_sets_ = 0;
+  uint64_t partial_frame_sets_ = 0;
   uint64_t queued_payload_bytes_ = 0;
   std::atomic<bool> active_{false};
   std::atomic<DatasetRecordingMode> mode_{DatasetRecordingMode::Full};
@@ -2315,6 +2326,8 @@ class CameraStatsLabel final : public QLabel {
  public:
   using QLabel::QLabel;
   void setStats(const QString& text) {
+    if (!styleSheet().isEmpty()) setStyleSheet(QString());
+    if (!toolTip().isEmpty()) setToolTip(QString());
     setText(text);
     fitWrappedText();
   }
@@ -3966,6 +3979,53 @@ class MainWindow : public QMainWindow {
     dataset_imu_plot_->setActive(false);
     dataset_imu_plot_->clear();
     return retention_ok && rendering_ok;
+  }
+
+  bool runCameraTransferSelfTest(const QString& screenshot) {
+    const bool was_chinese = prism_viewer::common::chineseUi();
+    QWidget* previous_page = tabs_->currentWidget();
+    tabs_->setCurrentWidget(camera_page_);
+    const auto settle = [] {
+      for (int i = 0; i < 4; ++i) {
+        QApplication::processEvents();
+        QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+      }
+    };
+    using State = prism_viewer::transfer::CameraTransferState;
+    bool ok = true;
+    for (bool chinese : {false, true}) {
+      prism_viewer::common::setChineseUi(chinese);
+      prism_viewer::transfer::CameraFrameDiagnostic diagnostic;
+      diagnostic.frame_id = 12345;
+      diagnostic.metadata_received = true;
+      diagnostic.cameras[0].state = State::Complete;
+      diagnostic.cameras[1] = {State::Partial, 32768, 120000};
+      diagnostic.cameras[3].state = State::Invalid;
+      queueCameraTransferDiagnostic(diagnostic, true);
+      settle();
+      ok = ok && frame_labels_[0]->text().contains(uiText("image complete", "本路图像完整")) &&
+          frame_labels_[1]->text().contains(QStringLiteral("32768/120000")) &&
+          frame_labels_[2]->text().contains(uiText("no image chunks received", "未收到图像分片")) &&
+          frame_labels_[3]->text().contains(uiText("invalid/discontinuous", "图像分片异常"));
+      for (size_t i = 0; i < frame_labels_.size(); ++i) {
+        const auto* label = frame_labels_[i];
+        ok = ok && (i == 0 || label->styleSheet().contains(QStringLiteral("#b42318"))) &&
+            label->height() >= label->heightForWidth(label->width()) &&
+            std::abs(label->parentWidget()->width() - frame_labels_[i ^ 1u]->parentWidget()->width()) <= 1;
+      }
+      if (chinese && !screenshot.isEmpty()) ok = camera_page_->grab().save(screenshot) && ok;
+      queueCameraTransferDiagnostic(std::nullopt, true);
+      settle();
+      ok = ok && frame_labels_[0]->text().contains(uiText("camera unknown", "无法确定具体相机"));
+      prism::VideoMeta metadata;
+      queueCameraFrameSetStatus(12346, 1, 30, {}, metadata);
+      settle();
+      for (const auto* label : frame_labels_)
+        ok = ok && label->styleSheet().isEmpty() && label->toolTip().isEmpty();
+    }
+    prism_viewer::common::setChineseUi(was_chinese);
+    tabs_->setCurrentWidget(previous_page);
+    return ok;
   }
 
   bool runCameraGainSelfTest(const QString& screenshot) {
@@ -7564,6 +7624,53 @@ class MainWindow : public QMainWindow {
     }
   }
 
+  void queueCameraTransferDiagnostic(
+      const std::optional<prism_viewer::transfer::CameraFrameDiagnostic>& diagnostic,
+      bool stalled) {
+    const uint64_t generation =
+        camera_preview_generation_.load(std::memory_order_acquire);
+    const bool has_diagnostic = diagnostic.has_value();
+    const auto frame = diagnostic.value_or(prism_viewer::transfer::CameraFrameDiagnostic{});
+    post([this, generation, frame, has_diagnostic, stalled]() {
+      if (generation != camera_preview_generation_.load(std::memory_order_acquire)) return;
+      using State = prism_viewer::transfer::CameraTransferState;
+      for (size_t camera = 0; camera < frame_labels_.size(); ++camera) {
+        QString detail;
+        bool affected = true;
+        if (!has_diagnostic) {
+          detail = uiText("No complete frame set; shared pipeline/link stalled, camera unknown",
+                          "未收到完整帧组；整组采集／传输停滞，无法确定具体相机");
+        } else {
+          const auto& progress = frame.cameras[camera];
+          switch (progress.state) {
+            case State::Missing:
+              detail = uiText("no image chunks received", "未收到图像分片"); break;
+            case State::Partial:
+              detail = uiText("incomplete image: %1/%2 bytes", "图像不完整：%1/%2 字节")
+                  .arg(progress.received_bytes).arg(progress.expected_bytes); break;
+            case State::Invalid:
+              detail = uiText("invalid/discontinuous image chunks", "图像分片异常／不连续"); break;
+            case State::Complete:
+              affected = false;
+              detail = frame.metadata_received
+                  ? uiText("image complete; waiting for other cameras", "本路图像完整，帧组其他相机未完成")
+                  : uiText("image complete; frame metadata missing", "本路图像完整，缺少帧元数据");
+              break;
+          }
+          detail = uiText("Frame %1: %2", "帧 %1：%2").arg(frame.frame_id).arg(detail);
+        }
+        if (stalled) detail = uiText("Capture stalled — %1", "采集停滞 — %1").arg(detail);
+        else detail = uiText("Last discarded frame — %1", "最近丢弃帧 — %1").arg(detail);
+        frame_labels_[camera]->setStats(detail);
+        frame_labels_[camera]->setStyleSheet(affected
+            ? QStringLiteral("color: #b42318;") : QStringLiteral("color: #975a16;"));
+        frame_labels_[camera]->setToolTip(uiText(
+            "Receiver observations only. Missing data does not by itself prove a physical camera failure. Preview frame skipping is not counted as transfer loss.",
+            "仅表示接收端所见，未收到数据不等同于物理相机故障；预览跳帧不计为传输丢帧。"));
+      }
+    });
+  }
+
   void queueCameraFrameSetStatus(
       uint32_t frame_id, uint64_t received_frame_sets, double received_fps,
       const std::array<size_t, 4>& jpeg_sizes,
@@ -7661,7 +7768,7 @@ class MainWindow : public QMainWindow {
                       "was already received and acknowledged")
                       .arg(frame.frame_id)
                       .arg(frame.failed_camera));
-        continue;
+
       }
 
       if (camera_preview_ui_posts_pending_.load(std::memory_order_acquire) >=
@@ -7717,6 +7824,7 @@ class MainWindow : public QMainWindow {
         continue;
       }
       for (size_t camera = 0; camera < decoded.images.size(); ++camera) {
+        if (job.jpeg[camera].empty()) continue;
         decoded.images[camera] = decodePreviewJpeg(
             job.jpeg[camera],
             static_cast<int>(camera) == job.full_resolution_camera
@@ -7725,7 +7833,6 @@ class MainWindow : public QMainWindow {
         if (decoded.images[camera].isNull()) {
           decoded.decode_ok = false;
           decoded.failed_camera = camera;
-          break;
         }
       }
       publishDecodedCameraPreview(std::move(decoded));
@@ -8133,7 +8240,7 @@ class MainWindow : public QMainWindow {
           [this, &camera_rate_samples, &received_camera_frame_sets,
            &last_completed_camera_frame_set_at,
            &last_completed_camera_frame_id, &next_camera_status_post](
-              prism_viewer::transfer::CameraFrameSet completed) {
+              prism_viewer::transfer::CameraFrameSet completed, bool acknowledge = true) {
             const auto received_at = std::chrono::steady_clock::now();
             last_completed_camera_frame_set_at = received_at;
             last_completed_camera_frame_id = completed.frame_id;
@@ -8161,7 +8268,7 @@ class MainWindow : public QMainWindow {
              * Return flow-control credit once the four JPEGs and their exact
              * per-frame metadata are both available in memory.
              */
-            withClientIo([this, &completed]() {
+            if (acknowledge) withClientIo([this, &completed]() {
               client_.sendVideoAck(completed.frame_id);
             });
             if (received_at >= next_camera_status_post) {
@@ -8503,12 +8610,25 @@ class MainWindow : public QMainWindow {
             } else {
               error << ", no video chunks delivered to the capture loop";
             }
+            auto diagnostic = camera_assembler.pendingDiagnostic();
+            if (diagnostic) {
+              error << ". Pending " << diagnostic->describe();
+            } else if (camera_assembler.lastDiscardedDiagnostic()) {
+              diagnostic = camera_assembler.lastDiscardedDiagnostic();
+              error << ". Last discarded (not a new frame): " << diagnostic->describe();
+            } else {
+              error << ". Shared camera pipeline/link stalled; individual camera cannot be determined";
+            }
+            queueCameraTransferDiagnostic(diagnostic, true);
             if (capture_device_info.has_value()) {
               error << ", last-observed camera-streaming-mask=0x" << std::hex
                     << static_cast<unsigned int>(
                            capture_device_info->camera_streaming_mask)
                     << ", sensor-board-error-flags=0x"
                     << capture_device_info->sensor_board_error_flags << std::dec;
+              if (!capture_device_info->sensor_board_error.empty()) {
+                error << ", reported device error: " << capture_device_info->sensor_board_error;
+              }
               if (capture_device_info_at.has_value()) {
                 const auto device_info_age_ms =
                     std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -8517,13 +8637,21 @@ class MainWindow : public QMainWindow {
                 error << " (" << device_info_age_ms << " ms old)";
               }
             }
-            error << ". Stopping camera and IMU streams.";
-            throw std::runtime_error(error.str());
+            error << ". Waiting for camera recovery; other streams continue.";
+            appendLog(QString::fromStdString(error.str()));
+            last_completed_camera_frame_set_at = now;
           };
       unsigned consecutive_usb_read_errors = 0;
       std::exception_ptr capture_error;
       try {
         while (!stop_requested_) {
+          auto expired = camera_assembler.expire();
+          for (auto id : expired.discarded_incomplete_frame_ids)
+            withClientIo([this, id]() { client_.sendVideoAck(id); });
+          for (auto& partial : expired.partial_frames)
+            handleCompletedCameraFrame(std::move(partial), false);
+          if (!expired.discarded_diagnostics.empty())
+            queueCameraTransferDiagnostic(expired.discarded_diagnostics.back(), false);
           compensateCorsUsbCommandTime();
           /*
            * SDK commands synchronously consume the shared USB IN endpoint and
@@ -8569,20 +8697,10 @@ class MainWindow : public QMainWindow {
           }
 
           throwIfCameraFrameSetProgressStalled(loop_now);
-          const auto camera_progress_age =
-              loop_now - last_completed_camera_frame_set_at;
-
-          /*
-           * Periodic status commands are useful only while camera progress is
-           * fresh. Once progress is questionable, dedicate the shared receiver
-           * to stream draining until a complete frame arrives or the watchdog
-           * expires. Version data is static for an open session and is
-           * therefore not refreshed from the capture loop.
-           */
-          if (camera_progress_age < kCameraControlCommandFreshnessLimit)
-            withClientIo([this](){queryGnssObservations();});
-          if (loop_now >= next_device_info_query &&
-              camera_progress_age < kCameraControlCommandFreshnessLimit) {
+          // GNSS/RTK and device diagnostics are independent of camera presence.
+          // Their existing rate limits still bound control traffic.
+          withClientIo([this](){queryGnssObservations();});
+          if (loop_now >= next_device_info_query) {
             const auto query_started_at = std::chrono::steady_clock::now();
             try {
               const auto status =
@@ -8596,13 +8714,10 @@ class MainWindow : public QMainWindow {
               withClientIo([this]() { queryGnssReceptionStatus(); });
               if (!info.sensor_board_online) {
                 appendLog(QStringLiteral(
-                    "DeviceInfo reports sensor-board offline; stopping camera "
-                    "and IMU streams"));
+                    "DeviceInfo reports sensor-board offline; waiting while other streams continue"));
                 updateStatus(
-                    uiText("RK/sensor-board link lost; stopping capture",
-                           "RK 与 sensor-board 连接中断，正在停止采集"));
-                stop_requested_ = true;
-                continue;
+                    uiText("Sensor-board offline; other streams continue",
+                           "Sensor Board 离线，等待恢复；其他数据继续采集"));
               }
               if (requested_lidar_model != prism::LidarModel::None) {
                 try {
@@ -8632,6 +8747,7 @@ class MainWindow : public QMainWindow {
                   cors_session_.active() ? 100u : 1000u);
             });
           } catch (const std::exception& ex) {
+            if (prism::capture::isReadTimeout(ex)) continue;
             ++consecutive_usb_read_errors;
             if (consecutive_usb_read_errors == 1) {
               appendLog(
@@ -8669,6 +8785,12 @@ class MainWindow : public QMainWindow {
             last_video_chunk_frame_id = chunk.frame_id;
             ++received_video_chunks;
             auto result = camera_assembler.ingest(chunk);
+            for (const auto& diagnostic : result.discarded_diagnostics) {
+              appendLog(QString::fromStdString(diagnostic.describe()));
+            }
+            if (!result.discarded_diagnostics.empty()) {
+              queueCameraTransferDiagnostic(result.discarded_diagnostics.back(), false);
+            }
             for (uint32_t discarded : result.discarded_incomplete_frame_ids) {
               ++discarded_incomplete_camera_frame_sets;
               appendLog(
@@ -8685,6 +8807,10 @@ class MainWindow : public QMainWindow {
                 client_.sendVideoAck(discarded);
               });
             }
+            for (auto& partial : result.partial_frames)
+              handleCompletedCameraFrame(std::move(partial), false);
+            if (!result.discarded_diagnostics.empty())
+              queueCameraTransferDiagnostic(result.discarded_diagnostics.back(), false);
             if (!result.completed.has_value()) continue;
             handleCompletedCameraFrame(std::move(*result.completed));
           } else if (frame.type == prism::FrameType::VideoMeta) {
@@ -9890,6 +10016,15 @@ int runViewerApplication(int argc, char** argv) {
     window.close();
     app.processEvents();
     return success ? 0 : 14;
+  }
+  const int camera_transfer_test = command_line.indexOf(QStringLiteral("--camera-transfer-self-test"));
+  if (camera_transfer_test >= 0) {
+    window.show();
+    app.processEvents();
+    const bool success = window.runCameraTransferSelfTest(
+        camera_transfer_test + 1 < command_line.size() ? command_line[camera_transfer_test + 1] : QString());
+    std::cout << "camera_transfer_ui_self_test=" << (success ? "PASS" : "FAIL") << '\n';
+    return success ? 0 : 19;
   }
   if (command_line.contains(QStringLiteral("--window-layout-self-test"))) {
     window.resize(command_line.contains(QStringLiteral("--compact-layout-test"))
