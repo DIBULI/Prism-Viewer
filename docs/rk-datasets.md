@@ -59,11 +59,10 @@ ROS 点云沿用现有标准 `PointCloud2` 及 `offset_time`，聚合和时间�
 ## 验证
 
 SDK 的 `recorded-datasets` 测试覆盖原始字节、文件变化、CRC、取消、路径与大文件边界。
-Viewer 的 `rk-dataset-test` 检查 USB SDK 适配。设置 `PRISM_WEB_WORKER` 为服务器编译的 `prism-web-capture` 后，
-还会使用真实录制器生成 boot/UTC 两类测试数据，经过 Viewer v6 校验，再分别导出
-ROS1 和 ROS2，核对相机、曝光、板载 IMU、雷达点数和雷达 IMU。
+Viewer 的 `rk-dataset-test` 检查 USB SDK 适配。完整数据集还应使用 Viewer 的验证功能检查，
+并在导出 ROS1/ROS2 后核对相机、曝光、板载 IMU、雷达点数和时间域。
 
 ```sh
 cmake --build build-linux --target prism-viewer rk-dataset-test
-PRISM_WEB_WORKER=/work/projects/Prism-agent/build-native/web/prism-web-capture build-linux/rk-dataset-test
+build-linux/rk-dataset-test
 ```

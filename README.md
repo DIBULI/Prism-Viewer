@@ -41,7 +41,10 @@ widgets and `gps_rtk.csv` recording/playback are removed; legacy result
 datasets are unsupported. Existing files are never migrated or deleted.
 This source requires matching SDK headers/libraries with Runtime ABI 18.
 Camera settings now include four-camera unified automatic exposure with
-brightest-camera and RAW highlight protection (requires Sensor Board EX4 firmware).
+active-camera feedback and highlight protection (requires the current matching firmware).
+The current firmware publishes only internally aligned IMU samples; startup or
+re-alignment can briefly pause IMU output while other streams continue. Internal
+alignment is not UTC lock. See the [user guide](docs/manual/README.md).
 
 MID360/MID360S recordings and ROS exports preserve per-point `line` and
 `line_valid`; see [point metadata](docs/livox-line.md).
@@ -92,8 +95,8 @@ in the current user's local Qt settings.
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
-Viewer 1.2.0 uses Prism SDK **v1.2.0**, commit
-`1e7d6f756887be45c406209b3cd46e90d11bdeae` (Runtime API 18 + raw dataset extension 1), on every
+Viewer 1.2.0 uses the pinned Prism SDK **v1.2.0**
+(Runtime API 18 + raw dataset extension 1), on every
 platform. It requires Agent 1.2.0, with Sensor Board 0.4.27. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
 RTCM bindings; it does not connect to a device or change its clock.
@@ -111,7 +114,7 @@ The package contains:
   Silicon macOS, linked from the app's `Contents/Frameworks` directory.
 
 The Viewer and SDK submodule versions must match exactly. Windows, Linux, and
-macOS builds therefore need no Prism-agent checkout or separately installed
+macOS builds therefore need no device implementation sources or separately installed
 SDK. Clone with submodules enabled:
 
 ```sh
@@ -264,7 +267,7 @@ glibc and display drivers come from the host.
 - [Prism Viewer 1.0.1 更新说明](docs/update/v1.0.1.zh-CN.md)
 - [Prism Viewer 1.0.0 update notes](docs/update/v1.0.0.md)
 - [Prism Viewer 1.0.0 更新说明](docs/update/v1.0.0.zh-CN.md)
-- [Prism Viewer 1.0.0 中文用户操作手册](docs/Prism-Viewer-1.0.0-用户操作手册.pdf)
+- [Prism Viewer 中文用户操作手册](docs/manual/README.md)
 - [操作手册生成与截图打码脚本](docs/manual/README.md)
 - [Code structure](ARCHITECTURE.md)
 - [Dataset directory structure and format](docs/dataset-format.md)
