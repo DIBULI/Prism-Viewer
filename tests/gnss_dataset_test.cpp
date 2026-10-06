@@ -29,7 +29,11 @@ std::vector<std::vector<std::string>> rows(const std::filesystem::path& p) {
   }
   return out;
 }
-int main() {
+int main() try {
+#ifdef _WIN32
+  // Report assertion failures to CI instead of an invisible CRT dialog.
+  _set_error_mode(_OUT_TO_STDERR);
+#endif
   auto root=std::filesystem::temp_directory_path()/
       ("prism-gnss-dataset-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   std::filesystem::create_directory(root);
@@ -61,8 +65,11 @@ int main() {
   assert(q[1][6]=="1"&&q[1][7]=="3"&&q[1][8]=="1.1"&&q[1][9]=="0.9"&&q[1][10]=="1.3"&&q[1][11].empty());
   assert(q[2][6].empty()&&q[2][10].empty()&&q[2][11]=="0.6"&&q[2][17]=="0.07");
   rows(root/"gnss_status.csv"); auto idx=rows(root/"gnss_observations.csv");
-  std::ifstream raw(root/"gnss_observations.bin",std::ios::binary);
-  for(size_t i=1;i<idx.size();++i) { std::string s(std::stoull(idx[i][5]),' ');raw.seekg(std::stoull(idx[i][4]));raw.read(s.data(),s.size()); assert(s==messages[(i-1)%messages.size()]); }
+  {
+    // Windows cannot remove an open file: release this reader before cleanup.
+    std::ifstream raw(root/"gnss_observations.bin",std::ios::binary);
+    for(size_t i=1;i<idx.size();++i) { std::string s(std::stoull(idx[i][5]),' ');raw.seekg(std::stoull(idx[i][4]));raw.read(s.data(),s.size()); assert(s==messages[(i-1)%messages.size()]); }
+  }
   bool collision=false;try{prism_gnss_dataset::Writer w(root);}catch(...){collision=true;}assert(collision);
   auto buffered=root/"buffered";std::filesystem::create_directory(buffered);
   {
@@ -75,4 +82,7 @@ int main() {
   assert(rows(buffered/"gnss_receiver.csv").size()==3);
   std::filesystem::remove_all(root);
   std::cout<<"GNSS/RTK recording: solutions, invalid fixes, DOP/GST precision, raw indexes, duplicate/gap/restart, checksum, history boundary and async drain passed\n";
+} catch (const std::exception& e) {
+  std::cerr << "GNSS dataset test failed: " << e.what() << '\n';
+  return 1;
 }
