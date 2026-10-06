@@ -86,6 +86,7 @@ class Client {
   prism::TimeSyncRtkVersions timeSyncRtkVersions();
   prism::GnssReceptionStatus gnssReceptionStatus();
   prism::GnssObservations gnssObservations(uint64_t cursor=0, uint64_t session=0);
+  prism::GnssRawBatch gnssRaw(uint64_t cursor=0, uint64_t session=0);
   prism::RtkCorrectionStatus beginRtkCorrections();
   prism::RtkCorrectionStatus sendRtkCorrections(
       const uint8_t* data, size_t size, uint32_t timeout_ms = 3000);
@@ -99,6 +100,8 @@ class Client {
   prism::LidarStatus lidarStatus();
   prism::LidarPowerStatus lidarPowerStatus(prism::LidarModel model, uint32_t timeout_ms=3000);
   prism::LidarPowerStatus setLidarStandby(prism::LidarModel model, bool standby, uint32_t timeout_ms=15000);
+  prism::LidarSpeedStatus lidarSpeedStatus(prism::LidarModel model,uint32_t timeout_ms=3000);
+  prism::LidarSpeedStatus setLidarSpeedMode(prism::LidarModel model,prism::LidarSpeedMode mode,uint32_t timeout_ms=5000);
   prism::LidarNetworkStatus lidarNetworkStatus();
   prism::LidarNetworkStatus saveLidarNetworkConfiguration(
       const prism::LidarNetworkConfiguration& configuration);

@@ -6,6 +6,67 @@ Mid-360/Mid-360S 后，还可以把雷达内置 IMU 单独记录为 `lidar_imu.t
 
 ## 结构概览
 
+### GNSS / RTK recording
+
+Viewer and Web record the same `receiver-observations-v1` sidecar format.
+Recording is implemented by the applications; the SDK provides data reception,
+device control and downloads of existing datasets, not a dataset recorder API.
+Both Viewer recording modes include available GNSS data without starting RTK/CORS.
+
+| Files | Contents |
+|---|---|
+| `gnss_observations.bin` / `.csv` | Original GGA/RMC/GSA/GSV/GST/ADRNAVA sentences, including checksums, with sequence, session, byte offset/size and receive-time index. No line endings are added. |
+| `gnss_receiver.csv` | GGA solution type and validity, satellites used, HDOP, position, ellipsoidal height and available correction age. |
+| `gnss_receiver_rtk.csv` | Independent receiver RTK solution/status, validity, satellites used, coordinates and available N/E/U standard deviations. |
+| `gnss_quality.csv` | GSA DOP and GST precision with original epochs; precision is not attached to a different solution epoch. |
+| `gnss_status.csv` | New/no-new data, cache gaps, session changes and query failures. |
+
+Missing fixes are retained as invalid records with empty coordinates. No new
+receiver solution means no new position row; the last position is never repeated
+as a new measurement. Missing precision is empty, not zero. GNSS loss does not
+stop other sensor acquisition. File I/O failures still report recording errors.
+The manifest includes separate counts for observations, GGA, RTK, quality, cache
+gaps and query errors; dataset completion does not guarantee gap-free GNSS.
+
+`recording_elapsed_us` is the batch read time relative to recording start, **not**
+measurement UTC. `agent_received_monotonic_ms` is the device receive clock, and
+`agent_session` distinguishes restarts. GGA/GST epochs are UTC time-of-day; the
+date remains in the raw RMC. RTK epochs use GPS week/milliseconds. Do not equate
+these clocks to camera/IMU measurement timestamps or Unix UTC. Viewer excludes
+pre-recording cache history conservatively using record ages and host elapsed
+time; the first query/transport boundary may omit a few start-edge samples.
+
+These ASCII messages are not full-frequency binary observations, ephemerides
+or a complete CORS correction stream. Existing rover/base RTCM files contain
+only bytes actually delivered through their respective interfaces.
+
+### Receiver binary observations, ephemerides and CORS
+
+Updated Web and Viewer record the additional `receiver-cors-bytes-v1` stream:
+
+| Files | Contents |
+|---|---|
+| `gnss_raw.bin` / `.csv` | Original mixed receiver bytes, including enabled binary observations and ephemerides; receive-time, session, global sequence, byte offset/size, flags and known loss count |
+| `cors_rtcm.bin` / `.csv` | Module-received CRC-accepted CORS RTCM3 fragments and the same index fields |
+| `gnss_raw_status.csv` | Cache/session gaps, source gaps, empty queries and query failures |
+
+This stream is separate from the filtered ASCII observation files above.
+Bytes are not decoded, resampled or re-encoded. Index rows are fragments, not
+complete messages. A GNSS gap/session change invalidates partial-frame decoding;
+never concatenate across a gap as though the stream were continuous.
+`lost_bytes=0` on a gap means the loss amount is unknown. CORS bytes exclude
+HTTP headers, account credentials and corrupt RTCM rejected by the module.
+They do not prove a frame was successfully applied by the receiver.
+
+The manifest separately reports `gnss_raw_bytes`, `cors_rtcm_bytes`,
+`gnss_raw_gap_events` and `gnss_raw_query_errors`. An empty file means no bytes
+were recorded, not that observations/ephemerides can be reconstructed. A
+matching updated SDK/device application is required. Original measurement
+epochs remain in the receiver messages; receive-time indexes are not UTC.
+Record long enough to cover the configured ephemeris period (currently 120 s).
+First/last polling boundaries and transport latency are not claimed to be exact
+sensor-epoch recording boundaries. Recording never starts RTK/CORS implicitly.
+
 一个 Prism 数据集是一个必须整体保存和移动的目录，内部文件分为四层：
 
 ```text

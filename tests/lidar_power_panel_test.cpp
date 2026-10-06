@@ -17,17 +17,34 @@ int main(int argc,char** argv){
   auto* wake=p.findChild<QPushButton*>("lidarPowerWake");
   auto* query=p.findChild<QPushButton*>("lidarPowerQuery");
   auto* state=p.findChild<QLabel*>("lidarPowerState");
+  auto* speedQuery=p.findChild<QPushButton*>("lidarSpeedQuery");
+  auto* speedLow=p.findChild<QPushButton*>("lidarSpeedLow");
+  auto* speedNormal=p.findChild<QPushButton*>("lidarSpeedNormal");
+  auto* speedState=p.findChild<QLabel*>("lidarSpeedState");
+  check(speedQuery&&speedLow&&speedNormal&&speedState,"missing speed controls");
   check(model&&standby&&wake&&query&&state,"missing controls");
   check(!standby->isEnabled(),"closed device accepted power command");
   p.setAvailable(true);check(!wake->isEnabled(),"unselected model accepted");
   model->setCurrentIndex(2);check(standby->isEnabled(),"idle power controls disabled");
+  check(speedQuery->isEnabled()&&!speedLow->isEnabled(),"read before speed write");
+  int speedOp=-1;p.on_speed_action=[&](prism::LidarModel m,int op){check(m==prism::LidarModel::Mid360S,"speed model wrong");speedOp=op;};
+  speedQuery->click();check(speedOp==0,"speed query missing");
+  p.setSpeedResult({prism::LidarModel::Mid360S,prism::LidarSpeedMode::Normal,35});
+  speedLow->click();check(speedOp==2,"low operation wrong");
+  speedNormal->click();check(speedOp==1,"normal operation wrong");
+  p.setSpeedResult({prism::LidarModel::Mid360S,prism::LidarSpeedMode::Low,35});
+  check(speedState->text().contains(chinese?QStringLiteral("低转速"):QStringLiteral("Low speed")),"low readback missing");
+  p.setError("speed timeout");check(!speedLow->isEnabled(),"stale speed enabled after error");
+  model->setCurrentIndex(1);check(!speedQuery->isEnabled()&&!speedLow->isEnabled(),"MID360 speed allowed");
+  model->setCurrentIndex(3);check(!speedQuery->isEnabled(),"XT32 speed allowed");
+  model->setCurrentIndex(2);
   int command=-1;p.on_action=[&](prism::LidarModel m,int op){check(m==prism::LidarModel::Mid360S,"wrong model");command=op;};
   standby->click();check(command==2,"standby operation wrong");
   wake->click();check(command==1,"wake operation wrong");query->click();check(command==0,"query operation wrong");
   p.setBusy(true);check(!query->isEnabled()&&!model->isEnabled(),"busy controls unlocked");
   p.setBusy(false);prism::LidarPowerStatus s;s.model=prism::LidarModel::Mid360S;s.state=prism::LidarPowerState::Standby;p.setResult(s);
   check(state->text().contains(chinese?QStringLiteral("待机"):QStringLiteral("Standby")),"readback missing");
-  p.resize(270,320);p.show();app.processEvents();
+  p.resize(270,540);p.show();app.processEvents();
   check(p.width()==270,"power controls force the sidebar wider");
   for(auto* button:{query,standby,wake})
     check(p.rect().contains(button->geometry()),"power button clipped");
@@ -36,6 +53,7 @@ int main(int argc,char** argv){
     check(p.grab().save(QString::fromLocal8Bit(argv[1])+(chinese?"-zh.png":"-en.png")),"snapshot failed");
   }
   p.setAvailable(false,true);check(!wake->isEnabled(),"capture controls unlocked");
+  check(!speedQuery->isEnabled()&&!speedLow->isEnabled(),"capture speed controls unlocked");
   check(!state->text().contains(chinese?QStringLiteral("待机"):QStringLiteral("Standby")),"stale success retained");
   p.setAvailable(true);p.setError("timeout");check(state->text().contains("timeout"),"error missing");
  }

@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           test "$(cat VERSION)" = 1.2.0
           grep -Fq 'project(prism_viewer VERSION 1.2.0 LANGUAGES CXX)' CMakeLists.txt
-          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 7d02fabf2d70944f852ed045a228035ccdfb8d1b
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 9e4283c7e34add6c2d6b590b6ac26beacc084690
           test "$(cat third_party/Prism-SDK/VERSION)" = "$(cat VERSION)"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
@@ -74,7 +74,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "78e5b4569b386f3a176f9e9c6b88893206ec4293eb27996fc76f98a757257e83"
+          $expected = "e3673c34c7c97349a42d25a1ee659f3cccfb619afff5c5e85f5df13043a368c0"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -210,13 +210,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: 5f7ba5d2746d03a9fd4b4feaef421d067fc4368a6d88ef64500411e529df6142
+            sdk_sha256: 67d507d6c7cf72d847cee0e68b2967d310ace92ef6b94ccab24c4e59bf2178eb
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: 74dd8e25eb44e518bee54bb601fc9747deb3a51769973ed10e49fe9c000b7dd9
+            sdk_sha256: 30f162d7ffcf1c97b1558420b63a684f1a068431bbd3af299031778a05d986a5
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:

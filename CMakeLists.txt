@@ -572,6 +572,12 @@ if(BUILD_TESTING)
     )
   endif()
 
+  add_executable(gnss-dataset-test tests/gnss_dataset_test.cpp)
+  target_include_directories(gnss-dataset-test PRIVATE src/dataset)
+  target_compile_features(gnss-dataset-test PRIVATE cxx_std_17)
+  target_link_libraries(gnss-dataset-test PRIVATE prism-viewer-sdk)
+  add_test(NAME gnss-dataset COMMAND gnss-dataset-test)
+
   add_executable(dataset-browser-test
     src/common/ui_text.cpp
     src/dataset/dataset_browser.cpp

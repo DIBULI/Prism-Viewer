@@ -115,6 +115,15 @@ prism::GnssObservations Client::gnssObservations(uint64_t cursor,uint64_t sessio
   return api->query(handle_,cursor,session);
 }
 
+prism::GnssRawBatch Client::gnssRaw(uint64_t cursor,uint64_t session) {
+  const auto get=reinterpret_cast<prism::GetGnssRawRuntimeApi>(
+      GetProcAddress(loadModule(),"prism_usb_sdk_get_gnss_raw_api"));
+  const auto* api=get?get(1):nullptr;
+  if(!api||api->version!=1||api->size<sizeof(*api)||!api->query)
+    throw std::runtime_error("Raw GNSS SDK extension unavailable");
+  return api->query(handle_,cursor,session);
+}
+
 Client::Client() : api_(loadApi()), handle_(api_->client_create()) {
   if (handle_ == nullptr) {
     throw std::runtime_error("SDK client creation failed");
@@ -233,6 +242,22 @@ prism::LidarPowerStatus Client::lidarPowerStatus(prism::LidarModel model,uint32_
 }
 prism::LidarPowerStatus Client::setLidarStandby(prism::LidarModel model,bool standby,uint32_t timeout) {
   return powerApi()->set_standby(handle_,model,standby,timeout);
+}
+namespace {
+const prism::LidarSpeedRuntimeApi* speedApi() {
+  const auto get=reinterpret_cast<prism::GetLidarSpeedRuntimeApiFunction>(
+      GetProcAddress(loadModule(),prism::kLidarSpeedRuntimeApiEntryPoint));
+  const auto* api=get?get(prism::kLidarSpeedRuntimeApiVersion):nullptr;
+  if(!api||api->abi_version!=prism::kLidarSpeedRuntimeApiVersion||api->struct_size<sizeof(*api)||!api->query||!api->set_mode)
+    throw std::runtime_error("LiDAR speed SDK extension unavailable; update the complete Viewer package");
+  return api;
+}
+}
+prism::LidarSpeedStatus Client::lidarSpeedStatus(prism::LidarModel model,uint32_t timeout) {
+  return speedApi()->query(handle_,model,timeout);
+}
+prism::LidarSpeedStatus Client::setLidarSpeedMode(prism::LidarModel model,prism::LidarSpeedMode mode,uint32_t timeout) {
+  return speedApi()->set_mode(handle_,model,mode,timeout);
 }
 prism::LidarNetworkStatus Client::lidarNetworkStatus() {
   return api_->lidar_network_status(handle_);

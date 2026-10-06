@@ -77,7 +77,7 @@ GnssVisualization::GnssVisualization(QWidget* parent):QWidget(parent){
   filter_=new QLineEdit(list);filter_->setPlaceholderText(uiText("Filter constellation / PRN / signal","筛选星座／编号／信号"));listLayout->addWidget(filter_);
   table_=new QTableWidget(0,6,list);table_->setHorizontalHeaderLabels({uiText("Satellite","卫星"),uiText("Azimuth °","方位角 °"),uiText("Elevation °","仰角 °"),"C/N0 dB-Hz",uiText("Signals","信号"),"GSA"});
   table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);table_->horizontalHeader()->setStretchLastSection(true);table_->setSelectionBehavior(QAbstractItemView::SelectRows);table_->setEditTriggers(QAbstractItemView::NoEditTriggers);table_->setSortingEnabled(true);listLayout->addWidget(table_);splitter->addWidget(sky_);splitter->addWidget(list);splitter->setStretchFactor(0,1);splitter->setStretchFactor(1,1);skyLayout->addWidget(splitter,1);tabs->addTab(skyPage,uiText("Satellite sky","卫星天空图"));
-  auto page=[&](int kind,const QString& title,QLabel*& label,GnssPlot*& plot){auto* w=new QWidget(tabs);auto* l=new QVBoxLayout(w);label=new QLabel(w);label->setWordWrap(true);label->setMinimumHeight(75);l->addWidget(label);plot=new GnssPlot(kind,&model_,w);l->addWidget(plot,1);tabs->addTab(w,title);};
+  auto page=[&](int kind,const QString& title,QLabel*& label,GnssPlot*& plot){auto* w=new QWidget(tabs);auto* l=new QVBoxLayout(w);label=new QLabel(w);label->setObjectName(kind==2?"rtkReceiverPosition":"gnssPosition");label->setTextFormat(Qt::PlainText);label->setWordWrap(true);label->setMinimumWidth(0);label->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);label->setMinimumHeight(75);l->addWidget(label);plot=new GnssPlot(kind,&model_,w);l->addWidget(plot,1);tabs->addTab(w,title);};
   page(1,uiText("GNSS · GGA trajectory","GNSS · GGA 轨迹"),gnss_,gnss_plot_);page(2,uiText("RTK · ADRNAV trajectory","RTK · ADRNAV 轨迹"),rtk_,rtk_plot_);
   connect(clear,&QPushButton::clicked,this,[this]{model_.clearTracks();refresh();});
   connect(top,&QCheckBox::toggled,this,[this](bool v){for(auto* p:{sky_,gnss_plot_,rtk_plot_}){p->top=v;p->update();}});
@@ -101,7 +101,14 @@ void GnssVisualization::refresh(){
       .arg(p.latitude,0,'f',9).arg(p.longitude,0,'f',9).arg(p.height?QString::number(*p.height,'f',3):"—")
       .arg(xyz.e,0,'f',3).arg(xyz.n,0,'f',3).arg(xyz.height_valid?QString::number(xyz.u,'f',3):"—").arg((now-p.ms)/1000.,0,'f',1);
   };
-  gnss_->setText(position(model_.gnss));rtk_->setText(position(model_.rtk));
+  const bool rtk_fresh=model_.rtk.valid&&prism::gnss_plot::fresh(now,model_.rtk.ms,2000)&&error_.isEmpty();
+  const auto sigma=[&](std::optional<double> value){return rtk_fresh&&value&&std::isfinite(*value)&&*value>=0?QString::number(*value, 'f',3):QString("—");};
+  const auto accuracy=uiText("Receiver-estimated precision (1σ, m): North N %1 · East E %2 · Up U %3",
+      "接收机估计精度（1σ，m）：北向 N %1 · 东向 E %2 · 高程 U %3")
+      .arg(sigma(model_.rtk.north_sigma),sigma(model_.rtk.east_sigma),sigma(model_.rtk.up_sigma));
+  const auto accuracy_note=uiText("— means unavailable or stale; estimated standard deviations are not guaranteed actual errors.",
+      "— 表示未提供或已失效；标准差估计不代表实际误差保证。");
+  gnss_->setText(position(model_.gnss));rtk_->setText(position(model_.rtk)+"\n"+accuracy+"\n"+accuracy_note);
   auto selected=sky_->selected;int sort=table_->horizontalHeader()->sortIndicatorSection();auto order=table_->horizontalHeader()->sortIndicatorOrder();
   QString fingerprint=filter_->text()+"|"+selected+"|"+QString::number(sort)+"|"+QString::number(int(order));
   for(const auto& s:satellites) {

@@ -7,6 +7,7 @@
 #include "control/operation_controller.hpp"
 #include "cors/cors_session.hpp"
 #include "dataset/dataset_browser.hpp"
+#include "dataset/gnss_dataset.hpp"
 #include "dataset/dataset_playback.hpp"
 #include "dataset/dataset_playback_timing.hpp"
 #include "dataset/rosbag_exporter.hpp"
@@ -437,7 +438,7 @@ class DatasetRecorder {
         return false;
       }
       root_ = root;
-      const std::array<std::filesystem::path, 16> known_outputs = {
+      const std::array<std::filesystem::path, 27> known_outputs = {
           root_ / "imu0.tum", root_ / "imu1.tum", root_ / "cam0.tum",
           root_ / "cam1.tum", root_ / "cam2.tum", root_ / "cam3.tum",
           root_ / "lidar.tum", root_ / "lidar_imu.tum",
@@ -445,7 +446,11 @@ class DatasetRecorder {
           root_ / "rover_rtcm.bin", root_ / "rover_rtcm.csv",
           root_ / "base_rtcm.bin", root_ / "base_rtcm.csv",
           root_ / "time_sync.csv", root_ / "dataset.info",
-          root_ / "imu_metadata.csv"};
+          root_ / "imu_metadata.csv", root_ / "gnss_observations.bin",
+          root_ / "gnss_observations.csv", root_ / "gnss_receiver.csv",
+          root_ / "gnss_receiver_rtk.csv", root_ / "gnss_quality.csv",
+          root_ / "gnss_status.csv", root_ / "gnss_raw.bin", root_ / "gnss_raw.csv",
+          root_ / "cors_rtcm.bin", root_ / "cors_rtcm.csv", root_ / "gnss_raw_status.csv"};
       bool existing_dataset = false;
       for (const auto& path : known_outputs) {
         const bool exists = std::filesystem::exists(path, filesystem_error);
@@ -556,6 +561,8 @@ class DatasetRecorder {
       stop_writer_ = false;
       start_unix_us_ = wallClockUs();
       start_steady_time_ = std::chrono::steady_clock::now();
+      gnss_stats_ = {};
+      gnss_writer_ = std::make_unique<prism_gnss_dataset::BufferedWriter>(root_);
       startup_gate_ = StartupGate(required_imu_mask);
       lidar_has_imu_ = lidar_has_imu;
       startup_imu_.fill(0);
@@ -580,6 +587,7 @@ class DatasetRecorder {
       imu_metadata_file_.open(root_ / "imu_metadata.csv", std::ios::out | std::ios::trunc);
       imu_metadata_file_.imbue(std::locale::classic());
       if (!imu_metadata_file_.is_open()) {
+        closeFiles();
         if (error) *error = "cannot open IMU diagnostics";
         return false;
       }
@@ -1078,6 +1086,31 @@ class DatasetRecorder {
   }
 
 
+  void appendGnss(prism::GnssObservations batch,
+                  std::chrono::steady_clock::time_point query_started,
+                  bool query_error = false) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!active_.load() || !gnss_writer_ || query_started < start_steady_time_) return;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        query_started - start_steady_time_).count();
+    gnss_writer_->append(std::move(batch), static_cast<uint64_t>(elapsed), query_error);
+    if (!gnss_writer_->error().empty()) {
+      write_failed_ = true;
+      write_error_ = "GNSS dataset write failed: " + gnss_writer_->error();
+    }
+  }
+
+  void appendGnssRaw(prism::GnssRawBatch batch,
+                     std::chrono::steady_clock::time_point query_started,bool error=false) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(!active_.load()||!gnss_writer_||query_started<start_steady_time_) return;
+    const auto elapsed=std::chrono::duration_cast<std::chrono::microseconds>(query_started-start_steady_time_).count();
+    gnss_writer_->appendRaw(std::move(batch),uint64_t(elapsed),error);
+    if(!gnss_writer_->error().empty()) {
+      write_failed_=true;write_error_="Raw GNSS dataset write failed: "+gnss_writer_->error();
+    }
+  }
+
   void appendTimeSync(const prism::DeviceInfo& info,
                       TimeSyncProvider provider,
                       uint64_t rk_system_time_us) {
@@ -1540,6 +1573,7 @@ class DatasetRecorder {
   }
 
   void writeManifest(bool complete) {
+    if (gnss_writer_) gnss_stats_ = gnss_writer_->stats();
     std::ostringstream manifest;
     manifest.imbue(std::locale::classic());
     const bool imu_only = mode_.load(std::memory_order_relaxed) ==
@@ -1587,6 +1621,18 @@ class DatasetRecorder {
              << "base_rtcm_storage=raw-rtcm-v1\n"
              << "base_rtcm_index=csv-v1\n"
              << "time_sync_storage=csv-v1\n"
+             << "gnss_storage=receiver-observations-v1\n"
+             << "gnss_observations=" << gnss_stats_.observations << "\n"
+             << "gnss_receiver_samples=" << gnss_stats_.gnss << "\n"
+             << "gnss_receiver_rtk_samples=" << gnss_stats_.rtk << "\n"
+             << "gnss_quality_samples=" << gnss_stats_.quality << "\n"
+             << "gnss_cache_gap_events=" << gnss_stats_.gap_events << "\n"
+             << "gnss_query_errors=" << gnss_stats_.query_errors << "\n"
+             << "gnss_raw_storage=receiver-cors-bytes-v1\n"
+             << "gnss_raw_bytes=" << gnss_stats_.receiver_raw_bytes << "\n"
+             << "cors_rtcm_bytes=" << gnss_stats_.cors_raw_bytes << "\n"
+             << "gnss_raw_gap_events=" << gnss_stats_.raw_gap_events << "\n"
+             << "gnss_raw_query_errors=" << gnss_stats_.raw_query_errors << "\n"
              << "chunk_target_bytes=" << kCameraChunkTargetBytes << "\n"
              << "payload_write_buffer_bytes=4194304\n"
              << "startup_policy=internal-imu-stable-250ms\n"
@@ -1666,6 +1712,15 @@ class DatasetRecorder {
   }
 
   void closeFiles() {
+    if (gnss_writer_) {
+      gnss_writer_->finish();
+      gnss_stats_ = gnss_writer_->stats();
+      if (!gnss_writer_->error().empty()) {
+        write_failed_ = true;
+        write_error_ = "GNSS dataset write failed: " + gnss_writer_->error();
+      }
+      gnss_writer_.reset();
+    }
     if (imu_metadata_file_.is_open()) {
       imu_metadata_file_.flush();
       if (!imu_metadata_file_.good()) write_failed_ = true;
@@ -1735,6 +1790,8 @@ class DatasetRecorder {
   static constexpr uint64_t kMaximumQueuedFrameBytes =
       128ULL * 1024ULL * 1024ULL;
   mutable std::mutex mutex_;
+  std::unique_ptr<prism_gnss_dataset::BufferedWriter> gnss_writer_;
+  prism_gnss_dataset::Stats gnss_stats_;
   std::condition_variable writer_wakeup_;
   std::thread writer_;
   std::deque<FrameSetJob> frame_jobs_;
@@ -2645,7 +2702,7 @@ class MainWindow : public QMainWindow {
     auto* lidar_network_layout = make_lidar_tool_page(
         QStringLiteral("lidarNetworkScroll"), uiText("Network", "网络"));
     auto* lidar_power_layout = make_lidar_tool_page(
-        QStringLiteral("lidarPowerScroll"), uiText("Power", "待机 / 唤醒"));
+        QStringLiteral("lidarPowerScroll"), uiText("Hardware", "硬件控制"));
 
     auto* lidar_controls = new QGroupBox(
         uiText("LiDAR point cloud", "LiDAR 点云"), lidar_sidebar);
@@ -2817,6 +2874,7 @@ class MainWindow : public QMainWindow {
     lidar_power_panel_=new prism_viewer::ui::LidarPowerPanel(power_group);
     power_layout->addWidget(lidar_power_panel_);
     lidar_power_panel_->on_action=[this](prism::LidarModel model,int action){startLidarPowerOperation(model,action);};
+    lidar_power_panel_->on_speed_action=[this](prism::LidarModel model,int action){startLidarPowerOperation(model,action,true);};
     lidar_power_layout->addWidget(power_group);
     lidar_power_layout->addStretch(1);
     lidar_point_cloud_widget_ =
@@ -5516,6 +5574,10 @@ class MainWindow : public QMainWindow {
               .exists();
     }
     bool overwrite = false;
+    for (const auto& name : prism_gnss_dataset::fileNames()) {
+      existing_dataset = existing_dataset || QFileInfo::exists(
+          output_directory.filePath(QString::fromStdString(name)));
+    }
     if (existing_dataset) {
       const QString overwrite_message =
           mode == DatasetRecordingMode::ImuOnly
@@ -5607,6 +5669,24 @@ class MainWindow : public QMainWindow {
   }
 
   void stopImuRecording() {
+    if(dataset_recorder_.isActive()) {
+      try {
+        withClientIo([this] {
+          const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+          for(unsigned i=0;i<16;++i) {
+            const auto now=std::chrono::steady_clock::now();
+            auto raw=client_.gnssRaw(gnss_raw_cursor_,gnss_raw_session_);
+            gnss_raw_cursor_=raw.cursor;gnss_raw_session_=raw.session;
+            bool more=raw.more;dataset_recorder_.appendGnssRaw(std::move(raw),now);
+            if(!more) return;
+            if(std::chrono::steady_clock::now()>=limit) break;
+          }
+          dataset_recorder_.appendGnssRaw({},std::chrono::steady_clock::now(),true);
+        });
+      } catch(const std::exception&) {
+        dataset_recorder_.appendGnssRaw({},std::chrono::steady_clock::now(),true);
+      }
+    }
     const DatasetRecordingSummary summary = dataset_recorder_.stop();
     if (!summary.had_session) return;
 
@@ -6203,18 +6283,24 @@ class MainWindow : public QMainWindow {
     });
   }
 
-  void startLidarPowerOperation(prism::LidarModel model,int action) {
+  void startLidarPowerOperation(prism::LidarModel model,int action,bool speed=false) {
     if(!client_.isOpen() || worker_running_ || time_sync_running_ || wifi_operation_running_ ||
        camera_exposure_operation_running_ || camera_encoding_operation_running_ ||
        cors_session_.active() || lidar_network_operation_running_ || upgrade_running_ || client_.streamTransferActive())return;
     if(action && QMessageBox::question(this,uiText("LiDAR hardware state","雷达硬件状态"),
+        speed?uiText("Change MID-360S motor speed? Device readback will be checked.","确认切换 MID-360S 转速？切换后将读取设备确认。"):
         action==2?uiText("Put the LiDAR into hardware standby?","确认让雷达进入硬件待机？"):
         uiText("Wake the LiDAR? Motor startup can take more than ten seconds.","确认唤醒雷达？电机启动可能需要十余秒。"),
         QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
     operation_controller_.join();lidar_network_operation_running_=true;
     lidar_power_panel_->setBusy(true);refreshControls();
-    operation_controller_.start([this,model,action]{
+    operation_controller_.start([this,model,action,speed]{
       try {
+        if(speed){
+          auto state=withClientIo([&]{return action?client_.setLidarSpeedMode(model,static_cast<prism::LidarSpeedMode>(action),5000):client_.lidarSpeedStatus(model,3000);});
+          post([this,state]{lidar_network_operation_running_=false;lidar_power_panel_->setBusy(false);lidar_power_panel_->setSpeedResult(state);refreshControls();});
+          return;
+        }
         auto state=withClientIo([&]{return action?client_.setLidarStandby(model,action==2,15000):client_.lidarPowerStatus(model,3000);});
         post([this,state]{lidar_network_operation_running_=false;lidar_power_panel_->setBusy(false);lidar_power_panel_->setResult(state);refreshControls();});
       } catch(const std::exception& e) {
@@ -6495,18 +6581,39 @@ class MainWindow : public QMainWindow {
 
   void queryGnssObservations() {
     const auto now=std::chrono::steady_clock::now();
+    if(dataset_recorder_.isActive() && now>=next_gnss_raw_query_) {
+      next_gnss_raw_query_=now+std::chrono::milliseconds(50);
+      try {
+        // Bound work per pass so camera/IMU handling cannot be starved.
+        for(unsigned i=0;i<4;++i) {
+          auto raw=client_.gnssRaw(gnss_raw_cursor_,gnss_raw_session_);
+          gnss_raw_cursor_=raw.cursor;gnss_raw_session_=raw.session;
+          bool more=raw.more;
+          dataset_recorder_.appendGnssRaw(std::move(raw),now);
+          if(!more) break;
+        }
+      } catch(const std::exception&) {
+        dataset_recorder_.appendGnssRaw({},now,true);
+        next_gnss_raw_query_=now+std::chrono::seconds(1);
+      }
+    }
     if(now<next_gnss_observation_query_)return;
     next_gnss_observation_query_=now+std::chrono::milliseconds(100);
     try {
       auto batch=client_.gnssObservations(gnss_observation_cursor_,gnss_observation_session_);
       gnss_observation_cursor_=batch.cursor;gnss_observation_session_=batch.session;
+      dataset_recorder_.appendGnss(batch, now);
       post([this,batch=std::move(batch)](){gnss_visualization_->apply(batch);});
     }catch(const std::exception& e){
+      dataset_recorder_.appendGnss({}, now, true);
       next_gnss_observation_query_=now+std::chrono::seconds(5);
       QString message=uiText("GNSS graphics unavailable (matching Agent/SDK required): ","GNSS 图形暂不可用（需要匹配的 Agent／SDK）：")+QString::fromUtf8(e.what());
       post([this,message](){gnss_visualization_->unavailable(message);});
     }
   }
+
+  uint64_t gnss_raw_cursor_=0,gnss_raw_session_=0;
+  std::chrono::steady_clock::time_point next_gnss_raw_query_{};
 
   void updateGnssTimingStatus(const prism::GnssTimingStatus& status) {
     post([this, status]() {
@@ -9374,7 +9481,29 @@ int runViewerApplication(int argc, char** argv) {
         0x66u, 0x59u, 0x40u, 0x00u, 0xd3u, 0x00u, 0x00u, 0x00u};
     recorder.appendBaseRtcm(base_rtcm.data(), base_rtcm.size(),
                             std::chrono::steady_clock::now());
+    const std::string gga_body = "GNGGA,120000.100,3110.00000,N,12130.00000,E,5,15,1.2,20,M,10,M,,";
+    unsigned gga_checksum = 0;
+    for (char c : gga_body) gga_checksum ^= static_cast<unsigned char>(c);
+    std::ostringstream gga_sentence;
+    gga_sentence << '$' << gga_body << '*' << std::hex << std::setw(2)
+                 << std::setfill('0') << gga_checksum;
+    prism::GnssObservations gnss_batch;
+    gnss_batch.session = 7; gnss_batch.cursor = 1;
+    gnss_batch.device_monotonic_ms = 1234;
+    gnss_batch.records.push_back({1, 1234, gga_sentence.str()});
+    recorder.appendGnss(gnss_batch, std::chrono::steady_clock::now());
+    recorder.appendGnss(gnss_batch, std::chrono::steady_clock::now());
+    recorder.appendGnss({}, std::chrono::steady_clock::now(), true);
     const DatasetRecordingSummary summary = recorder.stop();
+    {
+      std::ifstream gnss_file(test_root / "gnss_receiver.csv");
+      std::string header, row, extra;
+      if (!std::getline(gnss_file, header) || !std::getline(gnss_file, row) ||
+          row.find("FLOAT") == std::string::npos || std::getline(gnss_file, extra)) {
+        std::cerr << "GNSS recording integration/dedup/final drain failed\n";
+        return 10;
+      }
+    }
     std::array<std::vector<DatasetImageEntry>, 4> loaded_images;
     bool browser_load_ok = true;
     if (!test_imu_only) {
