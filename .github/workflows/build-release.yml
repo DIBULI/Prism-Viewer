@@ -358,8 +358,9 @@ jobs:
           if [ "$LINUX_SDK_LINKAGE" = static ]; then
             # The ARM64 static SDK resolves OpenSSL in the Ubuntu 20.04 build
             # environment. Keep that matching runtime pair in the package.
+            # Consume the entire command output to avoid SIGPIPE under pipefail.
             crypto_name="$(ldd "$package/bin/prism-viewer" \
-              | awk '$1 ~ /^libcrypto[.]so[.]/ { print $1; exit }')"
+              | awk '!found && $1 ~ /^libcrypto[.]so[.]/ { print $1; found=1 }')"
             if [ -z "$crypto_name" ]; then
               echo "Viewer is not linked to a recognizable libcrypto" >&2
               exit 1
@@ -367,7 +368,7 @@ jobs:
             ssl_name="${crypto_name/libcrypto/libssl}"
             for name in "$crypto_name" "$ssl_name"; do
               source="$(ldconfig -p \
-                | awk -v library="$name" '$1 == library { print $NF; exit }')"
+                | awk -v library="$name" '!found && $1 == library { print $NF; found=1 }')"
               if [ -z "$source" ] || [ ! -f "$source" ]; then
                 echo "Required OpenSSL runtime is missing: $name" >&2
                 exit 1
