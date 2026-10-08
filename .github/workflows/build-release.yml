@@ -16,7 +16,10 @@ permissions:
   contents: read
 
 env:
-  PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+  # GitHub-hosted runners use the upstream index; regional mirrors can time out.
+  PIP_INDEX_URL: https://pypi.org/simple
+  PIP_DEFAULT_TIMEOUT: "60"
+  PIP_RETRIES: "5"
 
 concurrency:
   group: prism-viewer-${{ github.workflow }}-${{ github.ref }}
