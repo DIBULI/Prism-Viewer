@@ -21,6 +21,57 @@ Python 包。ROS2 导出依赖随 Viewer 安装的 Qt SQLite 驱动；Ubuntu/Deb
 | 板载 IMU 1 | `/prism/imu1/data` | `sensor_msgs/Imu` | `sensor_msgs/msg/Imu` |
 | Mid-360/Mid-360S 点云 | `/prism/lidar/points` | `sensor_msgs/PointCloud2` | `sensor_msgs/msg/PointCloud2` |
 | Mid-360/Mid-360S 内置 IMU | `/prism/lidar/imu/data` | `sensor_msgs/Imu` | `sensor_msgs/msg/Imu` |
+| GNSS / RTK position and covariance | `/prism/gnss/fix`, `/prism/rtk/fix` | `sensor_msgs/NavSatFix` | `sensor_msgs/msg/NavSatFix` |
+| Receiver solution, satellites and precision | `/prism/gnss/receiver`, `/prism/rtk/receiver` | `prism_ros_msgs/ReceiverPosition` | `prism_ros_msgs/msg/ReceiverPosition` |
+| Original position fields and recording timing | `/prism/gnss/recording_info`, `/prism/rtk/recording_info` | `std_msgs/String` (JSON) | `std_msgs/msg/String` (JSON) |
+| GSA / GST quality records | `/prism/gnss/quality` | `std_msgs/String` (JSON) | `std_msgs/msg/String` (JSON) |
+
+## GNSS / RTK export
+
+GNSS and RTK are exported separately when `gnss_receiver.csv` and
+`gnss_receiver_rtk.csv` contain records. `gnss_quality.csv` adds GSA/GST records.
+Datasets without these files continue to export their existing sensor streams;
+the exporter cannot reconstruct GNSS data that was never recorded.
+
+Receiver topics use the same `ReceiverPosition` layout as Prism ROS Adapter.
+They retain the native solution name (including SINGLE, FLOAT and FIX variants),
+quality, satellite count, receiver epoch/time scale, and east/north/up one-sigma
+precision in metres. GGA precision is associated with GST only when UTC epoch
+and session match, with recording/reception times within two seconds. RTK
+precision comes from its own solution, not GGA or GST. HDOP is retained in
+`recording_info`; GSA PDOP/HDOP/VDOP and GST fields are retained in `quality`.
+These JSON fields preserve CSV values as strings, including empty values for
+unavailable data. No confidence percentage is invented.
+
+`NavSatFix.position_covariance` is ENU, in square metres: E², N², U² on the
+diagonal. Only a valid position with three finite positive standard deviations
+gets `DIAGONAL_KNOWN`; missing/invalid precision uses `UNKNOWN`, not zero error.
+No-fix positions have `STATUS_NO_FIX` and NaN coordinates. `NavSatStatus` cannot
+distinguish FLOAT from FIX; use the receiver topic's native solution and quality.
+
+### GNSS recording time versus measurement time
+
+Recorded CSV receiver epochs are UTC time-of-day or GPS week/milliseconds;
+they do not include a verified mapping to the dataset's common device clock.
+The exporter does not guess the date or GPS–UTC leap-second offset. Consequently
+`NavSatFix.header.stamp=0`, `ReceiverPosition.timestamp_valid=false`, and
+`epoch_us=0`. Original epochs/time scales remain available for downstream work.
+
+For bag playback scheduling only, recording elapsed time is mapped using the
+nearest accepted, synchronized IMU arrival anchor from `imu_metadata.csv` (both
+Viewer and device-recorded schemas are supported). This is **approximate receive
+time, not synchronized GNSS measurement time**; transport/batching latency is
+not corrected. The `recording_info`/`quality` JSON explicitly labels this basis
+and includes original elapsed and device-reception times. Export fails clearly
+when no anchor exists within two seconds, rather than silently dropping GNSS or
+substituting computer time. Do not use these as precise fusion timestamps.
+
+Standard fix topics need only `sensor_msgs`. To interpret receiver topics in ROS,
+install the matching Prism ROS Adapter's `prism_ros_msgs` package. ROS1 bags embed
+complete message definitions. GSA/GST and recording metadata can be read using
+standard `std_msgs` and a JSON parser.
+
+## Other sensor streams
 
 `/prism/imu0/data` 和 `/prism/imu1/data` 始终对应 sensor-board 上的两路板载
 IMU；`/prism/lidar/imu/data` 是独立的雷达内置 IMU，不能混入或替代板载 IMU。
@@ -38,7 +89,7 @@ stamp 是帧内第一点在数据集声明时间域中的纳秒时间，坐标�
 导出器按照 Livox ROS Driver 2 的默认 `publish_freq=10.0` 语义，利用每个原始
 批次的 `timestamp`、`time_interval_100ns` 和点序号恢复逐点时间，再按连续
 100 ms 窗口聚合成一条 `PointCloud2`。最后不足 100 ms 的尾帧仍会输出，保证
-转换不丢点。导出和播放只依赖标准 `sensor_msgs`，不要求安装 Livox 自定义消息包。
+转换不丢点。点云导出和播放只依赖标准 `sensor_msgs`，不要求安装 Livox 自定义消息包。
 
 ROS2 消息使用 little-endian CDR 序列化。SQLite 数据库采用 rosbag2 schema
 version 3，`metadata.yaml` 采用 version 5，以兼容 ROS2 Humble 及能够读取该

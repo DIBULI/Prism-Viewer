@@ -6,37 +6,6 @@
 #include <optional>
 
 namespace prism_viewer::ui {
-// Reference only: mirrors RTK-module firmware/runtime/bridge_led.h priority.
-// Do not infer a live LED state from incomplete SDK telemetry.
-struct RtkLedEntry { unsigned period_ms; unsigned on_ms; const char* zh; const char* en; };
-inline constexpr RtkLedEntry rtkLedEntries[] = {
-  {2000, 1000, "GNSS/RTK 芯片未检测到", "GNSS/RTK chip not detected"},
-  {1000, 500, "未检测到 4G 模块，或模块响应已过期", "4G module not detected, or its response is stale"},
-  {500, 250, "SIM 未就绪，或尚未注册移动网络", "SIM is not ready, or not registered on the mobile network"},
-  {4000, 200, "以上检查通过，但 CORS 未配置或未启用", "Checks above passed, but CORS is not configured or not enabled"},
-  {125, 62, "认证、挂载点、协议、串口、回压或数据帧错误", "Authentication, mountpoint, protocol, UART, backpressure or framing error"},
-  {2000, 100, "CORS 已鉴权，最近 3 秒内收到差分数据且无报告错误", "CORS authenticated, recent correction data within 3 seconds and no reported error"},
-  {250, 125, "其他等待状态：连接中、连接失败、等待差分数据或 RTK 已停止", "Other waiting states: connecting, connection failed, awaiting corrections or RTK stopped"},
-};
-inline QString rtkLedReference() {
-  using common::uiText;
-  QString html = "<h3>RTK-module LED</h3><p>" + uiText(
-      "Application mode only; not an upgrade-mode guide. Reference patterns, not a live LED reading. Priority is top to bottom: only the first matching condition is displayed.",
-      "仅适用于应用运行阶段，不用于判断升级模式。这是闪烁规则说明，并非实时读取灯态。状态优先级从上到下，只显示第一个满足的条件。").toHtmlEscaped() + "</p>";
-  html += "<p>" + uiText(
-      "GNSS/RTK chip not detected means no valid receiver data has arrived since startup, or none has arrived for more than 3 seconds. Data recovery automatically clears this status; the timeout age remains available for diagnostics.",
-      "启动后尚未收到有效接收机数据，或超过 3 秒未收到有效数据，统一判定为“GNSS/RTK 芯片未检测到”。恢复数据后自动解除；超时时长仍保留供诊断。").toHtmlEscaped() + "</p>";
-  html += "<table width='100%' cellspacing='0' cellpadding='8' border='1'><tr><th>" + uiText("Condition", "状态") + "</th><th>" + uiText("Blink pattern", "闪烁方式") + "</th></tr>";
-  for (const auto& entry : rtkLedEntries) {
-    const auto rate = QString::number(1000.0 / entry.period_ms, 'g', 3);
-    html += "<tr><td>" + uiText(entry.en, entry.zh).toHtmlEscaped() + "</td><td>" + rate + " Hz<br>" +
-        uiText("ON %1 ms / OFF %2 ms", "亮 %1 ms / 灭 %2 ms").arg(entry.on_ms).arg(entry.period_ms - entry.on_ms).toHtmlEscaped() + "</td></tr>";
-  }
-  html += "</table><p>" + uiText(
-      "No GNSS data is not the same as no position fix. Hardware and SIM/network checks take priority over CORS: no GNSS/RTK chip data always uses the 1-second ON / 1-second OFF pattern, even with CORS unconfigured/disabled. This order requires the hardware-first LED firmware; older firmware may show CORS configuration first. 4 Hz alone does not prove CORS failure; check the error status. The 2-second short flash indicates recent corrections, not FLOAT/FIX or positioning accuracy. RTK stop has no dedicated pattern.",
-      "GNSS 无数据不等于未定位。硬件及 SIM/入网检查优先于 CORS：GNSS/RTK 芯片无数据时，即使 CORS 未配置 / 未启用，也优先亮 1 秒、灭 1 秒。此顺序需使用硬件检查优先的新版固件；旧固件可能先显示 CORS 配置状态。4 Hz 本身不代表 CORS 失败，请结合错误状态判断。每 2 秒短亮一次表示近期收到差分数据，不代表 FLOAT / FIX 或定位精度。停止 RTK 没有独立灯态。").toHtmlEscaped() + "</p>";
-  return html;
-}
 // These are device wire codes. Do not use the host platform's strerror/errno.
 struct RtkErrorEntry { const char* kind; int code; const char* zh; const char* en; };
 inline constexpr RtkErrorEntry rtkErrorEntries[] = {

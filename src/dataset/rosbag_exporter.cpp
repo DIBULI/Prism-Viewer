@@ -1,6 +1,8 @@
 #include "dataset/rosbag_exporter.hpp"
+#include "dataset/gnss_bag_data.hpp"
 
 #include <QtCore/QByteArray>
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QString>
 #include <QtCore/QUuid>
 #include <QtCore/QVariant>
@@ -14,6 +16,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -45,6 +48,11 @@ struct Cancelled final : std::exception {};
 using Bytes = std::vector<uint8_t>;
 
 void appendU8(Bytes* bytes, uint8_t value) { bytes->push_back(value); }
+
+void appendU16(Bytes* bytes, uint16_t value) {
+  appendU8(bytes, uint8_t(value));
+  appendU8(bytes, uint8_t(value >> 8));
+}
 
 void appendU32(Bytes* bytes, uint32_t value) {
   for (unsigned byte = 0; byte < 4; ++byte) {
@@ -240,7 +248,6 @@ uint64_t comparableTime(const RosTime& time) {
 class Ros1BagWriter {
  public:
   explicit Ros1BagWriter(const std::filesystem::path& path) {
-    connections_.reserve(12u);
     output_.open(path, std::ios::out | std::ios::binary | std::ios::trunc);
     if (!output_.is_open()) throw std::runtime_error("cannot create rosbag");
     static constexpr char kVersion[] = "#ROSBAG V2.0\n";
@@ -421,7 +428,8 @@ class Ros1BagWriter {
 
   std::ofstream output_;
   uint64_t file_header_position_ = 0;
-  std::vector<Connection> connections_;
+  // Adding optional streams must not invalidate the writer's connection pointers.
+  std::deque<Connection> connections_;
   Bytes chunk_data_;
   std::map<uint32_t, std::vector<IndexEntry>> chunk_indexes_;
   std::map<uint32_t, uint32_t> chunk_counts_;
@@ -446,6 +454,28 @@ const std::string kCompressedImageDefinition =
     std::string(kHeaderDefinition);
 
 constexpr const char* kUInt32Definition = "uint32 data\n";
+
+const std::string kNavSatFixDefinition =
+    "std_msgs/Header header\nsensor_msgs/NavSatStatus status\n"
+    "float64 latitude\nfloat64 longitude\nfloat64 altitude\n"
+    "float64[9] position_covariance\n"
+    "uint8 COVARIANCE_TYPE_UNKNOWN=0\nuint8 COVARIANCE_TYPE_APPROXIMATED=1\n"
+    "uint8 COVARIANCE_TYPE_DIAGONAL_KNOWN=2\nuint8 COVARIANCE_TYPE_KNOWN=3\n"
+    "uint8 position_covariance_type\n"
+    "================================================================================\nMSG: std_msgs/Header\n" +
+    std::string(kHeaderDefinition) +
+    "================================================================================\nMSG: sensor_msgs/NavSatStatus\n"
+    "int8 STATUS_NO_FIX=-1\nint8 STATUS_FIX=0\nint8 STATUS_SBAS_FIX=1\nint8 STATUS_GBAS_FIX=2\n"
+    "int8 status\nuint16 SERVICE_GPS=1\nuint16 SERVICE_GLONASS=2\nuint16 SERVICE_COMPASS=4\n"
+    "uint16 SERVICE_GALILEO=8\nuint16 service\n";
+
+// Identical field layout to prism_ros_msgs/ReceiverPosition in the ROS adapter.
+constexpr const char* kReceiverPositionDefinition =
+    "bool valid\nbool height_valid\nbool covariance_valid\nbool timestamp_valid\n"
+    "string source\nstring solution\nstring time_system\nstring epoch\n"
+    "uint8 quality\nuint16 satellites\nuint32 age_ms\nuint64 sequence\nuint64 session\nuint64 epoch_us\n"
+    "float64 latitude_deg\nfloat64 longitude_deg\nfloat64 ellipsoidal_height_m\n"
+    "float64 east_std_m\nfloat64 north_std_m\nfloat64 up_std_m";
 
 const std::string kImuDefinition =
     "std_msgs/Header header\n"
@@ -750,6 +780,9 @@ class CdrWriter {
   CdrWriter() : bytes_{0x00u, 0x01u, 0x00u, 0x00u} {}
 
   void writeU8(uint8_t value) { bytes_.push_back(value); }
+
+  void writeU16(uint16_t value) { align(2u); appendU16(&bytes_, value); }
+  void writeU64(uint64_t value) { align(8u); appendU64(&bytes_, value); }
 
   void writeU32(uint32_t value) {
     align(4u);
@@ -1434,13 +1467,47 @@ class Ros2BagWriter {
   bool transaction_active_ = false;
 };
 
+struct Ros1ValueWriter {
+  Bytes bytes;
+  void writeU8(uint8_t v) { appendU8(&bytes, v); }
+  void writeU16(uint16_t v) { appendU16(&bytes, v); }
+  void writeU32(uint32_t v) { appendU32(&bytes, v); }
+  void writeU64(uint64_t v) { appendU64(&bytes, v); }
+  void writeDouble(double v) { appendDouble(&bytes, v); }
+  void writeString(const std::string& v) { appendString(&bytes, v); }
+  Bytes finish() { return std::move(bytes); }
+};
+
+template <typename Writer>
+void writeFixFields(Writer& w, const gnss_bag::Position& p) {
+  const auto status = !p.valid ? -1 : (p.quality == 2 || p.quality == 4 || p.quality == 5) ? 2 : 0;
+  w.writeU8(uint8_t(status)); w.writeU16(0); // Constellation mask is not recorded.
+  w.writeDouble(p.valid ? p.latitude : NAN); w.writeDouble(p.valid ? p.longitude : NAN);
+  w.writeDouble(p.height_valid ? p.height : NAN);
+  for (size_t i = 0; i < 9; ++i)
+    w.writeDouble(!p.covariance_valid ? 0 : i == 0 ? p.east*p.east : i == 4 ? p.north*p.north : i == 8 ? p.up*p.up : 0);
+  w.writeU8(p.covariance_valid ? 2 : 0);
+}
+template <typename Writer>
+void writeReceiverFields(Writer& w, const gnss_bag::Position& p) {
+  w.writeU8(p.valid); w.writeU8(p.height_valid); w.writeU8(p.covariance_valid);
+  w.writeU8(0); // Original epoch is preserved, but a verified common-clock epoch is unavailable.
+  w.writeString(p.source); w.writeString(p.solution); w.writeString(p.time_system); w.writeString(p.epoch);
+  w.writeU8(p.quality); w.writeU16(p.satellites); w.writeU32(0);
+  w.writeU64(p.sequence); w.writeU64(p.session); w.writeU64(0);
+  w.writeDouble(p.valid ? p.latitude : NAN); w.writeDouble(p.valid ? p.longitude : NAN);
+  w.writeDouble(p.height_valid ? p.height : NAN);
+  w.writeDouble(p.east); w.writeDouble(p.north); w.writeDouble(p.up);
+}
+
 class DatasetBagWriter {
  public:
   DatasetBagWriter(RosbagFormat format,
                    const std::filesystem::path& temporary,
                    const std::filesystem::path& final_output,
                    bool cameras_present, bool lidar_present,
-                   bool lidar_imu_present)
+                   bool lidar_imu_present, bool gnss_present, bool rtk_present,
+                   bool gnss_quality_present)
       : format_(format) {
     if (format_ == RosbagFormat::Ros1) {
       ros1_ = std::make_unique<Ros1BagWriter>(temporary);
@@ -1477,6 +1544,18 @@ class DatasetBagWriter {
             "/prism/lidar/imu/data", "sensor_msgs/Imu",
             "6a62c6daae103f4ff57a132d6f95cec2", kImuDefinition);
       }
+      for (size_t i = 0; i < 2; ++i) {
+        if (!(i == 0 ? gnss_present : rtk_present)) continue;
+        const std::string prefix = i == 0 ? "/prism/gnss/" : "/prism/rtk/";
+        fix_ros1_[i] = &ros1_->addConnection(prefix + "fix", "sensor_msgs/NavSatFix",
+                         "2d3a8cd499b9b4a0249fb98fd05cfa48", kNavSatFixDefinition);
+        receiver_ros1_[i] = &ros1_->addConnection(prefix + "receiver", "prism_ros_msgs/ReceiverPosition",
+                         QCryptographicHash::hash(QByteArray(kReceiverPositionDefinition), QCryptographicHash::Md5).toHex().toStdString(), kReceiverPositionDefinition);
+        recording_ros1_[i] = &ros1_->addConnection(prefix + "recording_info", "std_msgs/String",
+                         "992ce8a1687cec8c8bd883ec73ca41d1", "string data\n");
+      }
+      if (gnss_quality_present) quality_ros1_ = &ros1_->addConnection("/prism/gnss/quality", "std_msgs/String",
+                         "992ce8a1687cec8c8bd883ec73ca41d1", "string data\n");
       return;
     }
 
@@ -1506,6 +1585,42 @@ class DatasetBagWriter {
     if (lidar_imu_present) {
       lidar_imu_ros2_ = ros2_->addTopic(
           "/prism/lidar/imu/data", "sensor_msgs/msg/Imu");
+    }
+    for (size_t i = 0; i < 2; ++i) {
+      if (!(i == 0 ? gnss_present : rtk_present)) continue;
+      const std::string prefix = i == 0 ? "/prism/gnss/" : "/prism/rtk/";
+      fix_ros2_[i] = ros2_->addTopic(prefix + "fix", "sensor_msgs/msg/NavSatFix");
+      receiver_ros2_[i] = ros2_->addTopic(prefix + "receiver", "prism_ros_msgs/msg/ReceiverPosition");
+      recording_ros2_[i] = ros2_->addTopic(prefix + "recording_info", "std_msgs/msg/String");
+    }
+    if (gnss_quality_present) quality_ros2_ = ros2_->addTopic("/prism/gnss/quality", "std_msgs/msg/String");
+  }
+
+  void writePosition(const gnss_bag::Position& p) {
+    const size_t i = p.rtk ? 1 : 0;
+    const std::string info = gnss_bag::metadata(p.original, p.stamp);
+    if (ros1_) {
+      Ros1ValueWriter fix, receiver, recording;
+      appendRos1Header(&fix.bytes, uint32_t(p.sequence), 0, "gnss_link");
+      writeFixFields(fix, p); writeReceiverFields(receiver, p); recording.writeString(info);
+      ros1_->writeMessage(fix_ros1_[i], p.stamp, fix.finish());
+      ros1_->writeMessage(receiver_ros1_[i], p.stamp, receiver.finish());
+      ros1_->writeMessage(recording_ros1_[i], p.stamp, recording.finish());
+    } else {
+      CdrWriter fix, receiver, recording;
+      writeRos2Header(&fix, 0, "gnss_link");
+      writeFixFields(fix, p); writeReceiverFields(receiver, p); recording.writeString(info);
+      ros2_->writeMessage(fix_ros2_[i], p.stamp, fix.finish());
+      ros2_->writeMessage(receiver_ros2_[i], p.stamp, receiver.finish());
+      ros2_->writeMessage(recording_ros2_[i], p.stamp, recording.finish());
+    }
+  }
+  void writeQuality(const gnss_bag::Quality& q) {
+    const auto info = gnss_bag::metadata(q.original, q.stamp);
+    if (ros1_) {
+      Ros1ValueWriter w; w.writeString(info); ros1_->writeMessage(quality_ros1_, q.stamp, w.finish());
+    } else {
+      CdrWriter w; w.writeString(info); ros2_->writeMessage(quality_ros2_, q.stamp, w.finish());
     }
   }
 
@@ -1589,6 +1704,10 @@ class DatasetBagWriter {
   std::array<int, 2> imu_ros2_{};
   int lidar_ros2_ = 0;
   int lidar_imu_ros2_ = 0;
+  std::array<Connection*, 2> fix_ros1_{}, receiver_ros1_{}, recording_ros1_{};
+  Connection* quality_ros1_ = nullptr;
+  std::array<int, 2> fix_ros2_{}, receiver_ros2_{}, recording_ros2_{};
+  int quality_ros2_ = 0;
 };
 
 }  // namespace
@@ -1722,11 +1841,13 @@ RosbagExportResult exportDatasetToRosbag(
     const bool lidar_imu_present =
         strict_time_v6 ? v6_layout.lidar_imu : lidar_imu_rows != 0;
     total += lidar_imu_rows;
+    const auto gnss = gnss_bag::load(dataset_root, [&] { checkCancelled(cancelled); });
+    total += gnss.positions.size() + gnss.quality.size();
     if (total == 0) throw std::runtime_error("dataset is empty");
 
     temporary = temporaryPathFor(output_path);
     DatasetBagWriter writer(format, temporary, output_path, cameras_present,
-                            lidar_present, lidar_imu_present);
+                            lidar_present, lidar_imu_present, gnss.gnss, gnss.rtk, !gnss.quality.empty());
 
     uint64_t completed = 0;
     std::vector<uint64_t> camera0_timestamps;
@@ -2055,6 +2176,18 @@ RosbagExportResult exportDatasetToRosbag(
       reportProgress(progress, completed, total, stage, true);
     }
 
+    for (const auto& position : gnss.positions) {
+      checkCancelled(cancelled);
+      writer.writePosition(position);
+      ++(position.rtk ? result.rtk_positions : result.gnss_positions);
+      ++completed;
+      reportProgress(progress, completed, total, "Exporting GNSS / RTK positions and precision", false);
+    }
+    for (const auto& quality : gnss.quality) {
+      checkCancelled(cancelled);
+      writer.writeQuality(quality); ++result.gnss_quality_messages; ++completed;
+      reportProgress(progress, completed, total, "Exporting GNSS quality", false);
+    }
     checkCancelled(cancelled);
     reportProgress(progress, completed, total,
                    format == RosbagFormat::Ros1 ? "Finalizing ROS1 bag"

@@ -7450,7 +7450,7 @@ class MainWindow : public QMainWindow {
       appendLog(
           QStringLiteral("%1 bag export complete: %2 camera=%3 "
                          "camera_exposure=%4 onboard_imu=%5 lidar_imu=%6 "
-                         "lidar_batches=%7 lidar_points=%8 bytes=%9")
+                         "lidar_batches=%7 lidar_points=%8 bytes=%9 gnss=%10 rtk=%11 gnss_quality=%12")
               .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
@@ -7459,16 +7459,19 @@ class MainWindow : public QMainWindow {
               .arg(result.lidar_imu_messages)
               .arg(result.lidar_messages)
               .arg(result.lidar_points)
-              .arg(result.output_bytes));
+              .arg(result.output_bytes)
+              .arg(result.gnss_positions).arg(result.rtk_positions).arg(result.gnss_quality_messages));
       QMessageBox::information(
           this, uiText("ROS bag exported", "ROS Bag 已导出"),
           uiText("Saved %1 bag:\n%2\n\nCamera image messages: %3\n"
                  "Camera exposure messages: %4\n"
                  "Onboard IMU messages: %5\nLiDAR IMU messages: %6\n"
-                 "LiDAR clouds: %7 (%8 points)",
+                 "LiDAR clouds: %7 (%8 points)\nGNSS / RTK positions: %9 / %10\nGNSS quality records: %11\n"
+                 "GNSS/RTK bag timing is approximate receive time; measurement stamps remain unknown.",
                  "已保存 %1 Bag：\n%2\n\n相机图像消息：%3\n"
                  "相机曝光消息：%4\n板载 IMU 消息：%5\n"
-                 "雷达 IMU 消息：%6\nLiDAR 点云：%7 批（%8 点）")
+                 "雷达 IMU 消息：%6\nLiDAR 点云：%7 批（%8 点）\nGNSS / RTK 定位：%9 / %10\nGNSS 质量记录：%11\n"
+                 "GNSS/RTK 的 Bag 时间为近似接收时间，测量时间戳保留为未知。")
               .arg(format_label)
               .arg(output)
               .arg(result.camera_messages)
@@ -7476,7 +7479,8 @@ class MainWindow : public QMainWindow {
               .arg(result.imu_messages)
               .arg(result.lidar_imu_messages)
               .arg(result.lidar_messages)
-              .arg(result.lidar_points));
+              .arg(result.lidar_points)
+              .arg(result.gnss_positions).arg(result.rtk_positions).arg(result.gnss_quality_messages));
       return;
     }
     if (result.cancelled) {

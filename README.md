@@ -145,6 +145,10 @@ details only when needed.
 Datasets can include GNSS/RTK snapshots, raw rover/base RTCM streams and
 time-source transitions for offline analysis. See [dataset format](docs/dataset-format.md)
 and [ROS bag export](docs/rosbag-export.md) for file and topic details.
+ROS1/ROS2 export includes separate GNSS/RTK fixes, native solution state,
+satellite counts, and east/north/up precision with ENU covariance when recorded.
+Unknown precision stays unknown. Original receiver epochs are retained; GNSS bag
+scheduling uses approximate receive time, not a verified measurement timestamp.
 
 ## Build
 

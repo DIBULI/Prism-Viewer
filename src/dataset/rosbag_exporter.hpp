@@ -29,6 +29,9 @@ struct RosbagExportResult {
   uint64_t lidar_imu_messages = 0;
   uint64_t lidar_messages = 0;
   uint64_t lidar_points = 0;
+  uint64_t gnss_positions = 0;
+  uint64_t rtk_positions = 0;
+  uint64_t gnss_quality_messages = 0;
   uint64_t output_bytes = 0;
   std::string error;
 };

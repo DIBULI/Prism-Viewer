@@ -379,9 +379,9 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   module_versions_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   timesync_layout->addWidget(module_versions_);
   setRtkModuleVersions(std::nullopt);
-  auto* error_help = new QPushButton(uiText("ⓘ LED / error help", "ⓘ LED / 错误说明"), timesync_group);
+  auto* error_help = new QPushButton(uiText("ⓘ error help", "ⓘ 错误说明"), timesync_group);
   error_help->setObjectName(QStringLiteral("rtkErrorHelp"));
-  error_help->setToolTip(uiText("RTK-module LED patterns, priority and error explanations; read-only", "RTK-module LED 闪烁规则、优先级和错误说明；只读，不发送命令"));
+  error_help->setToolTip(uiText("RTK-module error explanations; read-only", "RTK-module 错误说明；只读，不发送命令"));
   timesync_layout->addWidget(error_help, 0, Qt::AlignLeft);
   connect(error_help, &QPushButton::clicked, this, [this] { showRtkErrorHelp(); });
   gps_layout->addWidget(timesync_group);
@@ -622,12 +622,11 @@ void CorsPanel::showRtkErrorHelp() {
   auto* dialog = new QDialog(this);
   dialog->setObjectName(QStringLiteral("rtkErrorDialog"));
   dialog->setAttribute(Qt::WA_DeleteOnClose);
-  dialog->setWindowTitle(uiText("RTK-module LED / error help", "RTK-module LED / 错误说明"));
+  dialog->setWindowTitle(uiText("RTK-module error help", "RTK-module 错误说明"));
   dialog->setStyleSheet(QStringLiteral("QDialog{background:#fff;color:#182b40;} QTextBrowser{background:#fff;color:#182b40;border:0;} QPushButton{background:#edf5ff;color:#245c9b;border:1px solid #bbd4ee;border-radius:7px;padding:8px 16px;} QPushButton:focus{border:2px solid #155cb3;} QTabWidget::pane{background:#fff;border:1px solid #c6d8ea;} QTabBar::tab{background:#edf5ff;color:#245c9b;padding:8px 14px;} QTabBar::tab:selected{background:#fff;color:#155cb3;}"));
   auto* layout = new QVBoxLayout(dialog);
   auto* tabs = new QTabWidget(dialog);
-  for (const auto& page : {std::make_pair(uiText("LED patterns", "LED 闪烁说明"), rtkLedReference()),
-                           std::make_pair(uiText("Current snapshot", "当前快照"), html),
+  for (const auto& page : {std::make_pair(uiText("Current snapshot", "当前快照"), html),
                            std::make_pair(uiText("Error code reference", "错误码说明"), rtkErrorReference())}) {
     auto* text = new QTextBrowser(tabs);
     text->setOpenExternalLinks(false);

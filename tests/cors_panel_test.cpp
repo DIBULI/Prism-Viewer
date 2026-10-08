@@ -115,27 +115,12 @@ int main(int argc, char** argv) {
     ok &= require(dialog && dialog->isVisible(), "RTK error popup did not open");
     if (!dialog) return 1;
     const auto pages = dialog->findChildren<QTextBrowser*>();
-    ok &= require(pages.size() == 3, "LED, current status and error reference must be separate pages");
-    auto* help_tabs = dialog->findChild<QTabWidget*>();
-    ok &= require(help_tabs && help_tabs->tabText(0).contains(QStringLiteral("LED")), "LED reference must be easy to find");
-    QString text;for (auto* page : pages) text += page->toPlainText();
-    const auto led = prism_viewer::ui::rtkLedReference();
-    ok &= require(!led.contains(QStringLiteral("UM980")), "LED help must use generic GNSS/RTK chip terminology");
-    ok &= require(QString::fromUtf8(chinese ? prism_viewer::ui::rtkLedEntries[0].zh : prism_viewer::ui::rtkLedEntries[0].en) ==
-                      (chinese ? QStringLiteral("GNSS/RTK 芯片未检测到") : QStringLiteral("GNSS/RTK chip not detected")), "Timeout and absent receiver must share one status name");
-    ok &= require(text.contains(chinese ? QStringLiteral("超过 3 秒未收到有效数据") : QStringLiteral("more than 3 seconds")), "Missing receiver timeout rule");
-    const unsigned periods[] = {2000, 1000, 500, 4000, 125, 2000, 250};
-    const unsigned on_times[] = {1000, 500, 250, 200, 62, 100, 125};
-    unsigned led_index = 0;
-    for (const auto& entry : prism_viewer::ui::rtkLedEntries) {
-      ok &= require(entry.period_ms == periods[led_index] && entry.on_ms == on_times[led_index], "LED priority/duration differs from firmware");
-      ok &= require(led.contains(QString::fromUtf8(chinese ? entry.zh : entry.en)), "Missing LED translation");
-      ++led_index;
-    }
-    ok &= require(led_index == 7 && text.contains(chinese ? QStringLiteral("状态优先级") : QStringLiteral("Priority is top to bottom")), "Missing LED priority warning");
-    ok &= require(text.contains(chinese ? QStringLiteral("并非实时") : QStringLiteral("not a live")), "LED guide must not claim live telemetry");
-    ok &= require(text.contains(chinese ? QStringLiteral("硬件及 SIM/入网检查优先于 CORS") : QStringLiteral("checks take priority over CORS")), "Hardware-first LED priority is not explained");
-    ok &= require(text.contains(chinese ? QStringLiteral("旧固件") : QStringLiteral("older firmware")), "LED guide must identify the firmware dependency");
+    ok &= require(pages.size() == 2, "Current status and error reference must be separate pages");
+    QString text; for (auto* page : pages) text += page->toPlainText();
+    ok &= require(!text.contains(QStringLiteral("LED")) && !text.contains(QStringLiteral("闪烁")) &&
+                      !error_help->text().contains(QStringLiteral("LED")) &&
+                      !error_help->toolTip().contains(QStringLiteral("LED")),
+                  "Removed LED guidance must not appear in the Viewer");
     ok &= require(text.contains(QStringLiteral("4294967295")) && text.contains(chinese ? QStringLiteral("累计") : QStringLiteral("Cumulative")), "RTCM counter not explained separately");
     if (argc == 2) dialog->grab().save(QString::fromLocal8Bit(argv[1]) + (chinese ? "-errors-zh.png" : "-errors-en.png"));
     dialog->close();application.sendPostedEvents(nullptr, QEvent::DeferredDelete);
