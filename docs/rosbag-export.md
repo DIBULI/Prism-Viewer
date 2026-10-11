@@ -43,6 +43,15 @@ precision comes from its own solution, not GGA or GST. HDOP is retained in
 These JSON fields preserve CSV values as strings, including empty values for
 unavailable data. No confidence percentage is invented.
 
+An omitted `satellites_used` value is allowed, including on a no-fix record;
+it does not abort ROS1 or ROS2 export. `recording_info` preserves the empty
+string and sets `satellites_used_valid=false`. A reported count of zero instead
+remains `"0"` with `satellites_used_valid=true`. The fixed-layout
+`ReceiverPosition.satellites` uses zero as a placeholder when the count is
+unavailable; consult `recording_info` to distinguish it from a measured zero.
+No-fix records remain invalid, without fabricated coordinates or precision.
+Malformed nonempty counts and missing required timing fields are still rejected.
+
 `NavSatFix.position_covariance` is ENU, in square metres: E², N², U² on the
 diagonal. Only a valid position with three finite positive standard deviations
 gets `DIAGONAL_KNOWN`; missing/invalid precision uses `UNKNOWN`, not zero error.

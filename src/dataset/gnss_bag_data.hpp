@@ -124,7 +124,13 @@ inline Data load(const std::filesystem::path& root, const std::function<void()>&
       p.session = integer(field(row, "agent_session"));
       p.sequence = integer(field(row, "sequence"));
       p.received_ms = integer(field(row, "agent_received_monotonic_ms"));
-      const auto quality = integer(field(row, "quality")), satellites = integer(field(row, "satellites_used"));
+      const auto quality = integer(field(row, "quality"));
+      // A receiver may omit this optional field, particularly without a fix.
+      // ReceiverPosition has no nullable integer: retain its zero placeholder,
+      // but preserve absence separately in recording_info. Nonempty malformed
+      // values still go through the strict integer and range checks below.
+      const auto satellites_text = field(row, "satellites_used");
+      const auto satellites = satellites_text.empty() ? uint64_t{0} : integer(satellites_text);
       const auto valid = integer(field(row, "valid"));
       if (quality > 255 || satellites > 65535 || valid > 1) throw std::runtime_error("GNSS export: position integer out of range");
       p.quality = uint8_t(quality); p.satellites = uint16_t(satellites);
@@ -210,6 +216,8 @@ inline Data load(const std::filesystem::path& root, const std::function<void()>&
 inline std::string metadata(const Row& row, uint64_t stamp) {
   QJsonObject object;
   for (const auto& [key, value] : row) object[QString::fromStdString(key)] = QString::fromStdString(value);
+  const auto satellites = row.find("satellites_used");
+  if (satellites != row.end()) object["satellites_used_valid"] = !satellites->second.empty();
   object["bag_timestamp_us"] = QString::number(qulonglong(stamp));
   object["bag_time_basis"] = "approximate_receive_time_from_synchronized_imu";
   object["measurement_timestamp_valid"] = false;

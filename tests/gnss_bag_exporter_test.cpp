@@ -23,12 +23,12 @@ void fixture(const fs::path& root) {
   write(root / "gnss_receiver.csv", position_header +
     "100000,1,10,5100,GGA,123456.00,UTC-time-of-day,1,FIX,4,22,31,118,15,0.7,,,,,0.5\n"
     "200000,1,11,5200,GGA,123456.10,UTC-time-of-day,1,FLOAT,5,18,31,118,15,0.8,,,,,0.6\n"
-    "300000,1,12,5300,GGA,123456.20,UTC-time-of-day,0,INVALID,0,0,,,,,,,,,\n"
+    "300000,1,12,5300,GGA,123456.20,UTC-time-of-day,0,INVALID,0,,,,,,,,,,\n"
     "400000,2,13,5400,GGA,123456.00,UTC-time-of-day,1,SINGLE,1,10,31,118,15,1.2,,,,,\n");
   write(root / "gnss_receiver_rtk.csv", position_header +
     "100000,1,20,5100,ADRNAV,2439:203054700,GPS-week:milliseconds,1,NARROW_INT,4,22,31,118,15,,0.02,0.01,0.03,SOL_COMPUTED,\n"
     "200000,1,21,5200,ADRNAV,2439:203054800,GPS-week:milliseconds,1,NARROW_FLOAT,5,18,31,118,15,,0,0.01,0.03,SOL_COMPUTED,\n"
-    "300000,1,22,5300,ADRNAV,2439:203054900,GPS-week:milliseconds,0,NONE,0,0,,,,,,,,INSUFFICIENT_OBS,\n");
+    "300000,1,22,5300,ADRNAV,2439:203054900,GPS-week:milliseconds,0,NONE,0,,,,,,,,,INSUFFICIENT_OBS,\n");
   write(root / "gnss_quality.csv", quality_header +
     "110000,1,30,5110,GNGST,123456.0,,,,,,1,0.02,0.01,20,0.2,0.1,0.3\n"
     "210000,1,31,5210,GNGST,123456.10,,,,,,1,0.02,0.01,20,0,0.1,0.3\n"
@@ -57,6 +57,16 @@ int main(int argc, char** argv) {
             "invalid sigma, invalid fix or cross-session GST accepted");
     require(data.positions[4].covariance_valid && !data.positions[5].covariance_valid && !data.positions[6].valid,
             "RTK native precision / invalid solutions");
+    for (size_t i : {size_t{2}, size_t{6}}) {
+      const auto& missing = data.positions[i];
+      require(missing.satellites==0 && !missing.valid && !missing.height_valid && !missing.covariance_valid &&
+              std::isnan(missing.latitude) && std::isnan(missing.longitude), "missing satellites invented a position");
+      const auto info = QJsonDocument::fromJson(QByteArray::fromStdString(gb::metadata(missing.original, missing.stamp))).object();
+      require(info["satellites_used"].toString().isEmpty() && info["satellites_used_valid"].isBool() &&
+              !info["satellites_used_valid"].toBool(), "missing satellites not preserved as unknown");
+    }
+    const auto known_info = QJsonDocument::fromJson(QByteArray::fromStdString(gb::metadata(p.original, p.stamp))).object();
+    require(known_info["satellites_used"].toString()=="22" && known_info["satellites_used_valid"].toBool(), "known satellites lost");
     for (const auto format : {ds::RosbagFormat::Ros1, ds::RosbagFormat::Ros2}) {
       auto result = ds::exportDatasetToRosbag(root, root / (format == ds::RosbagFormat::Ros1 ? "fixture.bag" : "fixture.rosbag2"), format, false);
       require(result.success, result.error);
@@ -88,6 +98,36 @@ int main(int argc, char** argv) {
     fixture(root); write(root / "imu_metadata.csv", "phase,sensor_id,timestamp_us,sample_id,timestamp_synced,sample_gap,recording_elapsed_us\nrecording,0,1780000010000000,1,1,0,10000000\n");
     failure = ds::exportDatasetToRosbag(root, root / "bad.bag", ds::RosbagFormat::Ros1, false);
     require(!failure.success && failure.error.find("anchor")!=std::string::npos, "stale anchor accepted");
+    // Empty optional satellite counts are not the same as a recorded zero.
+    // Valid positions may also omit the count; validity remains receiver-driven.
+    for (const auto& satellites : {std::string(), std::string("0"), std::string("65535")}) {
+      fixture(root);
+      write(root / "gnss_receiver.csv", position_header +
+        "100000,1,10,5100,GGA,123456.00,UTC-time-of-day,1,FIX,4," + satellites + ",31,118,15,0.7,,,,,0.5\n");
+      const auto optional = gb::load(root, []{});
+      require(optional.positions.front().valid && optional.positions.front().covariance_valid, "optional count invalidated fix");
+      require(optional.positions.front().satellites==(satellites=="65535" ? 65535 : 0), "satellite placeholder/range");
+      const auto info = QJsonDocument::fromJson(QByteArray::fromStdString(gb::metadata(optional.positions.front().original, p.stamp))).object();
+      require(info["satellites_used_valid"].toBool()==!satellites.empty() &&
+              info["satellites_used"].toString().toStdString()==satellites, "zero and missing conflated");
+    }
+    // Do not relax strict parsing for malformed, negative or overflowing values.
+    for (const auto bad : {"-1", "65536", "abc", "1.5", " 1", "1 ", "18446744073709551616"}) {
+      fixture(root);
+      write(root / "gnss_receiver.csv", position_header +
+        "100000,1,10,5100,GGA,,UTC-time-of-day,0,INVALID,0," + bad + ",,,,,,,,,\n");
+      for (const auto format : {ds::RosbagFormat::Ros1, ds::RosbagFormat::Ros2}) {
+        const auto output = root / (format==ds::RosbagFormat::Ros1 ? "bad.bag" : "bad.rosbag2");
+        const auto rejected = ds::exportDatasetToRosbag(root, output, format, false);
+        require(!rejected.success && !fs::exists(output), "malformed optional integer accepted");
+      }
+    }
+    // Required sequence/timing fields remain required even on a no-fix row.
+    fixture(root);
+    write(root / "gnss_receiver.csv", position_header +
+      "100000,1,,5100,GGA,,UTC-time-of-day,0,INVALID,0,,,,,,,,,,\n");
+    failure = ds::exportDatasetToRosbag(root, root / "bad.bag", ds::RosbagFormat::Ros1, false);
+    require(!failure.success && !fs::exists(root / "bad.bag"), "missing required sequence accepted");
     std::cout << "GNSS / RTK bag exporter tests passed\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

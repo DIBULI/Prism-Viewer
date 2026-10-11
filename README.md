@@ -1,4 +1,8 @@
-# Prism Viewer 1.2.0
+# Prism Viewer 1.2.1
+
+Version 1.2.1 is a focused patch to 1.2.0: ROS1/ROS2 Bag export now accepts
+unavailable GNSS/RTK satellite counts while preserving unknown values and
+invalid fixes. All other 1.2.0 features and the pinned SDK remain unchanged.
 
 ![Prism](branding/prism-logo.svg)
 
@@ -95,7 +99,7 @@ in the current user's local Qt settings.
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
-Viewer 1.2.0 uses the pinned Prism SDK **v1.2.0**
+Viewer 1.2.1 uses the pinned Prism SDK **v1.2.0**
 (Runtime API 18 + raw dataset extension 1), on every
 platform. It requires Agent 1.2.0, with Sensor Board 0.4.27. The build's `sdk-runtime` test checks the
 actual linked/loaded library against the headers, including GNSS, RTK and raw
@@ -224,8 +228,8 @@ additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
 ```sh
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
@@ -243,12 +247,12 @@ Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
-tar -xzf Prism-Viewer-1.2.0-linux-x64.tar.gz
-./Prism-Viewer-1.2.0-linux-x64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.2.1-linux-x64.tar.gz
+./Prism-Viewer-1.2.1-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-tar -xzf Prism-Viewer-1.2.0-linux-arm64.tar.gz
-./Prism-Viewer-1.2.0-linux-arm64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.2.1-linux-arm64.tar.gz
+./Prism-Viewer-1.2.1-linux-arm64/bin/prism-viewer
 ```
 
 The Windows x64 release supports Windows 10 version 1809 or newer and Windows
@@ -265,7 +269,8 @@ glibc and display drivers come from the host.
 ## Documentation
 
 - [Independent LiDAR hardware standby / wake](docs/lidar-power.md)
-- [Viewer 1.2.0 release notes](docs/release-notes/v1.2.0.md)
+- [Viewer 1.2.1 release notes](docs/release-notes/v1.2.1.md)
+- [Viewer 1.2.0 features](docs/release-notes/v1.2.0.md)
 
 - [Prism Viewer 1.0.1 update notes](docs/update/v1.0.1.md)
 - [Prism Viewer 1.0.1 更新说明](docs/update/v1.0.1.zh-CN.md)
