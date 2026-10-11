@@ -1,5 +1,8 @@
 # Prism Viewer 1.2.1
 
+Viewer source: [Apache-2.0](LICENSE). The bundled SDK core remains proprietary;
+see [license scope](LICENSING.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+
 Version 1.2.1 is a focused patch to 1.2.0: ROS1/ROS2 Bag export now accepts
 unavailable GNSS/RTK satellite counts while preserving unknown values and
 invalid fixes. All other 1.2.0 features and the pinned SDK remain unchanged.

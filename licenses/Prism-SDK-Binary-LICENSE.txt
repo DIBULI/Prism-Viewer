@@ -1,0 +1,53 @@
+Prism SDK Binary License
+Version 1.0
+
+Copyright 2026 DIBULI. All rights reserved.
+
+1. Scope
+
+This license applies only to DIBULI's proprietary Prism SDK core implementation
+as supplied in compiled libraries. The SDK core remains closed-source.
+Public interface headers, examples and integration files, and third-party
+components, are covered by their own licenses, not by this license.
+
+2. Permission
+
+DIBULI grants you a non-exclusive, worldwide, royalty-free license to use the
+SDK binaries to develop and run applications, for commercial or non-commercial
+purposes, and to link them statically or dynamically with your applications.
+
+You may distribute unmodified SDK binaries as part of, or bundled with, your
+applications. This includes distributing SDK code linked from an unmodified
+static library into an application executable. Normal linking and relocation
+do not constitute modification of the SDK for this purpose.
+
+You must retain this license, DIBULI's copyright notices, and all applicable
+third-party license texts and notices with such distributions. Recipients
+receive the same permissions directly from DIBULI under these terms.
+This permission does not require disclosure of your application's source code.
+
+3. Reserved rights
+
+No SDK implementation source code is provided or licensed by this license.
+It does not grant a right to relicense the SDK core as open-source software,
+remove its copyright notices, or modify the proprietary SDK implementation.
+No trademark or endorsement rights are granted. All rights not expressly
+granted are reserved, subject to applicable law and Section 4 below.
+
+4. Third-party rights
+
+Third-party components retain their own licenses. Nothing in this license
+limits rights granted by those licenses or rights that cannot be restricted
+under applicable law. In particular, applicable LGPL rights to replace or
+relink a library, and to reverse engineer for debugging such modifications,
+are not restricted by this license. Follow the license texts and notices
+shipped with the relevant SDK runtime.
+
+5. Disclaimer
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SDK IS PROVIDED "AS IS",
+WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL DIBULI BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SDK OR ITS USE OR DISTRIBUTION.
