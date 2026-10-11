@@ -24,6 +24,7 @@
 #include "ui/device_info_panel.hpp"
 #include "ui/time_source_text.hpp"
 #include "ui/image_view_label.hpp"
+#include "ui/imu_trace_view.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
 #include "ui/lidar_power_panel.hpp"
 #include "ui/main_window.hpp"
@@ -45,11 +46,6 @@
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 #include <QtCore/QTimer>
-#include <QtCharts/QChart>
-#include <QtCharts/QChartView>
-#include <QtCharts/QLegendMarker>
-#include <QtCharts/QLineSeries>
-#include <QtCharts/QValueAxis>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtGui/QAction>
 #else
@@ -98,10 +94,6 @@
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-QT_CHARTS_USE_NAMESPACE
-#endif
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -138,7 +130,7 @@ constexpr auto kCameraControlCommandFreshnessLimit =
 // Keep transport processing at the native IMU rate. The table receives the
 // latest value at 50 Hz, while the chart keeps a separate bounded 100 Hz
 // sample stream and repaints at about 30 fps. This preserves short motion
-// details without making QtCharts redraw at the 500/1000 Hz sensor rate.
+// details without repainting the traces at the 500/1000 Hz sensor rate.
 constexpr auto kImuUiPeriod = std::chrono::milliseconds(20);
 constexpr auto kImuUiFlushPeriod = std::chrono::milliseconds(20);
 constexpr auto kImuPlotSamplePeriod = std::chrono::milliseconds(10);
@@ -1857,56 +1849,6 @@ class DatasetRecorder {
   std::string write_error_;
 };
 
-class InteractiveImuChartView final : public QChartView {
- public:
-  InteractiveImuChartView(QChart* chart, QWidget* parent)
-      : QChartView(chart, parent) {}
-
-  std::function<void()> on_zoom_changed;
-  std::function<void()> on_zoom_reset;
-
- protected:
-  void mousePressEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton) {
-      zoom_start_position_ = event->pos();
-    }
-    QChartView::mousePressEvent(event);
-  }
-
-  void wheelEvent(QWheelEvent* event) override {
-    if (event->angleDelta().y() == 0) {
-      QChartView::wheelEvent(event);
-      return;
-    }
-    chart()->zoom(event->angleDelta().y() > 0 ? 1.2 : 1.0 / 1.2);
-    if (on_zoom_changed) on_zoom_changed();
-    event->accept();
-  }
-
-  void mouseReleaseEvent(QMouseEvent* event) override {
-    const bool zoom_interaction =
-        event->button() == Qt::RightButton ||
-        (event->button() == Qt::LeftButton &&
-         (event->pos() - zoom_start_position_).manhattanLength() >=
-             QApplication::startDragDistance());
-    QChartView::mouseReleaseEvent(event);
-    if (zoom_interaction && on_zoom_changed) on_zoom_changed();
-  }
-
-  void mouseDoubleClickEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton) {
-      chart()->zoomReset();
-      if (on_zoom_reset) on_zoom_reset();
-      event->accept();
-      return;
-    }
-    QChartView::mouseDoubleClickEvent(event);
-  }
-
- private:
-  QPoint zoom_start_position_;
-};
-
 class ImuPlotWidget : public QWidget {
  public:
   explicit ImuPlotWidget(QWidget* parent = nullptr,
@@ -2053,12 +1995,7 @@ class ImuPlotWidget : public QWidget {
     QWidget* container = nullptr;
     QLabel* title_label = nullptr;
     QLabel* legend_label = nullptr;
-    QChartView* view = nullptr;
-    QChart* chart = nullptr;
-    QValueAxis* x_axis = nullptr;
-    QValueAxis* y_axis = nullptr;
-    std::array<QLineSeries*, 3> series{};
-    QLineSeries* zero_line = nullptr;
+    prism_viewer::ui::ImuTraceView* view = nullptr;
     double initial_scale = 1.0;
     double minimum_span = 0.01;
     bool manual_view = false;
@@ -2096,61 +2033,14 @@ class ImuPlotWidget : public QWidget {
     header_layout->addWidget(panel->legend_label);
     panel_layout->addWidget(header);
 
-    panel->chart = new QChart();
     panel->initial_scale = initial_scale;
-    panel->chart->setAnimationOptions(QChart::NoAnimation);
-    panel->chart->setDropShadowEnabled(false);
-    panel->chart->setBackgroundRoundness(6.0);
-    panel->chart->setMargins(QMargins(4, 2, 4, 2));
-
-    panel->x_axis = new QValueAxis(panel->chart);
-    panel->x_axis->setRange(-kVisibleWindowSeconds, 0.0);
-    panel->x_axis->setTickCount(6);
-    panel->x_axis->setLabelFormat("%.1f s");
-    panel->x_axis->setTitleText(uiText("Time to now", "距当前时间"));
-    panel->x_axis->setGridLineColor(QColor(QStringLiteral("#e8edf4")));
-    panel->y_axis = new QValueAxis(panel->chart);
-    panel->y_axis->setRange(-initial_scale, initial_scale);
-    panel->y_axis->setTickCount(5);
-    panel->y_axis->setLabelFormat("%.2f");
-    panel->y_axis->setTitleText(y_title);
-    panel->y_axis->setGridLineColor(QColor(QStringLiteral("#e8edf4")));
-    panel->chart->addAxis(panel->x_axis, Qt::AlignBottom);
-    panel->chart->addAxis(panel->y_axis, Qt::AlignLeft);
-
-    const std::array<QColor, 3> colors = {
-        QColor(QStringLiteral("#d92d20")), QColor(QStringLiteral("#12b76a")),
-        QColor(QStringLiteral("#1570ef"))};
-    const std::array<QString, 3> names = {
-        QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")};
-    for (size_t axis = 0; axis < panel->series.size(); ++axis) {
-      panel->series[axis] = new QLineSeries(panel->chart);
-      panel->series[axis]->setName(names[axis]);
-      QPen pen(colors[axis], 1.5);
-      pen.setCosmetic(true);
-      panel->series[axis]->setPen(pen);
-      panel->chart->addSeries(panel->series[axis]);
-      panel->series[axis]->attachAxis(panel->x_axis);
-      panel->series[axis]->attachAxis(panel->y_axis);
-    }
-
-    panel->zero_line = new QLineSeries(panel->chart);
-    QPen zero_pen(QColor(QStringLiteral("#667085")), 1.0, Qt::DashLine);
-    zero_pen.setCosmetic(true);
-    panel->zero_line->setPen(zero_pen);
-    panel->zero_line->setName(uiText("Zero", "零线"));
-    panel->zero_line->append(-kVisibleWindowSeconds, 0.0);
-    panel->zero_line->append(0.0, 0.0);
-    panel->chart->addSeries(panel->zero_line);
-    panel->zero_line->attachAxis(panel->x_axis);
-    panel->zero_line->attachAxis(panel->y_axis);
-    panel->chart->legend()->markers(panel->zero_line).front()->setVisible(false);
-    panel->chart->legend()->setVisible(false);
-
     auto* interactive_view =
-        new InteractiveImuChartView(panel->chart, panel->container);
+        new prism_viewer::ui::ImuTraceView(panel->container);
     panel->view = interactive_view;
-    interactive_view->setRubberBand(QChartView::RectangleRubberBand);
+    panel->view->setXRange(-kVisibleWindowSeconds, 0.0);
+    panel->view->setYRange(-initial_scale, initial_scale);
+    panel->view->setXTitle(uiText("Time to now", "距当前时间"));
+    panel->view->setYTitle(y_title);
     interactive_view->setToolTip(uiText(
         "Drag a rectangle or use the mouse wheel to zoom; double-click to "
         "reset.",
@@ -2162,18 +2052,15 @@ class ImuPlotWidget : public QWidget {
       resetPanelView(panel, panel == &accel_panel_);
       dirty_ = true;
     };
-    // Dynamic QtCharts antialiasing is expensive and provides little benefit
-    // for one-pixel live traces. Static labels and axes remain unchanged.
-    panel->view->setRenderHint(QPainter::Antialiasing, false);
     panel->view->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     panel->view->setMinimumSize(0, 196);
     panel_layout->addWidget(panel->view, 1);
   }
 
   void resetPanelView(ChartPanel* panel, bool acceleration) {
-    panel->chart->zoomReset();
+    panel->view->resetZoom();
     panel->manual_view = false;
-    panel->x_axis->setRange(-kVisibleWindowSeconds, 0.0);
+    panel->view->setXRange(-kVisibleWindowSeconds, 0.0);
     refreshPanel(panel, acceleration);
   }
 
@@ -2182,7 +2069,7 @@ class ImuPlotWidget : public QWidget {
     accel_panel_.title_label->setText(
         uiText("Acceleration XYZ (%1)", "加速度 XYZ (%1)")
             .arg(acceleration_unit));
-    accel_panel_.y_axis->setTitleText(
+    accel_panel_.view->setYTitle(
         uiText("Acceleration (%1)", "加速度 (%1)")
             .arg(acceleration_unit));
     accel_panel_.initial_scale = std::abs(convertAcceleration(
@@ -2191,13 +2078,13 @@ class ImuPlotWidget : public QWidget {
         2.0, AccelerationUnit::MilliGravity, acceleration_unit_));
     switch (acceleration_unit_) {
       case AccelerationUnit::MilliGravity:
-        accel_panel_.y_axis->setLabelFormat("%.1f");
+        accel_panel_.view->setYDecimals(1);
         break;
       case AccelerationUnit::Gravity:
-        accel_panel_.y_axis->setLabelFormat("%.4f");
+        accel_panel_.view->setYDecimals(4);
         break;
       case AccelerationUnit::MetresPerSecondSquared:
-        accel_panel_.y_axis->setLabelFormat("%.3f");
+        accel_panel_.view->setYDecimals(3);
         break;
     }
 
@@ -2206,7 +2093,7 @@ class ImuPlotWidget : public QWidget {
     gyro_panel_.title_label->setText(
         uiText("Gyroscope XYZ (%1)", "角速度 XYZ (%1)")
             .arg(angular_velocity_unit));
-    gyro_panel_.y_axis->setTitleText(
+    gyro_panel_.view->setYTitle(
         uiText("Angular rate (%1)", "角速度 (%1)")
             .arg(angular_velocity_unit));
     gyro_panel_.initial_scale = std::abs(convertAngularVelocity(
@@ -2217,12 +2104,12 @@ class ImuPlotWidget : public QWidget {
         angular_velocity_unit_));
     if (angular_velocity_unit_ ==
         AngularVelocityUnit::MilliDegreesPerSecond) {
-      gyro_panel_.y_axis->setLabelFormat("%.0f");
+      gyro_panel_.view->setYDecimals(0);
     } else if (angular_velocity_unit_ ==
                AngularVelocityUnit::RadiansPerSecond) {
-      gyro_panel_.y_axis->setLabelFormat("%.5f");
+      gyro_panel_.view->setYDecimals(5);
     } else {
-      gyro_panel_.y_axis->setLabelFormat("%.3f");
+      gyro_panel_.view->setYDecimals(3);
     }
   }
 
@@ -2239,7 +2126,7 @@ class ImuPlotWidget : public QWidget {
     bool have_visible_value = false;
     double visible_min = 0.0;
     double visible_max = 0.0;
-    for (size_t axis = 0; axis < panel->series.size(); ++axis) {
+    for (size_t axis = 0; axis < 3u; ++axis) {
       QList<QPointF> points;
       points.reserve(static_cast<qsizetype>(std::min(
           visible_count, kMaximumRenderedPointsPerSeries)));
@@ -2276,7 +2163,7 @@ class ImuPlotWidget : public QWidget {
         }
       } else {
         // Keep a min/max envelope per time bucket. This covers the full
-        // 10-second window without sending every ~800 Hz sample to QtCharts,
+        // 10-second window without sending every ~800 Hz sample to the painter,
         // while retaining short spikes that a simple stride could miss.
         const size_t bucket_count =
             std::max<size_t>(1u,
@@ -2315,23 +2202,23 @@ class ImuPlotWidget : public QWidget {
           }
         }
       }
-      panel->series[axis]->replace(points);
+      panel->view->setSeries(axis, points);
     }
     if (panel->manual_view) return;
     if (!have_visible_value) {
-      panel->y_axis->setRange(-panel->initial_scale, panel->initial_scale);
+      panel->view->setYRange(-panel->initial_scale, panel->initial_scale);
       return;
     }
 
     // Use the extrema of exactly the samples currently visible on the chart.
-    // Only widen a constant-value range enough for QValueAxis to remain valid.
+    // Only widen a constant-value range enough to keep the axis range valid.
     const double minimum_span = panel->minimum_span;
     if (visible_max - visible_min < minimum_span) {
       const double center = (visible_min + visible_max) * 0.5;
       visible_min = center - minimum_span * 0.5;
       visible_max = center + minimum_span * 0.5;
     }
-    panel->y_axis->setRange(visible_min, visible_max);
+    panel->view->setYRange(visible_min, visible_max);
   }
 
   void refreshCharts() {
@@ -4007,15 +3894,11 @@ class MainWindow : public QMainWindow {
       dataset_imu_plot_->appendSample(sample, recorded_time);
     }
     dataset_imu_plot_->setSensor(0);
-    auto* acceleration_plot = dataset_imu_plot_->findChild<QChartView*>(
-        QStringLiteral("datasetImuAccelerationPlot"));
-    QLineSeries* trace = nullptr;
-    if (acceleration_plot != nullptr) {
-      const auto chart_series = acceleration_plot->chart()->series();
-      if (!chart_series.isEmpty()) {
-        trace = qobject_cast<QLineSeries*>(chart_series.front());
-      }
-    }
+    auto* acceleration_plot =
+        dataset_imu_plot_->findChild<prism_viewer::ui::ImuTraceView*>(
+            QStringLiteral("datasetImuAccelerationPlot"));
+    const QList<QPointF>* trace = acceleration_plot
+        ? &acceleration_plot->series(0) : nullptr;
     const bool retention_ok =
         dataset_imu_plot_->sampleCount(0) == kSampleCount &&
         dataset_imu_plot_->sampleSpanSeconds(0) >= 9.999;
@@ -4023,20 +3906,49 @@ class MainWindow : public QMainWindow {
         trace != nullptr && trace->count() > 0 && trace->count() <= 2400 &&
         trace->at(0).x() <= -9.99 &&
         trace->at(trace->count() - 1).x() >= -0.01;
+    // Exercise the actual live/replay owner, not just the painter: unit changes
+    // must recalculate the samples/range and leave manual zoom mode.
+    auto* gyro_plot =
+        dataset_imu_plot_->findChild<prism_viewer::ui::ImuTraceView*>(
+            QStringLiteral("datasetImuGyroscopePlot"));
+    bool units_ok = acceleration_plot && gyro_plot && rendering_ok;
+    if (units_ok) {
+      dataset_imu_plot_->setUnits(AccelerationUnit::MilliGravity,
+                                 AngularVelocityUnit::MilliDegreesPerSecond);
+      units_ok = std::abs(acceleration_plot->series(2).front().y() - 1000.0) < 1e-6 &&
+                 std::abs(acceleration_plot->yRange().maximum - 8000.0) < 1e-6 &&
+                 std::abs(gyro_plot->yRange().maximum - 8000.0) < 1e-6;
+      const QPointF center = acceleration_plot->rect().center();
+      QWheelEvent zoom_event(center, acceleration_plot->mapToGlobal(center.toPoint()),
+                             QPoint(), QPoint(0, 120), Qt::NoButton,
+                             Qt::NoModifier, Qt::NoScrollPhase, false);
+      QApplication::sendEvent(acceleration_plot, &zoom_event);
+      dataset_imu_plot_->setUnits(AccelerationUnit::MetresPerSecondSquared,
+                                 AngularVelocityUnit::RadiansPerSecond);
+      units_ok = units_ok &&
+          std::abs(acceleration_plot->series(2).front().y() - 9.80665) < 1e-6 &&
+          std::abs(acceleration_plot->xRange().span() - 10.0) < 1e-6 &&
+          std::abs(gyro_plot->yRange().maximum - 8.0 *
+              prism_viewer::imu_units::kRadiansPerDegree) < 1e-6;
+      dataset_imu_plot_->setUnits(
+          prism_viewer::imu_units::kDefaultAccelerationUnit,
+          prism_viewer::imu_units::kDefaultAngularVelocityUnit);
+    }
     if (report != nullptr) {
       *report = QStringLiteral("retention=%1 rendering=%2 samples=%3 "
-                              "span=%4 rendered=%5")
+                              "span=%4 rendered=%5 units=%6")
                     .arg(retention_ok ? QStringLiteral("PASS")
                                       : QStringLiteral("FAIL"))
                     .arg(rendering_ok ? QStringLiteral("PASS")
                                       : QStringLiteral("FAIL"))
                     .arg(dataset_imu_plot_->sampleCount(0))
                     .arg(dataset_imu_plot_->sampleSpanSeconds(0), 0, 'f', 3)
-                    .arg(trace == nullptr ? 0 : trace->count());
+                    .arg(trace == nullptr ? 0 : trace->count())
+                    .arg(units_ok ? QStringLiteral("PASS") : QStringLiteral("FAIL"));
     }
     dataset_imu_plot_->setActive(false);
     dataset_imu_plot_->clear();
-    return retention_ok && rendering_ok;
+    return retention_ok && rendering_ok && units_ok;
   }
 
   bool runCameraTransferSelfTest(const QString& screenshot) {
@@ -10199,9 +10111,9 @@ int runViewerApplication(int argc, char** argv) {
     auto* imu_splitter =
         window.findChild<QSplitter*>(QStringLiteral("imuPlotSplitter"));
     auto* imu_acceleration_plot =
-        window.findChild<QChartView*>(QStringLiteral("imuAccelerationPlot"));
+        window.findChild<prism_viewer::ui::ImuTraceView*>(QStringLiteral("imuAccelerationPlot"));
     auto* imu_gyroscope_plot =
-        window.findChild<QChartView*>(QStringLiteral("imuGyroscopePlot"));
+        window.findChild<prism_viewer::ui::ImuTraceView*>(QStringLiteral("imuGyroscopePlot"));
     auto* imu_acceleration_title =
         window.findChild<QLabel*>(QStringLiteral("imuAccelerationTitle"));
     auto* imu_acceleration_legend =
@@ -10260,13 +10172,7 @@ int runViewerApplication(int argc, char** argv) {
         imu_acceleration_title != nullptr &&
         imu_acceleration_legend != nullptr &&
         imu_gyroscope_title != nullptr &&
-        imu_gyroscope_legend != nullptr &&
-        imu_acceleration_plot->rubberBand() ==
-            QChartView::RectangleRubberBand &&
-        imu_gyroscope_plot->rubberBand() ==
-            QChartView::RectangleRubberBand &&
-        !imu_acceleration_plot->chart()->legend()->isVisible() &&
-        !imu_gyroscope_plot->chart()->legend()->isVisible();
+        imu_gyroscope_legend != nullptr;
     bool imu_zoom_ok = false;
     if (imu_layout_ok) {
       imu_page->setEnabled(true);
@@ -10284,13 +10190,8 @@ int runViewerApplication(int argc, char** argv) {
                       std::abs(imu_sizes[0] - imu_sizes[1]) <= 24 &&
                       acceleration_header_inline &&
                       gyroscope_header_inline;
-      const auto horizontal_axes =
-          imu_acceleration_plot->chart()->axes(Qt::Horizontal);
-      auto* x_axis = horizontal_axes.isEmpty()
-          ? nullptr
-          : qobject_cast<QValueAxis*>(horizontal_axes.front());
-      if (x_axis != nullptr) {
-        const double initial_span = x_axis->max() - x_axis->min();
+      {
+        const double initial_span = imu_acceleration_plot->xRange().span();
         const QPointF local_position(
             imu_acceleration_plot->width() * 0.5,
             imu_acceleration_plot->height() * 0.5);
@@ -10299,15 +10200,15 @@ int runViewerApplication(int argc, char** argv) {
         QWheelEvent zoom_event(
             local_position, global_position, QPoint(), QPoint(0, 120),
             Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
-        QApplication::sendEvent(imu_acceleration_plot->viewport(),
+        QApplication::sendEvent(imu_acceleration_plot,
                                 &zoom_event);
-        const double zoomed_span = x_axis->max() - x_axis->min();
+        const double zoomed_span = imu_acceleration_plot->xRange().span();
         QMouseEvent reset_event(
             QEvent::MouseButtonDblClick, local_position, global_position,
             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-        QApplication::sendEvent(imu_acceleration_plot->viewport(),
+        QApplication::sendEvent(imu_acceleration_plot,
                                 &reset_event);
-        const double reset_span = x_axis->max() - x_axis->min();
+        const double reset_span = imu_acceleration_plot->xRange().span();
         imu_zoom_ok = zoomed_span < initial_span &&
                       std::abs(reset_span - initial_span) < 0.001;
         imu_layout_ok = imu_layout_ok && imu_zoom_ok;

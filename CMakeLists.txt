@@ -146,11 +146,11 @@ if(PRISM_USB_SDK_OPENSSL_LICENSE
     "Bundled OpenSSL license is missing: ${PRISM_USB_SDK_OPENSSL_LICENSE}")
 endif()
 
-find_package(Qt6 QUIET COMPONENTS Widgets Charts Sql Network)
+find_package(Qt6 QUIET COMPONENTS Widgets Sql Network)
 if(Qt6_FOUND)
   set(QT_PACKAGE Qt6)
 else()
-  find_package(Qt5 REQUIRED COMPONENTS Widgets Charts Sql Network)
+  find_package(Qt5 REQUIRED COMPONENTS Widgets Sql Network)
   set(QT_PACKAGE Qt5)
 endif()
 find_package(Threads REQUIRED)
@@ -181,6 +181,15 @@ add_library(prism-viewer-imu-units STATIC
 )
 target_include_directories(prism-viewer-imu-units PUBLIC src)
 target_compile_features(prism-viewer-imu-units PUBLIC cxx_std_17)
+
+add_library(prism-viewer-imu-traces STATIC
+  src/ui/imu_trace_view.cpp
+  src/ui/imu_trace_view.hpp
+)
+set_target_properties(prism-viewer-imu-traces PROPERTIES AUTOMOC ON)
+target_include_directories(prism-viewer-imu-traces PUBLIC src)
+target_compile_features(prism-viewer-imu-traces PUBLIC cxx_std_17)
+target_link_libraries(prism-viewer-imu-traces PUBLIC ${QT_PACKAGE}::Widgets)
 
 add_executable(prism-viewer
   resources/prism.qrc
@@ -232,10 +241,10 @@ target_include_directories(prism-viewer PRIVATE src)
 target_link_libraries(prism-viewer PRIVATE
   prism-viewer-app-theme
   prism-viewer-imu-units
+  prism-viewer-imu-traces
   prism-viewer-sdk
   Threads::Threads
   ${QT_PACKAGE}::Widgets
-  ${QT_PACKAGE}::Charts
   ${QT_PACKAGE}::Sql
   ${QT_PACKAGE}::Network
 )
@@ -373,6 +382,11 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(imu-trace-view-test tests/imu_trace_view_test.cpp)
+  target_link_libraries(imu-trace-view-test PRIVATE prism-viewer-imu-traces)
+  add_test(NAME imu-trace-view COMMAND imu-trace-view-test)
+  set_tests_properties(imu-trace-view PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   add_test(NAME viewer-version COMMAND prism-viewer --version)
   set_tests_properties(viewer-version PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

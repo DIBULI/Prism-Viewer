@@ -156,10 +156,12 @@ scheduling uses approximate receive time, not a verified measurement timestamp.
 
 ## Build
 
-Install Qt Widgets, Qt Charts, Qt Network, and Qt SQL/SQLite. On Ubuntu/Debian:
+Install Qt Widgets, Qt Network, and Qt SQL/SQLite. IMU curves use the
+Viewer's QWidget/QPainter implementation; no additional charting module is required.
+On Ubuntu/Debian:
 
 ```sh
-sudo apt install build-essential cmake qtbase5-dev libqt5charts5-dev \
+sudo apt install build-essential cmake qtbase5-dev \
   libqt5sql5-sqlite pkg-config libusb-1.0-0-dev libssl-dev
 ./scripts/build_linux.sh
 ./build-linux/prism-viewer
@@ -196,7 +198,7 @@ scripts\build_viewer_msvc.bat C:\Qt\6.11.1\msvc2022_64
 On an Apple Silicon Mac, install Qt and run the native build script:
 
 ```sh
-brew install cmake qtbase qtcharts qtdeclarative qtsvg
+brew install cmake qtbase qtsvg
 ./scripts/build_macos.sh
 open build-macos/stage/Prism-Viewer.app
 ```

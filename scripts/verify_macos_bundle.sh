@@ -8,6 +8,10 @@ if [[ -z "${app_bundle}" || ! -d "${app_bundle}" ]]; then
 fi
 
 frameworks="${app_bundle}/Contents/Frameworks"
+if [[ -n "$(find "${app_bundle}" -iname '*Qt*Charts*' -print -quit)" ]]; then
+  echo "Unexpected charting runtime in widget-only Viewer bundle" >&2
+  exit 1
+fi
 viewer="${app_bundle}/Contents/MacOS/Prism-Viewer"
 license="${app_bundle}/Contents/Resources/licenses/libusb-COPYING.txt"
 for required in \

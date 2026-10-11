@@ -66,7 +66,7 @@ jobs:
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0
           $qtRoot = Join-Path $env:RUNNER_TEMP "Qt"
           aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 `
-            -O $qtRoot -m qtcharts
+            -O $qtRoot
           $qtPrefix = Join-Path $qtRoot "6.8.3\msvc2022_64"
           "QT_PREFIX=$qtPrefix" | Out-File -FilePath $env:GITHUB_ENV `
             -Encoding utf8 -Append
@@ -157,13 +157,16 @@ jobs:
           New-Item -ItemType Directory -Path $package | Out-Null
           Copy-Item (Join-Path $stage "bin\*") $package -Recurse
 
+          if (Get-ChildItem $package -Recurse -Filter '*Qt*Charts*') {
+            throw "Unexpected charting runtime in widget-only Viewer package"
+          }
+
           $required = @(
             "prism-viewer.exe",
             "prism_usb_sdk.dll",
             "Qt6Core.dll",
             "Qt6Gui.dll",
             "Qt6Widgets.dll",
-            "Qt6Charts.dll",
             "Qt6Sql.dll",
             "platforms\qwindows.dll",
             "imageformats\qjpeg.dll",
@@ -249,7 +252,6 @@ jobs:
             file \
             git \
             libgl1-mesa-dev \
-            libqt5charts5-dev \
             libqt5sql5-sqlite \
             libssl-dev \
             libusb-1.0-0-dev \
@@ -437,13 +439,16 @@ jobs:
             fi
           done < <(find "$package" -type f -print0)
 
+          if [ -n "$(find "$package" -iname '*Qt*Charts*' -print -quit)" ]; then
+            echo "Unexpected charting runtime in widget-only Viewer package" >&2
+            exit 1
+          fi
           required_patterns=(
             "bin/prism-viewer"
             "bin/qt.conf"
             "lib/libQt${QT_MAJOR}Core.so.${QT_MAJOR}"
             "lib/libQt${QT_MAJOR}Gui.so.${QT_MAJOR}"
             "lib/libQt${QT_MAJOR}Widgets.so.${QT_MAJOR}"
-            "lib/libQt${QT_MAJOR}Charts.so.${QT_MAJOR}"
             "lib/libQt${QT_MAJOR}Sql.so.${QT_MAJOR}"
             "lib/libusb-1.0.so.0"
             "*/platforms/libqxcb.so"
@@ -663,7 +668,7 @@ jobs:
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0
           qt_root="$RUNNER_TEMP/Qt"
           aqt install-qt mac desktop 6.8.3 clang_64 \
-            -O "$qt_root" -m qtcharts
+            -O "$qt_root"
           qt_prefix="$qt_root/6.8.3/macos"
           qt_core="$qt_prefix/lib/QtCore.framework/Versions/A/QtCore"
           for qt_binary in "$qt_core" "$qt_prefix/bin/macdeployqt"; do

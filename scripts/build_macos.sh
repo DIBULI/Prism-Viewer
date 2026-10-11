@@ -56,7 +56,7 @@ if [[ -z "${qt_prefix}" ]]; then
     done
   fi
   if [[ -z "${qtpaths_bin}" ]]; then
-    echo "Qt was not found. Install it with: brew install qtbase qtcharts qtdeclarative qtsvg" >&2
+    echo "Qt was not found. Install it with: brew install qtbase qtsvg" >&2
     exit 1
   fi
   qt_prefix="$("${qtpaths_bin}" --query QT_INSTALL_PREFIX)"
