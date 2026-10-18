@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 1.2.1 LANGUAGES CXX)
+project(prism_viewer VERSION 1.2.2 LANGUAGES CXX)
 
 # Viewer and its pinned binary SDK are versioned independently.
 set(PRISM_USB_SDK_VERSION "1.2.1")
@@ -96,10 +96,8 @@ else()
         "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/libprism_usb_sdk.a")
   else()
     set(PRISM_LINUX_SDK_IS_STATIC FALSE)
-    if(PRISM_LINUX_RUNTIME_ARCH STREQUAL "linux-x64")
-      set(PRISM_USB_SDK_OPENSSL_LICENSE
-          "${PRISM_USB_SDK_ROOT}/runtime/linux-x64/openssl-LICENSE.txt")
-    endif()
+    set(PRISM_USB_SDK_OPENSSL_LICENSE
+        "${PRISM_USB_SDK_ROOT}/runtime/${PRISM_LINUX_RUNTIME_ARCH}/openssl-LICENSE.txt")
     if(PRISM_LINUX_SHARED_SDK_RUNTIME)
       get_filename_component(PRISM_USB_SDK_RUNTIME
         "${PRISM_LINUX_SHARED_SDK_RUNTIME}" ABSOLUTE)
@@ -376,7 +374,7 @@ if(BUILD_TESTING)
   add_test(NAME viewer-version COMMAND prism-viewer --version)
   set_tests_properties(viewer-version PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    PASS_REGULAR_EXPRESSION "Prism Viewer 1.2.1.*Prism SDK 1.2.1")
+    PASS_REGULAR_EXPRESSION "Prism Viewer 1.2.2.*Prism SDK 1.2.1")
   add_executable(gnss-visualization-test src/ui/gnss_visualization.cpp src/common/ui_text.cpp tests/gnss_visualization_test.cpp)
   target_compile_features(gnss-visualization-test PRIVATE cxx_std_17)
   target_include_directories(gnss-visualization-test PRIVATE src)

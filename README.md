@@ -1,8 +1,11 @@
-# Prism Viewer 1.2.1 — PPS5 maintenance
+# Prism Viewer 1.2.2 — PPS5 maintenance
 
-This maintenance branch packages Linux x64 USB only and pins SDK 1.2.1.
-See `MAINTENANCE-RELEASE.txt`; upstream platform descriptions below do not
-mean new ARM64/macOS/Windows binaries are included.
+Supports minimum 5 ms PPS with matching SDK 1.2.1.
+Packages are built separately for Windows x64, macOS Apple Silicon arm64,
+and Linux x64/arm64. macOS requires version 13 or newer; the app is ad-hoc
+signed, not Apple-notarized. Linux requires GLIBC 2.31 or newer.
+Build, unit-test and package smoke checks do not replace hardware testing
+on each host platform.
 
 ![Prism](branding/prism-logo.svg)
 
