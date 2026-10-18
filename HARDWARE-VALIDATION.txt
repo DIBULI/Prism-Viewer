@@ -1,0 +1,16 @@
+41M3 hardware validation, Agent 1.2.1 / Sensor Board 0.4.28
+
+USB: ten independent 30-second rounds, four cameras at 1280x1024 / 30 FPS.
+Each camera: 8947 JPEG images; 35788 images fully decoded; zero observed frame-ID gaps.
+Ten STOP acknowledgements independently checked; idle low-power state restored.
+Web: three four-camera preview START/STOP rounds, all camera frame IDs advanced.
+Recording: 360 frames/camera at 30 FPS plus 9651 IMU samples; 231861447 bytes
+downloaded through authenticated Web. Full dataset integrity/timestamp checks passed.
+Recorded frame gaps, partial camera frames, raw drops, IMU gaps: zero observed.
+All original 630 recording files (93933583449 bytes) retained: paths, size and
+mtime_ns checked. No new full-content hash of pre-existing recordings was computed.
+Network/auth/device configuration retained. Final acquisition stopped.
+Physical 5ms PPS was not tested, as requested. Boundary simulation was tested.
+The device wall clock is unsynchronized; recording uses sensor-relative timestamps,
+and utc_guaranteed=false. No clock, RTK mode, or other device was changed.
+These are finite tests, not an unlimited-duration or all-product guarantee.

@@ -1,0 +1,11 @@
+Prism PPS5 legacy maintenance release 1.2.1
+
+Baseline: afafd640fa1bf4d7b8059360e8444d57077c8675. Separate maintenance branch, not the 1.3 universal line.
+Agent/SDK/Viewer/ROS 1.2.1; Sensor Board 0.4.28; 41M3 only.
+Sensor changes: minimum external PPS high time 5000 us; firmware version.
+No on-device PPS measurement was requested/performed.
+Host packages: Linux x64 USB only. ROS2 Jazzy built; ROS1 Noetic not rebuilt.
+Web is rebuilt from Agent v1.2.0 sources with matching RK-local SDK 1.2.1.
+The universal 1.3 Web/network transport is not part of this maintenance release.
+Existing tags and main branches remain untouched. New tag: v1.2.1-pps5ms.
+Physical hardware results are included in the release validation archive.

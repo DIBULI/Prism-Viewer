@@ -1,4 +1,8 @@
-# Prism Viewer 1.2.0
+# Prism Viewer 1.2.1 — PPS5 maintenance
+
+This maintenance branch packages Linux x64 USB only and pins SDK 1.2.1.
+See `MAINTENANCE-RELEASE.txt`; upstream platform descriptions below do not
+mean new ARM64/macOS/Windows binaries are included.
 
 ![Prism](branding/prism-logo.svg)
 
