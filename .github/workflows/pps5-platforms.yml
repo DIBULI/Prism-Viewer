@@ -11,6 +11,10 @@ jobs:
   windows:
     runs-on: windows-2022
     timeout-minutes: 40
+    # Use the native Windows font/style metrics, matching the shipped GUI.
+    # Qt's offscreen backend has different default metrics on Windows.
+    env:
+      QT_QPA_PLATFORM: windows
     steps:
       - uses: actions/checkout@v4
         with:
