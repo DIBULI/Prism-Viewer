@@ -205,10 +205,11 @@ scheduling uses approximate receive time, not a verified measurement timestamp.
 
 ## Build
 
-Install Qt Widgets, Qt Charts, Qt Network, and Qt SQL/SQLite. On Ubuntu/Debian:
+Install Qt Widgets, Qt Network, Qt SQL/SQLite and Zstandard. Qt Charts is not
+required. On Ubuntu/Debian:
 
 ```sh
-sudo apt install build-essential cmake qtbase5-dev libqt5charts5-dev \
+sudo apt install build-essential cmake qtbase5-dev libzstd-dev \
   libqt5sql5-sqlite pkg-config libusb-1.0-0-dev libssl-dev
 ./scripts/build_linux.sh
 ./build-linux/prism-viewer
@@ -239,19 +240,21 @@ For an Ubuntu 22.04 container:
 On Windows, pass only the Qt prefix:
 
 ```bat
-scripts\build_viewer_msvc.bat C:\Qt\6.11.1\msvc2022_64
+scripts\build_viewer_msvc.bat C:\Qt\6.8.3\msvc2022_64
 ```
 
 On an Apple Silicon Mac, install Qt and run the native build script:
 
 ```sh
-brew install cmake qtbase qtcharts qtdeclarative qtsvg
+brew install cmake qtbase qtsvg
 ./scripts/build_macos.sh
 open build-macos/stage/Prism-Viewer.app
 ```
 
 Set `QT_ROOT` before invoking the script when Qt is installed under a custom
-prefix. The script builds and tests arm64, installs the Viewer as a macOS app,
+prefix. Windows/macOS scripts download and build the hash-pinned Zstandard
+source; no separate Zstandard installation is required. The macOS script
+builds and tests arm64, installs the Viewer as a macOS app,
 runs `macdeployqt`, and applies an ad-hoc local signature. The native Viewer
 and SDK runtime use a macOS 13.0 deployment target. Distribution builds are not
 notarized, so a downloaded archive may require **Open** from Finder's context

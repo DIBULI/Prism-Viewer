@@ -80,6 +80,7 @@ cmake_args=(
   -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
   -DCMAKE_PREFIX_PATH="${qt_prefix}"
   -DBUILD_TESTING=ON
+  -DPRISM_BUILD_BUNDLED_ZSTD=ON
 )
 
 # CMake caches the absolute source directory. Reuse this one build directory

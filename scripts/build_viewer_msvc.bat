@@ -23,16 +23,16 @@ if errorlevel 1 (
 )
 
 if "%QT_PREFIX%"=="" (
-  cmake -S "%ROOT%" -B "%BUILD_DIR%" -A x64 -DCMAKE_BUILD_TYPE=Release
+  cmake -S "%ROOT%" -B "%BUILD_DIR%" -A x64 -DCMAKE_BUILD_TYPE=Release -DPRISM_BUILD_BUNDLED_ZSTD=ON
 ) else (
-  cmake -S "%ROOT%" -B "%BUILD_DIR%" -A x64 -DCMAKE_PREFIX_PATH="%QT_PREFIX%" -DCMAKE_BUILD_TYPE=Release
+  cmake -S "%ROOT%" -B "%BUILD_DIR%" -A x64 -DCMAKE_PREFIX_PATH="%QT_PREFIX%" -DCMAKE_BUILD_TYPE=Release -DPRISM_BUILD_BUNDLED_ZSTD=ON
 )
 if errorlevel 1 exit /b 1
 
 cmake --build "%BUILD_DIR%" --config Release
 if errorlevel 1 exit /b 1
 
-ctest --test-dir "%BUILD_DIR%" -C Release -R windows-runtime-loader --output-on-failure
+ctest --test-dir "%BUILD_DIR%" -C Release -R sdk-runtime --no-tests=error --output-on-failure
 if errorlevel 1 exit /b 1
 
 set "WINDEPLOYQT="
