@@ -1,4 +1,5 @@
 #include "ui/camera_exposure_panel.hpp"
+#include "common/ui_text.hpp"
 
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
@@ -172,6 +173,130 @@ int main(int argc, char** argv) {
           "unified apply forces all four cameras automatic");
   group->setCurrentIndex(0);
   require(mode0->isEnabled(),"independent controls recover");
+
+  // The unit decision is explicit DeviceInfo, not a heuristic based on FPS.
+  panel.setCameraFps(2u);
+  require(exposure0->suffix() == QStringLiteral(" us"),
+          "2 FPS alone never selects the 415M row unit");
+  panel.setDeviceModel(prism::DeviceModel::Prism415M);
+  require(exposure0->suffix() == QStringLiteral(" rows") &&
+              exposure0->singleStep() == 1 && !apply->isEnabled(),
+          "415M changes units and invalidates the previous device readback");
+  prism::ExposureConfiguration rows_config;
+  rows_config.automatic_camera_mask = 0;
+  rows_config.manual_exposure_time_us.fill(64000u);
+  prism::ExposureLimits rows_limits;
+  rows_limits.min_exposure_time_us = 188u;
+  rows_limits.max_exposure_time_us = 995000u;
+  rows_limits.effective_max_exposure_time_us = 495000u;
+  panel.setConfiguration(rows_config, rows_limits);
+  require(exposure0->value() == 1024 && exposure0->minimum() == 3 &&
+              exposure0->maximum() == 7920 && min_exposure->value() == 3 &&
+              max_exposure->value() == 15920 && !apply->isEnabled(),
+          "readback uses whole rows and clean settings do not send rounded edits");
+  for (int camera = 0; camera < 4; ++camera) {
+    auto* input = panel.findChild<QSpinBox*>(QStringLiteral("camera%1ExposureSpin").arg(camera));
+    require(input->suffix() == QStringLiteral(" rows") && input->singleStep() == 1,
+            "all four manual fields use integer rows");
+    input->setValue(1025 + camera);
+  }
+  apply_called = false;
+  apply->click();
+  require(apply_called && requested.manual_exposure_time_us ==
+              std::array<uint32_t,4>{64063u,64125u,64188u,64250u} &&
+              requested_limits.min_exposure_time_us == 188u &&
+              requested_limits.max_exposure_time_us == 995000u,
+          "odd and even rows preserve exact row identity through the legacy SDK wire");
+  require(effective_max_label->text().contains(QStringLiteral("7920 rows")) &&
+              !effective_max_label->text().contains(QStringLiteral(" us")),
+          "effective limit is expressed in rows, not microseconds");
+  panel.setDeviceModel(prism::DeviceModel::Prism415M);
+  require(exposure0->value() == 1025 && exposure0->isEnabled(),
+          "periodic unchanged DeviceInfo does not erase user edits");
+  rows_limits.effective_max_exposure_time_us = 128000u;
+  panel.setCaptureActive(true);
+  require(!gain0->isEnabled() && !mode0->isEnabled() &&
+              !min_exposure->isEnabled() && !max_exposure->isEnabled() &&
+              !min_gain->isEnabled() && !max_gain->isEnabled() &&
+              exposure0->isEnabled() && exposure0->maximum() == 4096,
+          "415M live controls expose bounded rows, not synchronous gain/limit changes");
+  require(exposure0->value() == 1024,
+          "starting live capture restores confirmed values, not stale unsent edits");
+  exposure0->setValue(1025);
+  apply_called = false;
+  apply->click();
+  require(apply_called && requested.manual_exposure_time_us[0] == 64063u &&
+              requested.gain_x1024[0] == 1024u,
+          "live row submission keeps manual 1x gain");
+  panel.setCaptureActive(false);
+  auto out_of_live_range = rows_config;
+  out_of_live_range.manual_exposure_time_us.fill(312500u);
+  auto wide_limits = rows_limits;
+  wide_limits.effective_max_exposure_time_us = 495000u;
+  panel.setConfiguration(out_of_live_range, wide_limits);
+  panel.setCaptureActive(true);
+  require(exposure0->value() == 5000 && !exposure0->isEnabled() &&
+              !apply->isEnabled() && message->text().contains("preserved"),
+          "live transition preserves unsupported readback without clamping or sending");
+  panel.setCaptureActive(false);
+  panel.setConfiguration(rows_config, rows_limits);
+  require(exposure0->maximum() == 2048,
+          "a stricter device readout limit wins over nominal frame-period limits");
+  rows_config.manual_exposure_time_us[0] = 64001u;
+  panel.setConfiguration(rows_config, rows_limits);
+  require(!exposure0->isEnabled() && !apply->isEnabled() &&
+              message->text().contains(QStringLiteral("incompatible")),
+          "non-row readback is blocked, never silently rounded");
+  rows_config.manual_exposure_time_us[0] = 128063u;
+  panel.setConfiguration(rows_config, rows_limits);
+  require(!exposure0->isEnabled() && !apply->isEnabled(),
+          "out-of-range readback is blocked, not silently clamped to a different row");
+  rows_config.manual_exposure_time_us.fill(64000u);
+  rows_limits.effective_max_exposure_time_us = 995000u;
+  panel.setCameraFps(1u);
+  panel.setConfiguration(rows_config, rows_limits);
+  // Every representable whole row survives the SDK adapter exactly.
+  for (int rows = 3; rows <= 15920; ++rows) {
+    exposure0->setValue(rows);
+    if (rows == 1024) continue; // original clean setting intentionally disables Apply
+    apply_called = false;
+    apply->click();
+    require(apply_called && requested.manual_exposure_time_us[0] ==
+                static_cast<uint32_t>((rows * 125 + 1) / 2),
+            "all representable row values round-trip exactly");
+  }
+  panel.setDeviceOpen(false);
+  panel.setDeviceModel(prism::DeviceModel::Prism41M3);
+  panel.setDeviceOpen(true);
+  panel.setCameraFps(30u);
+  panel.setConfiguration(loaded, loaded_limits);
+  require(exposure0->suffix() == QStringLiteral(" us") &&
+              exposure0->singleStep() == 10 && min_exposure->value() == 500,
+          "disconnect and 41M3 reopen restore original microsecond controls");
+  prism_viewer::common::setChineseUi(true);
+  panel.setCameraFps(2u);
+  panel.setDeviceModel(prism::DeviceModel::Prism415M);
+  rows_limits.effective_max_exposure_time_us = 495000u;
+  panel.setConfiguration(rows_config, rows_limits);
+  require(exposure0->suffix() == QString::fromUtf8(" 行") &&
+              panel.findChild<QLabel*>(QStringLiteral("camera0ManualExposureLabel"))
+                  ->text() == QString::fromUtf8("手动曝光行数"),
+          "Chinese labels and integer-row suffixes match");
+  if (argc == 2) {
+    prism_viewer::ui::CameraExposurePanel chinese_panel;
+    chinese_panel.setDeviceOpen(true);
+    chinese_panel.setCameraFps(2u);
+    chinese_panel.setDeviceModel(prism::DeviceModel::Prism415M);
+    chinese_panel.setConfiguration(rows_config, rows_limits);
+    chinese_panel.resize(360, 1020);
+    chinese_panel.show();
+    QApplication::processEvents();
+    auto* effective = chinese_panel.findChild<QLabel*>(QStringLiteral("cameraEffectiveMaxExposureLabel"));
+    require(effective->height() >= effective->fontMetrics().boundingRect(
+                QRect(0,0,effective->width(),1000), Qt::TextWordWrap, effective->text()).height(),
+            "Chinese effective row ceiling is fully visible");
+    require(chinese_panel.grab().save(QString::fromUtf8(argv[1])), "save row UI evidence");
+  }
 
   std::cout << "camera exposure panel tests passed\n";
   return 0;

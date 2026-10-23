@@ -239,9 +239,9 @@ void DeviceInfoPanel::refreshView() {
     return;
   } else {
     summary_label_->setText(
-        uiText("Serial %1 | Agent %2 | sensor-board firmware %3 | USB %4 | "
+        uiText("Model %7 | Serial %1 | Agent %2 | sensor-board firmware %3 | USB %4 | "
                "%5 IMU(s) | %6 camera(s)",
-               "序列号 %1 | Agent %2 | sensor-board 固件 %3 | USB %4 | "
+               "型号 %7 | 序列号 %1 | Agent %2 | sensor-board 固件 %3 | USB %4 | "
                "%5 个 IMU | %6 个相机")
             .arg(valueOrDash(info_.product_serial))
             .arg(has_versions_ ? valueOrDash(versions_.agent)
@@ -251,7 +251,10 @@ void DeviceInfoPanel::refreshView() {
             .arg(QString::fromLatin1(
                 prism_runtime::usbLinkSpeedName(info_.usb_speed)))
             .arg(info_.detected_imu_count)
-            .arg(info_.detected_camera_count));
+            .arg(info_.detected_camera_count)
+            .arg(info_.device_model == prism::DeviceModel::Unknown
+                     ? uiText("Unknown", "未知")
+                     : QString::fromLatin1(prism::deviceModelName(info_.device_model))));
     summary_label_->setStyleSheet(
         info_.sensor_board_error_flags != 0u
             ? QStringLiteral(
@@ -277,6 +280,10 @@ void DeviceInfoPanel::refreshView() {
         .arg(v.diagnostic?uiText(" (diagnostic)","（诊断版）"):QString());
   };
   std::vector<DeviceInfoRow> rows{
+      {uiText("Identity", "身份"), uiText("Device model", "设备型号"),
+       info_.device_model == prism::DeviceModel::Unknown
+           ? uiText("Unknown", "未知")
+           : QString::fromLatin1(prism::deviceModelName(info_.device_model))},
       {uiText("Identity", "身份"),
        uiText("Product serial", "产品序列号"),
        valueOrDash(info_.product_serial)},

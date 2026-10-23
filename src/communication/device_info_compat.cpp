@@ -12,6 +12,7 @@ namespace {
 
 constexpr uint16_t kLegacyDeviceInfoVersion = 3u;
 constexpr uint16_t kTimeSourceDeviceInfoVersion = 4u;
+constexpr uint16_t kModelDeviceInfoVersion = 5u;
 constexpr size_t kTimeSyncSourceOffset = 254u;
 constexpr uint32_t kUsb3Connected = 1u << 0u;
 constexpr uint32_t kSensorBoardOnline = 1u << 1u;
@@ -92,13 +93,15 @@ DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame) {
             : TimeSyncProvider::SensorBoardInternal;
     return status;
   }
-  if (version != kTimeSourceDeviceInfoVersion) {
+  if (version != kTimeSourceDeviceInfoVersion && version != kModelDeviceInfoVersion) {
     throw std::runtime_error("unsupported DeviceInfo payload");
   }
 
   const auto& payload = frame.payload;
   const uint32_t flags = readLe32(payload, 4u);
-  if ((flags & ~kKnownFlags) != 0u || payload[255] != 0u) {
+  if ((flags & ~kKnownFlags) != 0u ||
+      (version == kTimeSourceDeviceInfoVersion && payload[255] != 0u) ||
+      (version == kModelDeviceInfoVersion && payload[255] > 3u)) {
     throw std::runtime_error(
         "invalid DeviceInfo flags or reserved bytes");
   }
@@ -128,6 +131,8 @@ DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame) {
   DeviceInfoStatus status;
   auto& info = status.info;
   info.info_version = version;
+  if (version == kModelDeviceInfoVersion)
+    info.device_model = static_cast<prism::DeviceModel>(payload[255]);
   info.usb_speed = static_cast<prism::UsbLinkSpeed>(speed_value);
   info.usb3_connected = (flags & kUsb3Connected) != 0u;
   info.sensor_board_online = (flags & kSensorBoardOnline) != 0u;
@@ -223,7 +228,7 @@ DeviceInfoStatus readDeviceInfo(prism_runtime::Client& client) {
   return status;
 #else
   DeviceInfoStatus status = parseCompatibleDeviceInfo(
-      client.command(prism::FrameType::DeviceInfo, {}, 3000u));
+      client.command(prism::FrameType::DeviceInfo, {5, 0}, 3000u));
   status.info.path = client.path();
   status.info.serial_number = client.serialNumber();
   return status;

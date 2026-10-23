@@ -92,6 +92,32 @@ int main(int argc, char** argv) {
           "camera settings are locked while capture is active");
 
   panel.setCaptureActive(false);
+  loaded.camera_fps = 30;
+  panel.setConfiguration(loaded);
+  panel.setNetworkCameraMaxFps(20);
+  require(fps->maximum() == 20 && fps->value() == 20 && !apply->isEnabled(),
+          "network clamps editor to20 without making saved30 dirty");
+  quality->setValue(91);
+  apply_called = false;
+  apply->click();
+  require(apply_called && requested.camera_fps == 30 && requested.mjpeg_quality == 91,
+          "network quality-only edit must preserve persistent USB FPS");
+  fps->setValue(15);
+  apply->click();
+  require(requested.camera_fps == 15, "network lower FPS remains selectable");
+  panel.setConfiguration(loaded);
+  panel.setNetworkCameraMaxFps(10);
+  require(fps->maximum() == 10 && fps->value() == 10 && !apply->isEnabled(),
+          "Wi-Fi cap is10 without changing persistent30");
+  quality->setValue(91);
+  apply->click();
+  require(requested.camera_fps == 30, "Wi-Fi quality-only edit preserves USB FPS");
+  fps->setValue(5);
+  apply->click();
+  require(requested.camera_fps == 5, "Wi-Fi lower FPS remains selectable");
+  panel.setNetworkCameraMaxFps(0);
+  require(fps->maximum() == 30 && fps->value() == 30,
+          "USB frame-rate range restored after switching transport");
   panel.setControlsLocked(true);
   require(!fps->isEnabled() && !quality->isEnabled() && !apply->isEnabled(),
           "camera settings are locked during another device operation");

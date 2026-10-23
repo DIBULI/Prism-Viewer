@@ -1,4 +1,6 @@
 #include "communication/prism_runtime.hpp"
+#include "prism/usb/network_runtime_api.hpp"
+#include "prism/usb/profile_runtime_api.hpp"
 #include "prism/usb/gnss_reception_runtime_api.hpp"
 
 #ifdef _WIN32
@@ -92,7 +94,34 @@ const prism::DatasetRuntimeApi* datasetApi() {
   return api;
 }
 
+const prism::NetworkRuntimeApi* networkApi() {
+  const auto get=reinterpret_cast<prism::GetNetworkRuntimeApiFunction>(
+      GetProcAddress(loadModule(),prism::kNetworkRuntimeApiEntryPoint));
+  const auto* api=get?get(prism::kNetworkRuntimeApiVersion):nullptr;
+  if(!api||api->abi_version!=prism::kNetworkRuntimeApiVersion||
+      api->struct_size<sizeof(*api)||!api->open||!api->is_network||!api->camera_max_fps)
+    throw std::runtime_error("Network SDK extension unavailable; update the complete Viewer package");
+  return api;
+}
+
+const prism::ProfileRuntimeApi* profileApi() {
+  const auto get = reinterpret_cast<prism::GetProfileRuntimeApiFunction>(
+      GetProcAddress(loadModule(), prism::kProfileRuntimeApiEntryPoint));
+  const auto* api = get ? get(prism::kProfileRuntimeApiVersion) : nullptr;
+  if (!api || api->abi_version != prism::kProfileRuntimeApiVersion ||
+      api->struct_size < sizeof(*api) || !api->start_415m || !api->start_mixed_gpu ||
+      !api->begin_live_rows || !api->finish_live_rows || !api->live_rows_pending)
+    throw std::runtime_error("Matching profile SDK extension required; update the complete Viewer package");
+  return api;
+}
+
 }  // namespace
+
+prism::VideoStatus Client::startPrism415mVideo(uint32_t fps) { return profileApi()->start_415m(handle_,fps); }
+prism::VideoStatus Client::startProfileVideoGpu(uint32_t fps) { return profileApi()->start_mixed_gpu(handle_,fps); }
+uint32_t Client::beginLiveExposureRows(uint8_t mask,const std::array<uint16_t,4>& rows) { return profileApi()->begin_live_rows(handle_,mask,rows); }
+bool Client::finishLiveExposureRows(const prism::Frame& frame,prism::ExposureConfiguration& applied) { return profileApi()->finish_live_rows(handle_,frame,applied); }
+bool Client::liveExposureRowsPending() const { return profileApi()->live_rows_pending(handle_); }
 
 prism::GnssReceptionStatus Client::gnssReceptionStatus() {
   const auto* api = receptionApi();
@@ -138,6 +167,14 @@ std::vector<prism::DeviceInfo> Client::enumerate(uint16_t vid, uint16_t pid) {
 }
 void Client::openDevice(const prism::DeviceInfo& d) {
   api_->open_device(handle_, d);
+}
+void Client::openNetworkDevice(const prism::NetworkOptions& options) {networkApi()->open(handle_,options);}
+bool Client::isNetwork() const {
+  // Older DLLs must retain USB support even without the optional extension.
+  try{return networkApi()->is_network(handle_);}catch(...){return false;}
+}
+uint32_t Client::networkCameraMaxFps() const {
+  return isNetwork() ? networkApi()->camera_max_fps(handle_) : 0;
 }
 void Client::closeDevice() { api_->close_device(handle_); }
 bool Client::isOpen() const { return api_->is_open(handle_); }
@@ -280,6 +317,9 @@ prism::SystemUpgradeResult Client::upgradeSystem(
 
 ImuStream::ImuStream(Client& c, prism::ImuSampleHandler h)
     : client_(&c), handler_(std::move(h)) {}
+prism::ImuSample parseImuSample(const prism::Frame& frame) {
+  return loadApi()->parse_imu_sample(frame);
+}
 ImuStream::~ImuStream() {
   try {
     stop();

@@ -1,6 +1,65 @@
 # Prism Viewer 数据集格式
 
+## Device model metadata
+
+New datasets use a UTF-8 `key=value` text manifest named `dataset.info`.
+Web recording also stores its status counters in this file (`web.*` fields),
+and no longer produces a separate JSON manifest. Existing JSON sidecars remain
+read-only compatible for old Web downloads; they are not rewritten or removed.
+`device_model=41M3` identifies four-1.3-MP global-shutter recordings;
+`device_model=415M` identifies Prism-415M recordings. Historical `A4L` and
+`Prism-A4L` values normalize to **41M3**, as do missing or empty model fields.
+Readers also accept `Prism-41M3`; existing datasets are never rewritten.
+Viewer displays the model in the dataset summary, metadata and validation report.
+Unknown explicitly named models are preserved, not silently relabeled as A4L.
+Existing files are never rewritten when opened. Early experimental JSON manifests
+remain readable; new recordings use text.
+
+## Prism-415M RAW12 playback
+
+Open a completed recording directory using **Datasets → Open**. It contains
+`dataset.info` and `camera0` through `camera3`, each with a `.jsonl` index and a
+`.prg-stream` lossless RAW12 container. Both the current text manifest
+(`format=prism-raw12-dataset-v1`) and early schema-1 JSON manifest are readable.
+Incomplete recordings must finish before playback; opening never rewrites files.
+
+Four images can be played, paused, sought by time step, and enlarged separately.
+The timeline is the union of camera sample timestamps: unequal frame counts and
+extra tail frames are retained. Each tile shows the latest actual sample; the
+time-step label and image tooltip identify its frame number and age. A camera
+without a current sample is left empty. These independent diagnostic timestamps
+are **not synchronized exposure UTC**; a time step does not claim simultaneous
+four-camera exposure.
+
+Display uses a fixed linear 12-bit-to-8-bit grayscale mapping, without ISP or
+automatic brightness changes. Lossless 12-bit source pixels remain unchanged.
+Full-resolution decoding runs in a bounded background worker. Seeking replaces
+only pending display work, never recorded data. Playback speed can be limited by
+the computer's decoding throughput.
+
+Opening checks manifest fields, indexes, frame headers, byte ranges, counts and
+source continuity. Display checks both encoded and original-pixel CRCs.
+**Validate dataset** rereads and decodes every frame, with cancellation/progress.
+Truncation, corruption, unaccounted gaps and counter mismatches are errors.
+Accounted disk queue drops are warnings with per-camera counts; finalized does
+not mean gap-free recording. Diagnostic timing is also reported as a warning.
+The 415M writer evicts the oldest pending whole image at the 12-frame/192-MiB
+limit, never a writer-owned frame. Gap counts transfer to the next retained
+same-camera index entry or its trailing-drop count. `cameraN_dropped` and
+`dropped_frames_total` persist per-camera and total discarded images;
+`queue_policy=drop_oldest_queued` identifies this policy. An oversized incoming
+frame is rejected without evicting otherwise useful queued data.
+
+Playback does not require a GPU or connected device. GPU-required capture and
+compression behavior is unchanged. ROS bag export is not provided for this RAW12
+format; the A4L playback/export path is unchanged.
+
 Viewer 顶部的“录制...”菜单提供“完整数据集”和“仅录制 IMU”两种模式。
+两种模式都只允许在确认 **USB 3.0 或更高速度** 连接时启动。USB 2.0、
+断开、速度未知或状态超过 10 秒未更新时禁止录制；选择目录和确认覆盖后，
+会在创建/替换文件前重新读取实际链路速度。录制中失去 USB 3.x 确认时会
+结束当前录制、按既有完整性检查保存已接收的数据并提示，不会主动停止采集。
+恢复连接后需手动开始新录制。此限制不影响离线回放或 RK 本地 Web 录制。
 `imu0` 和 `imu1` 始终表示 sensor-board 上的两路板载 IMU；选择
 Mid-360/Mid-360S 后，还可以把雷达内置 IMU 单独记录为 `lidar_imu.tum`。
 
@@ -433,10 +492,21 @@ UINT8 `line_valid`（偏移 15），每点仍为 20 字节。
 图像与 LiDAR 由独立写盘线程按公共传感器时间排序处理，避免阻塞 USB 接收线程。待写
 图像队列最多保存 256 个完整帧集，LiDAR 队列最多保存 512 批，二者共用
 128 MiB 的内存上限；图像与点云各使用 4 MiB 顺序写缓存、1 GiB 分卷。
-停止录制会等待写线程排空队列并刷新文件。磁盘持续跟不上时，新数据会被丢弃；相机数量记录在
-`dropped_frame_sets`，LiDAR 数量记录在 `dropped_lidar_batches` 和
+停止录制会等待写线程排空队列并刷新文件。41M3 图像队列满时淘汰最老的待写完整帧集，
+不动正在写入的帧，也不淘汰 IMU、GNSS 或 LiDAR 来腾空间。
+超出整个队列上限的单个新帧集会被拒绝，不清空原有待写图像。
+`camera_queue_dropped_frame_sets` 记录队列丢弃帧集数；`cameraN_dropped` 记录每路
+实际丢弃图像数，`dropped_frames_total` 是四路之和（不是帧集数）。
+`cameraN_received` 是进入录制队列策略前的图像数，`cameraN_images` 仍只统计实际写入数。
+`complete` 表示落盘结束，`frames_complete=0` 表示存在图像缺失。
+原有 `dropped_frame_sets` 包含队列及无效元数据等丢弃；LiDAR 自身队列策略不变，数量记录在 `dropped_lidar_batches` 和
 `dropped_lidar_points`。未同步丢弃另由各个 `unsynced_*_dropped` 字段记录，
 并在停止录制后的 Viewer 状态和日志中显示。
+
+415M 和 41M3 录制期间如有写盘队列丢帧，窗口顶部显示橙色警告，实时更新
+丢弃图像总数和 cam0/1/2/3 各路数量；切换页签不会隐藏警告。首次丢帧写入日志，
+不重复弹窗。停止录制后保留警告与最终计数，开始新一段录制时清零。
+41M3 的无效帧集及输入缺路也会单独提醒，不混算为队列丢弃图像数。
 
 `dataset.info` 中 `format=prism-dataset-v6`、`image_storage=chunk-v1`、
 `camera_index=chunk-v2-with-actual-exposure`、

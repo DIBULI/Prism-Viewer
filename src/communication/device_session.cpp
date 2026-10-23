@@ -1,4 +1,5 @@
 #include "communication/device_session.hpp"
+#include "communication/profile_capture.hpp"
 
 #include <stdexcept>
 
@@ -18,17 +19,29 @@ OpenedDevice DeviceSession::open(size_t device_index) {
   }
 
   client_.openDevice(devices_[device_index]);
+  return readOpenedDevice();
+}
+
+OpenedDevice DeviceSession::openNetwork(const prism::NetworkOptions& options) {
+  client_.openNetworkDevice(options);
+  return readOpenedDevice();
+}
+
+OpenedDevice DeviceSession::readOpenedDevice() {
   try {
     OpenedDevice opened;
     opened.hello = client_.hello();
     opened.versions = client_.deviceVersions();
     const DeviceInfoStatus device_info = readDeviceInfo(client_);
     opened.device_info = device_info.info;
+    (void)captureProduct(opened.device_info.device_model);
     opened.time_sync_provider = device_info.time_sync_provider;
     opened.configuration = client_.deviceConfiguration();
     opened.exposure = client_.cameraExposure();
     opened.exposure_limits = client_.cameraExposureLimits();
-    opened.gnss_timing = client_.gnssTimingStatus();
+    if(!usesProfileCapture(opened.device_info.device_model)) {
+      opened.gnss_timing = client_.gnssTimingStatus();
+    }
     opened.network = client_.networkInfo();
     opened.serial_number = client_.serialNumber();
     opened.path = client_.path();

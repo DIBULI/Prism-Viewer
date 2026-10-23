@@ -5,10 +5,10 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 1.2.1 LANGUAGES CXX)
+project(prism_viewer VERSION 1.3.0 LANGUAGES CXX)
 
 # Viewer and its pinned binary SDK are versioned independently.
-set(PRISM_USB_SDK_VERSION "1.2.0")
+set(PRISM_USB_SDK_VERSION "1.3.0")
 
 include(GNUInstallDirs)
 
@@ -69,6 +69,9 @@ option(PRISM_LINK_STATIC_LINUX_SDK
 set(PRISM_LINUX_SHARED_SDK_RUNTIME "" CACHE FILEPATH
   "Optional Prism Host SDK shared library used when static Linux linking is disabled")
 set(PRISM_USB_SDK_INCLUDE_DIR "${PRISM_USB_SDK_ROOT}/include")
+if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/network_runtime_api.hpp")
+  message(FATAL_ERROR "Network support requires the matching Prism SDK build; set PRISM_USB_SDK_ROOT to its headers and platform runtime (network API v4).")
+endif()
 if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/runtime_api.hpp")
   message(FATAL_ERROR
     "Bundled Prism Host SDK headers are missing under ${PRISM_USB_SDK_ROOT}")
@@ -237,14 +240,42 @@ set_target_properties(prism-viewer PROPERTIES AUTORCC ON)
 
 target_compile_features(prism-viewer PRIVATE cxx_std_17)
 target_include_directories(prism-viewer PRIVATE src)
+option(PRISM_BUILD_BUNDLED_ZSTD "Build pinned Zstandard for portable packages" OFF)
+if(PRISM_BUILD_BUNDLED_ZSTD)
+  include(FetchContent)
+  set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+  set(ZSTD_USE_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(zstd
+    URL https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.tar.gz
+    URL_HASH SHA256=37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3
+    SOURCE_SUBDIR build/cmake)
+  FetchContent_MakeAvailable(zstd)
+  set(PRISM_ZSTD_INCLUDE "${zstd_SOURCE_DIR}/lib")
+  set(PRISM_ZSTD_LIBRARY libzstd_static)
+else()
+  find_path(PRISM_ZSTD_INCLUDE zstd.h REQUIRED)
+  find_library(PRISM_ZSTD_LIBRARY NAMES zstd zstd_static REQUIRED)
+endif()
+target_include_directories(prism-viewer PRIVATE "${PRISM_ZSTD_INCLUDE}")
+target_link_libraries(prism-viewer PRIVATE "${PRISM_ZSTD_LIBRARY}")
+
+add_library(prism-viewer-raw-dataset STATIC
+  src/dataset/raw12_dataset.cpp src/dataset/raw12_recorder.cpp src/common/ui_text.cpp)
+target_include_directories(prism-viewer-raw-dataset PUBLIC src PRIVATE "${PRISM_ZSTD_INCLUDE}")
+target_compile_features(prism-viewer-raw-dataset PUBLIC cxx_std_17)
+target_link_libraries(prism-viewer-raw-dataset PUBLIC prism-viewer-sdk ${QT_PACKAGE}::Gui "${PRISM_ZSTD_LIBRARY}")
+target_link_libraries(prism-viewer PRIVATE prism-viewer-raw-dataset)
 
 target_link_libraries(prism-viewer PRIVATE
   prism-viewer-app-theme
   prism-viewer-imu-units
-  prism-viewer-imu-traces
   prism-viewer-sdk
   Threads::Threads
   ${QT_PACKAGE}::Widgets
+  prism-viewer-imu-traces
   ${QT_PACKAGE}::Sql
   ${QT_PACKAGE}::Network
 )
@@ -393,6 +424,11 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(live-exposure-rows-test tests/live_exposure_rows_test.cpp)
+  target_include_directories(live-exposure-rows-test PRIVATE src)
+  target_compile_features(live-exposure-rows-test PRIVATE cxx_std_17)
+  target_link_libraries(live-exposure-rows-test PRIVATE prism-viewer-sdk)
+  add_test(NAME live-exposure-rows COMMAND live-exposure-rows-test)
   add_executable(imu-trace-view-test tests/imu_trace_view_test.cpp)
   target_link_libraries(imu-trace-view-test PRIVATE prism-viewer-imu-traces)
   add_test(NAME imu-trace-view COMMAND imu-trace-view-test)
@@ -401,7 +437,7 @@ if(BUILD_TESTING)
   add_test(NAME viewer-version COMMAND prism-viewer --version)
   set_tests_properties(viewer-version PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    PASS_REGULAR_EXPRESSION "Prism Viewer 1.2.1.*Prism SDK 1.2.0")
+    PASS_REGULAR_EXPRESSION "Prism Viewer ${PROJECT_VERSION}.*Prism SDK ${PRISM_USB_SDK_VERSION}")
   add_executable(gnss-visualization-test src/ui/gnss_visualization.cpp src/common/ui_text.cpp tests/gnss_visualization_test.cpp)
   target_compile_features(gnss-visualization-test PRIVATE cxx_std_17)
   target_include_directories(gnss-visualization-test PRIVATE src)
@@ -440,6 +476,29 @@ if(BUILD_TESTING)
       PRISM_TEST_SDK_RUNTIME="${PRISM_USB_SDK_RUNTIME}")
   endif()
   add_test(NAME sdk-runtime COMMAND sdk-runtime-test)
+  if(UNIX)
+    add_executable(aggregate-imu-test tests/aggregate_imu_test.cpp)
+    add_executable(capture-credits-test tests/capture_credits_test.cpp)
+    target_include_directories(capture-credits-test PRIVATE src)
+    target_compile_features(capture-credits-test PRIVATE cxx_std_17)
+    add_test(NAME capture-credits COMMAND capture-credits-test)
+    target_include_directories(aggregate-imu-test PRIVATE src)
+    target_compile_features(aggregate-imu-test PRIVATE cxx_std_17)
+    target_link_libraries(aggregate-imu-test PRIVATE prism-viewer-sdk)
+    add_test(NAME aggregate-imu COMMAND aggregate-imu-test)
+    add_executable(bounded-audit-test tests/bounded_audit_test.cpp)
+    target_include_directories(bounded-audit-test PRIVATE src "${PRISM_ZSTD_INCLUDE}")
+    target_compile_features(bounded-audit-test PRIVATE cxx_std_17)
+    target_link_libraries(bounded-audit-test PRIVATE prism-viewer-sdk pthread "${PRISM_ZSTD_LIBRARY}")
+    add_test(NAME bounded-audit COMMAND bounded-audit-test)
+    add_executable(bounded-audit-sanitized tests/bounded_audit_test.cpp)
+    target_include_directories(bounded-audit-sanitized PRIVATE src "${PRISM_ZSTD_INCLUDE}")
+    target_compile_features(bounded-audit-sanitized PRIVATE cxx_std_17)
+    target_compile_options(bounded-audit-sanitized PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(bounded-audit-sanitized PRIVATE -fsanitize=address,undefined)
+    target_link_libraries(bounded-audit-sanitized PRIVATE prism-viewer-sdk pthread "${PRISM_ZSTD_LIBRARY}")
+    add_test(NAME bounded-audit-sanitized COMMAND bounded-audit-sanitized)
+  endif()
 
   add_executable(app-theme-test
     tests/app_theme_test.cpp
@@ -541,6 +600,17 @@ if(BUILD_TESTING)
     src/ui/device_info_panel.cpp
     tests/time_source_display_test.cpp
   )
+  add_executable(recording-loss-warning-test tests/recording_loss_warning_test.cpp src/common/ui_text.cpp)
+  target_include_directories(recording-loss-warning-test PRIVATE src)
+  target_compile_features(recording-loss-warning-test PRIVATE cxx_std_17)
+  target_link_libraries(recording-loss-warning-test PRIVATE ${QT_PACKAGE}::Widgets)
+  if(MSVC)
+    target_compile_options(recording-loss-warning-test PRIVATE /utf-8)
+  endif()
+  add_test(NAME recording-loss-warning COMMAND recording-loss-warning-test)
+  if(UNIX)
+    set_tests_properties(recording-loss-warning PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  endif()
   target_include_directories(time-source-display-test PRIVATE src)
   target_compile_features(time-source-display-test PRIVATE cxx_std_17)
   if(MSVC)
@@ -570,6 +640,15 @@ if(BUILD_TESTING)
   target_compile_features(recording-startup-gate-test PRIVATE cxx_std_17)
   add_test(NAME recording-startup-gate COMMAND recording-startup-gate-test)
 
+  add_executable(recording-usb-gate-test tests/recording_usb_gate_test.cpp)
+  target_include_directories(recording-usb-gate-test PRIVATE src)
+  target_compile_features(recording-usb-gate-test PRIVATE cxx_std_17)
+  target_link_libraries(recording-usb-gate-test PRIVATE prism-viewer-sdk)
+  add_test(NAME recording-usb-gate COMMAND recording-usb-gate-test)
+  add_test(NAME recording-usb-ui COMMAND prism-viewer --recording-usb-self-test)
+  set_tests_properties(recording-usb-ui PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
   add_executable(camera-frame-assembler-test
     src/transfer/camera_frame_assembler.cpp
     tests/camera_frame_assembler_test.cpp
@@ -590,6 +669,47 @@ if(BUILD_TESTING)
   target_compile_features(preview-image-decoder-test PRIVATE cxx_std_17)
   target_link_libraries(preview-image-decoder-test PRIVATE ${QT_PACKAGE}::Gui)
   add_test(NAME preview-image-decoder COMMAND preview-image-decoder-test)
+  add_executable(camera-zoom-dialog-test
+    src/common/ui_text.cpp
+    src/ui/camera_zoom_dialog.cpp
+    src/ui/zoomable_image_view.cpp
+    tests/camera_zoom_dialog_test.cpp
+  )
+  target_include_directories(camera-zoom-dialog-test PRIVATE src)
+  target_compile_features(camera-zoom-dialog-test PRIVATE cxx_std_17)
+  target_link_libraries(camera-zoom-dialog-test PRIVATE ${QT_PACKAGE}::Widgets)
+  add_test(NAME camera-zoom-dialog COMMAND camera-zoom-dialog-test)
+  set_tests_properties(camera-zoom-dialog PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software" TIMEOUT 30)
+  if(MSVC)
+    target_compile_options(camera-zoom-dialog-test PRIVATE /utf-8)
+  endif()
+  add_executable(profile-capture-test tests/profile_capture_test.cpp)
+  target_include_directories(profile-capture-test PRIVATE src)
+  target_link_libraries(profile-capture-test PRIVATE prism-viewer-sdk)
+  target_compile_features(profile-capture-test PRIVATE cxx_std_17)
+  add_test(NAME profile-capture-options COMMAND profile-capture-test)
+  add_executable(independent-preview-mailbox-test tests/independent_preview_mailbox_test.cpp)
+  target_include_directories(independent-preview-mailbox-test PRIVATE src)
+  target_compile_features(independent-preview-mailbox-test PRIVATE cxx_std_17)
+  target_link_libraries(independent-preview-mailbox-test PRIVATE Threads::Threads)
+  add_test(NAME independent-preview-mailbox COMMAND independent-preview-mailbox-test)
+  add_executable(raw-preview-test tests/raw_preview_test.cpp)
+  target_include_directories(raw-preview-test PRIVATE src "${PRISM_ZSTD_INCLUDE}")
+  target_compile_features(raw-preview-test PRIVATE cxx_std_17)
+  target_link_libraries(raw-preview-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Gui "${PRISM_ZSTD_LIBRARY}")
+  add_test(NAME raw-preview COMMAND raw-preview-test)
+  add_executable(raw-dataset-test tests/raw_dataset_test.cpp)
+  add_executable(raw-recorder-test tests/raw_recorder_test.cpp)
+  target_link_libraries(raw-recorder-test PRIVATE prism-viewer-raw-dataset)
+  target_include_directories(raw-recorder-test PRIVATE "${PRISM_ZSTD_INCLUDE}")
+  add_test(NAME raw-recorder COMMAND raw-recorder-test)
+  set_tests_properties(raw-recorder PROPERTIES TIMEOUT 90)
+  target_link_libraries(raw-dataset-test PRIVATE prism-viewer-raw-dataset)
+  target_include_directories(raw-dataset-test PRIVATE "${PRISM_ZSTD_INCLUDE}")
+  add_test(NAME raw-dataset COMMAND raw-dataset-test)
+  add_test(NAME raw-dataset-ui COMMAND raw-dataset-test --ui $<TARGET_FILE:prism-viewer>)
+  set_tests_properties(raw-dataset-ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 65)
   if(WIN32)
     set_tests_properties(preview-image-decoder PROPERTIES
       ENVIRONMENT
@@ -686,6 +806,9 @@ if(BUILD_TESTING)
   target_compile_features(mid-line-dataset-test PRIVATE cxx_std_17)
   target_link_libraries(mid-line-dataset-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Gui ${QT_PACKAGE}::Sql)
   add_test(NAME mid-line-dataset COMMAND mid-line-dataset-test)
+  foreach(dataset_target rk-dataset-test rk-dataset-dialog-test dataset-browser-test xt32-dataset-test mid-line-dataset-test)
+    target_link_libraries(${dataset_target} PRIVATE prism-viewer-raw-dataset)
+  endforeach()
 
   add_test(
     NAME dataset-recorder-full

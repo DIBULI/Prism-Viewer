@@ -25,6 +25,8 @@ class CameraExposurePanel final : public QWidget {
 
   void clear();
   void setDeviceOpen(bool open);
+  // Select units from verified DeviceInfo, never from FPS or USB path.
+  void setDeviceModel(prism::DeviceModel model);
   void setControlsLocked(bool locked);
   void setCaptureActive(bool active);
   void setCameraFps(uint32_t camera_fps);
@@ -41,7 +43,12 @@ class CameraExposurePanel final : public QWidget {
   prism::ExposureConfiguration editedConfiguration() const;
   prism::ExposureLimits editedLimits() const;
   void updateLimitRanges();
+  void updateExposureUnits();
+  uint32_t inputToUs(int value) const;
+  int maximumInput(uint32_t us) const;
+  int minimumInput(uint32_t us) const;
   bool isDirty() const;
+  bool supportsLiveRows() const;
   void refreshView();
   void setMessage(const QString& text, bool warning, bool error);
 
@@ -67,6 +74,7 @@ class CameraExposurePanel final : public QWidget {
   bool capture_active_ = false;
   bool busy_ = false;
   bool has_configuration_ = false;
+  bool exposure_rows_ = false;
   QString busy_message_;
   QString operation_error_;
 };

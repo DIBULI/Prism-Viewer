@@ -53,7 +53,7 @@ prism::Frame validFrame(uint16_t version, TimeSyncProvider provider,
   frame.payload[16] = 0x0fu;
   put16(&frame.payload, 20u, prism::kOnboardImuRateHz);
   put16(&frame.payload, 22u, 30u);
-  if (version == 4u) {
+  if (version >= 4u) {
     frame.payload[254] = static_cast<uint8_t>(provider);
   }
   return frame;
@@ -107,7 +107,24 @@ int main() {
   put32(&invalid.payload, 4u, (1u << 0u) | (1u << 1u));
   require(rejected(invalid));
 
+  for (uint8_t model = 0; model <= 3; ++model) {
+    auto frame = validFrame(5u, TimeSyncProvider::Gps);
+    frame.payload[255] = model;
+    const auto parsed = parseCompatibleDeviceInfo(frame);
+    require(static_cast<uint8_t>(parsed.info.device_model) == model);
+    require(parsed.time_sync_provider == TimeSyncProvider::Gps);
+  }
+  for (const auto version : {3u, 4u}) {
+    require(parseCompatibleDeviceInfo(validFrame(version, TimeSyncProvider::Gps))
+                .info.device_model == prism::DeviceModel::Unknown);
+  }
   invalid = validFrame(5u, TimeSyncProvider::Gps);
+  invalid.payload[255] = 4u;
+  require(rejected(invalid));
+  invalid = validFrame(4u, TimeSyncProvider::Gps);
+  invalid.payload[255] = 2u;
+  require(rejected(invalid));
+  invalid = validFrame(6u, TimeSyncProvider::Gps);
   require(rejected(invalid));
 
   return 0;

@@ -151,11 +151,11 @@ class Dialog final : public QDialog {
     setObjectName(QStringLiteral("rkDatasetDialog"));
     setWindowTitle(uiText("Download RK recordings", "从 RK 导出数据集")); resize(940,560);
     auto* layout=new QVBoxLayout(this);
-    auto* note=new QLabel(uiText("Download RK recordings through the connected USB device. The SDK transfers original files only; optional ROS conversion runs in Viewer on this computer.",
-      "通过当前 USB 连接下载 RK 数据集。SDK 只传输原始文件；可选的 ROS 转换由当前电脑上的 Viewer 完成。"),this);
+    auto* note=new QLabel(uiText("Download RK recordings through the current USB or network connection. The SDK transfers original files only; optional ROS conversion runs in Viewer on this computer.",
+      "通过当前 USB 或网络连接下载 RK 数据集。SDK 只传输原始文件；可选的 ROS 转换由当前电脑上的 Viewer 完成。"),this);
     note->setWordWrap(true); layout->addWidget(note);
     auto* connection=new QHBoxLayout();
-    connection->addWidget(new QLabel(uiText("Current USB device", "当前 USB 设备"),this));
+    connection->addWidget(new QLabel(uiText("Connected device", "当前连接设备"),this));
     connection->addStretch();
     QSettings settings(QStringLiteral("DIBULI"),QStringLiteral("PrismViewer"));
     refresh_=new QPushButton(uiText("Refresh", "刷新列表"),this); refresh_->setObjectName(QStringLiteral("rkDatasetRefresh")); connection->addWidget(refresh_);

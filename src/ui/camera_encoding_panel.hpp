@@ -24,6 +24,7 @@ class CameraEncodingPanel final : public QWidget {
 
   void clear();
   void setDeviceOpen(bool open);
+  void setNetworkCameraMaxFps(uint32_t max_fps);
   void setControlsLocked(bool locked);
   void setCaptureActive(bool active);
   void setBusy(bool busy, const QString& message = {});
@@ -50,6 +51,7 @@ class CameraEncodingPanel final : public QWidget {
 
   prism::DeviceConfiguration configuration_;
   bool device_open_ = false;
+  uint32_t network_max_fps_ = 0;
   bool controls_locked_ = false;
   bool capture_active_ = false;
   bool busy_ = false;

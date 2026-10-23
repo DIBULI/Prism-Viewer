@@ -41,6 +41,12 @@ under an applicable third-party license.
 
 ## Other runtime dependencies
 
+Release packages statically link Zstandard 1.5.7 under its BSD-3-Clause option.
+Source: https://github.com/facebook/zstd/releases/tag/v1.5.7
+The pinned source archive SHA256 is
+`37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3`.
+Its copyright and license are included in `licenses/third_party/zstd-LICENSE.txt`.
+
 Depending on the platform, packages also include libusb (LGPL-2.1-or-later),
 OpenSSL (its applicable OpenSSL/SSLeay license for the 1.1.1 SDK runtime),
 SQLite and Qt's image/font/compression dependencies. Microsoft runtime

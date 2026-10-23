@@ -1,5 +1,7 @@
 #include "prism/usb/runtime_api.hpp"
 #include "prism/usb/gnss_reception_runtime_api.hpp"
+#include "prism/usb/network_runtime_api.hpp"
+#include "prism/usb/profile_runtime_api.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -11,12 +13,14 @@
 extern "C" const prism::RuntimeApi* prism_usb_sdk_get_runtime_api(uint32_t);
 extern "C" const prism::GnssReceptionRuntimeApi* prism_usb_sdk_get_gnss_reception_api(uint32_t);
 extern "C" const prism::LidarPowerRuntimeApi* prism_usb_sdk_get_lidar_power_api(uint32_t);
+extern "C" const prism::NetworkRuntimeApi* prism_usb_sdk_get_network_api(uint32_t);
+extern "C" const prism::ProfileRuntimeApi* prism_usb_sdk_get_profile_api(uint32_t);
 #endif
 
 int main() {
   try {
     // XT32 metadata changes LidarPoint's layout; reject mixed header/library ABIs.
-    static_assert(prism::kRuntimeApiVersion == 18,
+    static_assert(prism::kRuntimeApiVersion == 19,
                   "Review the Viewer bindings when updating the SDK ABI");
 #ifdef _WIN32
     // Load the pinned package, not a DLL supplied by PATH or the host machine.
@@ -69,6 +73,28 @@ int main() {
         !power->query || !power->set_standby || get_power(0) || get_power(2)) {
       throw std::runtime_error("Independent LiDAR power extension is incomplete");
     }
+    // Require the cap-aware network extension in release packages as well.
+#ifdef _WIN32
+    const auto get_network = reinterpret_cast<prism::GetNetworkRuntimeApiFunction>(
+        GetProcAddress(module, prism::kNetworkRuntimeApiEntryPoint));
+#else
+    const auto get_network = &prism_usb_sdk_get_network_api;
+#endif
+    const auto* network = get_network ? get_network(prism::kNetworkRuntimeApiVersion) : nullptr;
+    if (!network || network->abi_version != 4 || network->struct_size != sizeof(*network) ||
+        !network->open || !network->is_network || !network->camera_max_fps)
+      throw std::runtime_error("Matching SDK network API v4 with Web password is required");
+#ifdef _WIN32
+    const auto get_profile = reinterpret_cast<prism::GetProfileRuntimeApiFunction>(
+        GetProcAddress(module, prism::kProfileRuntimeApiEntryPoint));
+#else
+    const auto get_profile = &prism_usb_sdk_get_profile_api;
+#endif
+    const auto* profile = get_profile ? get_profile(1) : nullptr;
+    if (!profile || profile->abi_version != 1 || profile->struct_size != sizeof(*profile) ||
+        !profile->start_415m || !profile->start_mixed_gpu || !profile->begin_live_rows ||
+        !profile->finish_live_rows || !profile->live_rows_pending || get_profile(0) || get_profile(2))
+      throw std::runtime_error("Matching profile capture/live-row extension is required");
     // No enumeration, connection, capture, or time/configuration mutation.
     auto* client = api->client_create();
     if (!client) throw std::runtime_error("Cannot create SDK client");

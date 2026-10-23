@@ -20,7 +20,7 @@ struct DeviceInfoStatus {
 };
 
 // Parses both the public Host SDK 1.0 DeviceInfo v3 response and Agent 1.1
-// DeviceInfo v4, which adds the authoritative sensor-board time source.
+// DeviceInfo v4 (time source) and opt-in v5 (cached device model).
 DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame);
 DeviceInfoStatus readDeviceInfo(prism_runtime::Client& client);
 

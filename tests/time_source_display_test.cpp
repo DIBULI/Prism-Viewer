@@ -21,6 +21,22 @@ int main(int argc, char** argv) {
     prism_viewer::ui::DeviceInfoPanel panel;
     panel.setDeviceOpen(true);
     prism::DeviceInfo info{};
+    const char* model_names[] = {"Unknown", "41M3", "415M", "1315"};
+    for (unsigned model = 0; model <= 3; ++model) {
+      info.device_model = static_cast<prism::DeviceModel>(model);
+      panel.setInfo(info, TimeSyncProvider::Gps);
+      auto* table = panel.findChild<QTableWidget*>();
+      bool found = false;
+      for (int row = 0; row < table->rowCount(); ++row) {
+        if (table->item(row, 1)->text() == uiText("Device model", "设备型号")) {
+          const auto expected = model ? QString::fromLatin1(model_names[model]) : uiText("Unknown", "未知");
+          require(table->item(row, 2)->text() == expected, "Wrong device model display");
+          found = true;
+        }
+      }
+      require(found, "Device model row missing");
+    }
+    info.device_model = prism::DeviceModel::Unknown;
     info.sensor_board_online = true;
     info.sensor_board_time_synced = true;
     panel.setInfo(info,TimeSyncProvider::Gps);

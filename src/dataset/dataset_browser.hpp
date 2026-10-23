@@ -1,4 +1,5 @@
 #pragma once
+#include "dataset/dataset_identity.hpp"
 
 #include <QtCore/QString>
 #include <QtGui/QImage>
@@ -19,6 +20,14 @@ struct DatasetImageEntry {
   uint64_t byte_offset = 0;
   uint32_t byte_size = 0;
   uint32_t exposure_us = 0;
+  bool raw12 = false;
+  uint8_t camera = 0;
+  uint8_t timing_mode = 0;
+  uint32_t frame_id = 0;
+  uint32_t gain_x1024 = 0;
+  uint32_t raw_crc32 = 0;
+  uint32_t encoded_crc32 = 0;
+  uint64_t dropped_before = 0;
 };
 
 struct TumFileSummary {
@@ -50,6 +59,8 @@ struct DatasetTimestampSummary {
 };
 
 struct DatasetValidationResult {
+  std::string format_name;
+  std::string device_model = "41M3";
   bool valid = false;
   bool cancelled = false;
   uint32_t format_version = 0;

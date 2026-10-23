@@ -3,6 +3,8 @@
 #include "prism/usb/runtime_api.hpp"
 
 #include <functional>
+#include <stdexcept>
+#include <utility>
 
 namespace prism_runtime {
 
@@ -26,6 +28,9 @@ inline prism::VideoChunkView parseVideoChunkView(const prism::Frame& frame) {
 inline prism::VideoMeta parseVideoMeta(const prism::Frame& frame) {
   return prism::parseVideoMeta(frame);
 }
+inline prism::ImuSample parseImuSample(const prism::Frame& frame) {
+  return prism::parseImuSample(frame);
+}
 inline const char* usbLinkSpeedName(prism::UsbLinkSpeed speed) {
   return prism::usbLinkSpeedName(speed);
 }
@@ -47,6 +52,9 @@ class Client {
   static std::vector<prism::DeviceInfo> enumerate(
       uint16_t vid = prism::kDefaultVid, uint16_t pid = prism::kDefaultPid);
   void openDevice(const prism::DeviceInfo& device);
+  void openNetworkDevice(const prism::NetworkOptions& options);
+  bool isNetwork() const;
+  uint32_t networkCameraMaxFps() const;
   void closeDevice();
   bool isOpen() const;
   std::wstring path() const;
@@ -95,6 +103,11 @@ class Client {
   prism::RoverRtcmStatus startRoverRtcm();
   prism::RoverRtcmStatus stopRoverRtcm();
   prism::VideoStatus startVideo1280x1024(uint32_t fps = 0);
+  prism::VideoStatus startPrism415mVideo(uint32_t fps = 2);
+  prism::VideoStatus startProfileVideoGpu(uint32_t fps = 0);
+  uint32_t beginLiveExposureRows(uint8_t mask, const std::array<uint16_t,4>& rows);
+  bool finishLiveExposureRows(const prism::Frame&, prism::ExposureConfiguration& applied);
+  bool liveExposureRowsPending() const;
   void stopVideo();
   void sendVideoAck(uint32_t last_frame_id);
   prism::LidarStatus lidarStatus();
@@ -172,9 +185,27 @@ prism::SystemUpgradePackageInfo inspectSystemUpgradePackage(
 prism::HeartbeatStatus parseHeartbeat(const prism::Frame& frame);
 prism::VideoChunkView parseVideoChunkView(const prism::Frame& frame);
 prism::VideoMeta parseVideoMeta(const prism::Frame& frame);
+prism::ImuSample parseImuSample(const prism::Frame& frame);
 const char* usbLinkSpeedName(prism::UsbLinkSpeed speed);
 const char* sensorBoardErrorCodeName(prism::SensorBoardErrorCode code);
 
 #endif
+
+// Borrow samples from an already-started aggregate camera+IMU stream.
+// No Client/control methods: cannot issue a second START/STOP.
+class AggregateImuObserver {
+ public:
+  explicit AggregateImuObserver(prism::ImuSampleHandler handler)
+      : handler_(std::move(handler)) {
+    if (!handler_) throw std::invalid_argument("aggregate IMU handler required");
+  }
+  bool handleFrame(const prism::Frame& frame) const {
+    if (frame.type != prism::FrameType::ImuSample) return false;
+    handler_(prism_runtime::parseImuSample(frame));
+    return true;
+  }
+ private:
+  prism::ImuSampleHandler handler_;
+};
 
 }  // namespace prism_runtime

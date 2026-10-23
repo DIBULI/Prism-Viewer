@@ -30,6 +30,7 @@ class DeviceSession {
  public:
   const std::vector<prism::DeviceInfo>& refresh();
   OpenedDevice open(size_t device_index);
+  OpenedDevice openNetwork(const prism::NetworkOptions& options);
   void close() noexcept;
 
   bool isOpen() const;
@@ -37,6 +38,7 @@ class DeviceSession {
   const std::vector<prism::DeviceInfo>& devices() const;
 
  private:
+  OpenedDevice readOpenedDevice();
   prism_runtime::Client client_;
   std::vector<prism::DeviceInfo> devices_;
 };

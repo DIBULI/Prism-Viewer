@@ -1,11 +1,29 @@
-# Prism Viewer 1.2.1
+# Prism Viewer 1.3.0
 
-Viewer source: [Apache-2.0](LICENSE). The bundled SDK core remains proprietary;
-see [license scope](LICENSING.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Matches the pinned public **Prism SDK 1.3.0** (core Runtime API 19, Network API 4,
+Profile API 1), Agent 1.3.0 and Sensor Board 0.5.0. Headers and binaries must
+come from the same current package; an older download with the same version
+number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 
-Version 1.2.1 is a focused patch to 1.2.0: ROS1/ROS2 Bag export now accepts
-unavailable GNSS/RTK satellite counts while preserving unknown values and
-invalid fixes. All other 1.2.0 features and the pinned SDK remain unchanged.
+DeviceInfo selects the product automatically; no Linux-only environment switch
+is required. 41M3 keeps its existing MJPEG capture and exposure controls. 415M
+requests four-camera external-trigger 2 FPS RAW12/packed12 from matching firmware.
+1315 uses its mixed-profile capture entry. Unknown models fail before START.
+A missing camera does not stop other camera previews or IMU callbacks.
+
+415M USB data is preserved as full RAW12 for recording and zoom. Ordinary live
+tiles are downsampled in Viewer; bounded per-camera preview replacement does not
+drop recorded data. RAW12 recording/playback validates lengths and CRC, keeps
+source identity, and reports missing data. RAW12 ROS export is not implemented.
+
+**Network connection** accepts Wi-Fi or Ethernet and the device's **Web admin
+login password**. The password is session-only; old TLS certificate pairing and
+separate access-token settings are removed. PRISM-NET/4 is plaintext TCP: use
+only a trusted local network. This does not remove Web login authentication.
+Recording remains subject to the confirmed USB 3.x recording gate below.
+
+Platform builds and synthetic regression tests are not a new physical-device
+acceptance test. This publication does not flash, restart or operate a device.
 
 ![Prism](branding/prism-logo.svg)
 
@@ -33,6 +51,16 @@ clock status strip reports the time source observed from the device. Use
 synchronization is required; the action remains disabled while external GPS is
 the authoritative time source.
 
+## USB recording
+
+Viewer recording (full dataset and IMU-only) requires a confirmed **USB 3.0 or
+faster** link, not merely a USB 3-capable port. USB 2.0, disconnected, unknown or
+stale link status disables recording. The link is rechecked before creating any
+files; loss of confirmation during recording finalizes the received data and
+shows a warning without requesting capture to stop. Reconnect/refresh Device
+Info and start a new recording after restoring USB 3.x. Offline dataset playback
+and RK-local Web recording are unaffected.
+
 ## CORS / RTK
 
 The **RTK → Sky / trajectories** page provides a rotatable satellite sky, a sortable,
@@ -46,7 +74,7 @@ PPS timing. Receiver-native GGA and ADRNAV results remain separate in the
 graphics tab. The retired Agent software RTK raw/smoothed queries, result
 widgets and `gps_rtk.csv` recording/playback are removed; legacy result
 datasets are unsupported. Existing files are never migrated or deleted.
-This source requires matching SDK headers/libraries with Runtime ABI 18.
+This source requires matching SDK headers/libraries with Runtime ABI 19.
 Camera settings now include four-camera unified automatic exposure with
 active-camera feedback and highlight protection (requires the current matching firmware).
 The current firmware publishes only internally aligned IMU samples; startup or
@@ -102,11 +130,9 @@ in the current user's local Qt settings.
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
-Viewer 1.2.1 uses the pinned Prism SDK **v1.2.0**
-(Runtime API 18 + raw dataset extension 1), on every
-platform. It requires Agent 1.2.0, with Sensor Board 0.4.27. The build's `sdk-runtime` test checks the
-actual linked/loaded library against the headers, including GNSS, RTK and raw
-RTCM bindings; it does not connect to a device or change its clock.
+Viewer 1.3.0 pins the current SDK **1.3.0** across all platforms.
+The `sdk-runtime` test checks the actual linked/loaded libraries and all required
+extension versions without connecting to hardware.
 The SDK release also provides the aligned C++ RK-local API for applications on
 the RK device. Viewer uses the Host USB API; updating Viewer does not flash or
 restart any connected device. Device firmware must be upgraded separately.
@@ -136,12 +162,32 @@ git submodule update --init --recursive
 
 ## Local Datasets
 
+The automatically selected Prism-415M live mode can record
+the original four-camera GPU-compressed RAW12 stream over confirmed USB3.
+Select **Record → Four-camera original RAW12** after all four cameras have a
+stable input rate. Each recording creates a timestamped subdirectory. The
+writer accepts1 or2FPS per camera; it does not change the device's frame rate
+or turn a1FPS source into2FPS. The matching 415M capture entry requests2FPS.
+The replaceable preview queue is never used as a
+recording source. Disk queue overflow drops queued whole frames and reports
+the counts. Stop drains the queue and performs full disk readback, decode and
+CRC validation before marking the text manifest complete. A write, source
+sequence or USB-link error is reported without stopping otherwise healthy
+preview streams. The original-RAW12 recording format records cameras only,
+not IMU or GNSS; the separate IMU recorder remains available.
+
+Prism-415M RAW12 recordings support four-camera grayscale playback, pause/seek,
+full-resolution zoom and full decode/CRC validation. Independent camera counts
+and accounted recording drops are preserved. RAW12 diagnostic timestamps are
+not exposure UTC. This format currently supports playback, not ROS bag export;
+see [dataset format](docs/dataset-format.md).
+
 The RK download dialog uses the currently connected **USB** device and the
 SDK's raw-file transfer APIs, not HTTP or port 80. Stop RK capture before
 browsing/downloading. SDK downloads preserve original files; optional ROS1/ROS2
 bag conversion runs locally in Viewer. No Web address or login is needed.
-Use the refreshed Agent/SDK 1.2.0 build with dataset transfer support; an older
-1.2.0 binary without the extension reports unsupported, without HTTP fallback.
+Use the matching Agent/SDK 1.3.0 build with dataset transfer support; a binary
+without the extension reports unsupported, without HTTP fallback.
 
 Recorded **Camera**, **IMU**, and **LiDAR** previews have separate tabs; each
 uses the full preview area. Play/pause, speed and the timeline are shared.
@@ -159,12 +205,10 @@ scheduling uses approximate receive time, not a verified measurement timestamp.
 
 ## Build
 
-Install Qt Widgets, Qt Network, and Qt SQL/SQLite. IMU curves use the
-Viewer's QWidget/QPainter implementation; no additional charting module is required.
-On Ubuntu/Debian:
+Install Qt Widgets, Qt Charts, Qt Network, and Qt SQL/SQLite. On Ubuntu/Debian:
 
 ```sh
-sudo apt install build-essential cmake qtbase5-dev \
+sudo apt install build-essential cmake qtbase5-dev libqt5charts5-dev \
   libqt5sql5-sqlite pkg-config libusb-1.0-0-dev libssl-dev
 ./scripts/build_linux.sh
 ./build-linux/prism-viewer
@@ -201,7 +245,7 @@ scripts\build_viewer_msvc.bat C:\Qt\6.11.1\msvc2022_64
 On an Apple Silicon Mac, install Qt and run the native build script:
 
 ```sh
-brew install cmake qtbase qtsvg
+brew install cmake qtbase qtcharts qtdeclarative qtsvg
 ./scripts/build_macos.sh
 open build-macos/stage/Prism-Viewer.app
 ```
@@ -233,8 +277,8 @@ additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
 ```sh
-git tag v1.2.1
-git push origin v1.2.1
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
@@ -252,12 +296,12 @@ Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
-tar -xzf Prism-Viewer-1.2.1-linux-x64.tar.gz
-./Prism-Viewer-1.2.1-linux-x64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.3.0-linux-x64.tar.gz
+./Prism-Viewer-1.3.0-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-tar -xzf Prism-Viewer-1.2.1-linux-arm64.tar.gz
-./Prism-Viewer-1.2.1-linux-arm64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.3.0-linux-arm64.tar.gz
+./Prism-Viewer-1.3.0-linux-arm64/bin/prism-viewer
 ```
 
 The Windows x64 release supports Windows 10 version 1809 or newer and Windows
@@ -274,8 +318,9 @@ glibc and display drivers come from the host.
 ## Documentation
 
 - [Independent LiDAR hardware standby / wake](docs/lidar-power.md)
-- [Viewer 1.2.1 release notes](docs/release-notes/v1.2.1.md)
-- [Viewer 1.2.0 features](docs/release-notes/v1.2.0.md)
+- [Viewer 1.3.0 release notes](docs/release-notes/v1.3.0.md)
+- [Viewer 1.3.0 API and behavior changes](docs/update/v1.3.0.md)
+- [Viewer 1.2.0 release notes](docs/release-notes/v1.2.0.md)
 
 - [Prism Viewer 1.0.1 update notes](docs/update/v1.0.1.md)
 - [Prism Viewer 1.0.1 更新说明](docs/update/v1.0.1.zh-CN.md)
@@ -286,6 +331,19 @@ glibc and display drivers come from the host.
 - [Code structure](ARCHITECTURE.md)
 - [Dataset directory structure and format](docs/dataset-format.md)
 - [ROS1/ROS2 bag export](docs/rosbag-export.md)
+
+## Exposure controls
+
+41M3 retains its existing microsecond/gain controls and synchronous SDK setting
+interface. 415M displays integer integration rows, not microseconds or RB delay.
+During 415M capture, row changes (3–4096, within device-reported limits) use the
+asynchronous API at 1× gain: no STOP/restart, automatic retry, frame discard, or
+transition-state labels. Replies are checked while the capture loop continues
+to receive image and IMU frames. Unconfirmed changes are reported rather than
+assumed successful. Gain, automatic mode, limit editing and explicit refresh
+are available only while idle on this path.
+The internal adapter preserves each row exactly as ceil(rows × 62.5 us);
+41M3 behavior is unchanged. See [API changes](docs/update/v1.3.0.md).
 
 ## Recorded dataset playback
 

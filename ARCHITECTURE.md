@@ -112,8 +112,7 @@ for disk before the optional preview path:
 - camera decode and rendering pause when neither the Camera tab nor its zoom
   dialog is visible, but capture and frame-rate accounting continue;
 - IMU table updates are coalesced at 50 Hz; the plot has an independent,
-  bounded 100 Hz sample queue and a QWidget/QPainter trace view redraws at
-  about 30 fps, with no separate charting dependency. Both
+  bounded 100 Hz sample queue and a native Widgets plot redraws at about 30 fps. Both
   queues stop while the IMU tab or main window is hidden;
 - the 5-second IMU rate estimate uses 100 ms count anchors instead of storing
   one host timestamp for every sensor sample.

@@ -11,6 +11,7 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QVBoxLayout>
+#include <algorithm>
 
 namespace prism_viewer::ui {
 namespace {
@@ -154,7 +155,9 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
   connect(apply_button_, &QPushButton::clicked, this, [this]() {
     if (!on_apply) return;
     prism::DeviceConfiguration requested = configuration_;
-    requested.camera_fps = static_cast<uint32_t>(fps_spin_->value());
+    // Merely showing a network cap must not overwrite a saved USB default.
+    if (fps_spin_->value() != std::min<int>(configuration_.camera_fps, fps_spin_->maximum()))
+      requested.camera_fps = static_cast<uint32_t>(fps_spin_->value());
     requested.mjpeg_quality =
         static_cast<uint32_t>(quality_spin_->value());
     on_apply(requested);
@@ -178,6 +181,8 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
 }
 
 void CameraEncodingPanel::clear() {
+  network_max_fps_ = 0;
+  fps_spin_->setMaximum(30);
   configuration_ = {};
   has_configuration_ = false;
   controls_locked_ = false;
@@ -199,6 +204,14 @@ void CameraEncodingPanel::clear() {
 void CameraEncodingPanel::setDeviceOpen(bool open) {
   device_open_ = open;
   if (!open) clear();
+  refreshView();
+}
+
+void CameraEncodingPanel::setNetworkCameraMaxFps(uint32_t max_fps) {
+  network_max_fps_ = max_fps == 0 ? 0 : max_fps == 20 ? 20 : 10;
+  const QSignalBlocker blocker(fps_spin_);
+  fps_spin_->setMaximum(network_max_fps_ ? static_cast<int>(network_max_fps_) : 30);
+  if (has_configuration_) fps_spin_->setValue(static_cast<int>(configuration_.camera_fps));
   refreshView();
 }
 
@@ -247,7 +260,7 @@ bool CameraEncodingPanel::isDirty() const {
 bool CameraEncodingPanel::cameraSettingsDirty() const {
   return has_configuration_ &&
          (static_cast<uint32_t>(fps_spin_->value()) !=
-              configuration_.camera_fps ||
+              static_cast<uint32_t>(std::min<int>(configuration_.camera_fps, fps_spin_->maximum())) ||
           static_cast<uint32_t>(quality_spin_->value()) !=
               configuration_.mjpeg_quality);
 }
@@ -272,6 +285,8 @@ void CameraEncodingPanel::setMessage(
 
 void CameraEncodingPanel::refreshView() {
   fps_hint_label_->setText(
+      network_max_fps_ ? uiText("Network: maximum %1 FPS per camera (Ethernet20, Wi-Fi10). Lower native rates remain unchanged; the saved USB default is not changed automatically.",
+                        "当前网络每路最高%1 FPS（有线20、Wi-Fi10）。低帧率原生模式保持不变，不会自动修改已保存的USB默认帧率。") .arg(network_max_fps_) :
       fpsHint(static_cast<uint32_t>(fps_spin_->value())));
   quality_hint_label_->setText(qualityHint(quality_spin_->value()));
   if (!device_open_) {

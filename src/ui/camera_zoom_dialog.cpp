@@ -81,6 +81,7 @@ CameraZoomDialog::CameraZoomDialog(QWidget* parent) : QDialog(parent) {
   zoom_out_button_ = new QPushButton(QStringLiteral("−"), this);
   zoom_out_button_->setToolTip(common::uiText("Zoom out", "缩小"));
   actual_size_button_ = new QPushButton(QStringLiteral("100%"), this);
+  actual_size_button_->setObjectName(QStringLiteral("cameraZoomActualSize"));
   actual_size_button_->setToolTip(common::uiText(
       "Show one image pixel per screen pixel", "按原始像素显示"));
   fit_button_ =
@@ -105,6 +106,7 @@ CameraZoomDialog::CameraZoomDialog(QWidget* parent) : QDialog(parent) {
   root->addLayout(header);
 
   main_image_ = new ZoomableImageView(this);
+  main_image_->setObjectName(QStringLiteral("cameraZoomImage"));
   main_image_->setMinimumSize(760, 460);
   main_image_->setStyleSheet(QStringLiteral(
       "background: #111827; border: 1px solid #344054; border-radius: 8px;"));
@@ -130,6 +132,8 @@ CameraZoomDialog::CameraZoomDialog(QWidget* parent) : QDialog(parent) {
         common::uiText("Camera %1", "相机 %1").arg(camera), this);
     caption->setAlignment(Qt::AlignCenter);
     thumbnail_labels_[camera] = new CameraThumbnailLabel(this);
+    thumbnail_labels_[camera]->setObjectName(
+        QStringLiteral("cameraZoomThumbnail%1").arg(camera));
     thumbnail_labels_[camera]->setMinimumSize(160, 100);
     thumbnail_labels_[camera]->setMaximumHeight(140);
     thumbnail_labels_[camera]->setCursor(Qt::PointingHandCursor);
@@ -156,8 +160,10 @@ CameraZoomDialog::CameraZoomDialog(QWidget* parent) : QDialog(parent) {
 
 void CameraZoomDialog::setImageSet(const std::array<QImage, 4>& images,
                                    int selected_camera,
-                                   const QString& context) {
+                                   const QString& context,
+                                   const std::array<bool, 4>& full_resolution) {
   images_ = images;
+  full_resolution_ = full_resolution;
   bool selection_changed = false;
   if (selected_camera >= 0 && selected_camera < 4) {
     selection_changed = selected_camera_ != selected_camera;
@@ -202,6 +208,9 @@ void CameraZoomDialog::refresh(bool refresh_thumbnails, bool reset_view) {
           .arg(selected_camera_));
   if (images_[selected_camera_].isNull()) {
     main_image_->clearImage(common::uiText("No frame", "无图像"));
+  } else if (!full_resolution_[selected_camera_]) {
+    main_image_->clearImage(common::uiText(
+        "Waiting for a full-resolution frame…", "正在等待完整分辨率图像……"));
   } else {
     main_image_->setImage(images_[selected_camera_]);
     if (reset_view) main_image_->fitToWindow();

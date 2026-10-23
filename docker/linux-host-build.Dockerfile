@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgl1-mesa-dev \
       libssl-dev \
       libusb-1.0-0 \
+      libzstd-dev \
       libqt5sql5-sqlite \
       ninja-build \
       pkg-config \

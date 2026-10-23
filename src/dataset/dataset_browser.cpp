@@ -1,4 +1,5 @@
 #include "dataset/dataset_browser.hpp"
+#include "dataset/raw12_dataset.hpp"
 
 #include "common/ui_text.hpp"
 #include "prism/usb/exposure.hpp"
@@ -451,6 +452,10 @@ bool loadDatasetImageIndex(const std::filesystem::path& root, size_t camera,
 }
 
 QImage loadDatasetImage(const DatasetImageEntry& entry) {
+  if (entry.raw12) {
+    try { return loadRaw12DatasetImage(entry); }
+    catch (const std::exception&) { return {}; }
+  }
   std::ifstream input(common::toFilesystemPath(entry.absolute_path),
                       std::ios::in | std::ios::binary);
   if (!input.is_open()) return {};
@@ -497,6 +502,18 @@ DatasetValidationResult validatePrismDatasetImpl(
   }
 
   std::map<std::string, std::string> manifest;
+  try {
+    const auto identity = readDatasetIdentity(root);
+    result.device_model = identity.model;
+    if (identity.raw12_recording) {
+      return validateRaw12Dataset(root, progress, cancelled);
+    }
+  } catch (const std::exception& error) {
+    result.device_model.clear();
+    addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
+             error.what());
+    return result;
+  }
   const std::filesystem::path manifest_path = root / "dataset.info";
   if (std::filesystem::is_regular_file(manifest_path)) {
     std::ifstream input(manifest_path);

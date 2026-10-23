@@ -22,7 +22,8 @@ class CameraZoomDialog final : public QDialog {
   explicit CameraZoomDialog(QWidget* parent = nullptr);
 
   void setImageSet(const std::array<QImage, 4>& images, int selected_camera,
-                   const QString& context);
+                   const QString& context,
+                   const std::array<bool, 4>& full_resolution);
   int selectedCamera() const;
 
   std::function<void(int)> on_selected_camera_changed;
@@ -46,6 +47,8 @@ class CameraZoomDialog final : public QDialog {
   ZoomableImageView* main_image_ = nullptr;
   std::array<CameraThumbnailLabel*, 4> thumbnail_labels_{};
   std::array<QImage, 4> images_{};
+  // A thumbnail may populate the selector, but never the enlarged view.
+  std::array<bool, 4> full_resolution_{};
   std::chrono::steady_clock::time_point next_thumbnail_refresh_{};
   int selected_camera_ = 0;
   QString context_;
