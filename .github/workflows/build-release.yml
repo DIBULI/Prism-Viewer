@@ -241,13 +241,10 @@ jobs:
       - name: Install Ubuntu 20.04 build dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sed -i \
-            -e 's|http://archive.ubuntu.com/ubuntu|http://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
-            -e 's|http://security.ubuntu.com/ubuntu|http://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
-            -e 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' \
-            /etc/apt/sources.list
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          # Keep Ubuntu's signed default sources. The former regional mirror
+          # intermittently rejects GitHub-hosted runners with HTTP 403.
+          apt-get -o Acquire::Retries=3 update
+          apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
             binutils \
             build-essential \
             ca-certificates \
