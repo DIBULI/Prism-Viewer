@@ -8,6 +8,7 @@
 #ifdef _WIN32
 #include <Windows.h>
 #else
+extern "C" const prism::RtkModuleControlRuntimeApi* prism_usb_sdk_get_rtk_module_control_api(uint32_t);
 extern "C" const prism::RuntimeApi* prism_usb_sdk_get_runtime_api(uint32_t);
 extern "C" const prism::GnssReceptionRuntimeApi* prism_usb_sdk_get_gnss_reception_api(uint32_t);
 extern "C" const prism::LidarPowerRuntimeApi* prism_usb_sdk_get_lidar_power_api(uint32_t);
@@ -56,6 +57,16 @@ int main() {
         !reception->gnss_reception_status || get_reception(0) || get_reception(2)) {
       throw std::runtime_error("Independent reception extension is incomplete");
     }
+#ifdef _WIN32
+    const auto get_rtk = reinterpret_cast<prism::GetRtkModuleControlRuntimeApiFunction>(
+        GetProcAddress(module, prism::kRtkModuleControlRuntimeApiEntryPoint));
+#else
+    const auto get_rtk = &prism_usb_sdk_get_rtk_module_control_api;
+#endif
+    const auto* rtk = get_rtk ? get_rtk(1) : nullptr;
+    if (!rtk || rtk->abi_version != 1 || rtk->struct_size < sizeof(*rtk) ||
+        !rtk->save_cors_configuration || !rtk->start_rtk || !rtk->stop_rtk || get_rtk(0) || get_rtk(2))
+      throw std::runtime_error("Timesync RTK control extension is incomplete");
     // Validate the independent power extension without accessing hardware.
 #ifdef _WIN32
     const auto get_power = reinterpret_cast<prism::GetLidarPowerRuntimeApiFunction>(

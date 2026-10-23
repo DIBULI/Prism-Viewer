@@ -156,6 +156,26 @@ prism::TimeSyncPortStatus Client::timeSyncPortStatus() {
 prism::TimeSyncPortStatus Client::setTimeSyncPortMode(prism::TimeSyncPortMode mode) {
   return api_->set_timesync_port_mode(handle_, mode);
 }
+namespace {
+const prism::RtkModuleControlRuntimeApi* rtkControlApi() {
+  const auto get = reinterpret_cast<prism::GetRtkModuleControlRuntimeApiFunction>(
+      GetProcAddress(loadModule(), prism::kRtkModuleControlRuntimeApiEntryPoint));
+  const auto* api = get ? get(prism::kRtkModuleControlRuntimeApiVersion) : nullptr;
+  if (!api || api->abi_version != prism::kRtkModuleControlRuntimeApiVersion ||
+      api->struct_size < sizeof(*api) || !api->save_cors_configuration || !api->start_rtk || !api->stop_rtk)
+    throw std::runtime_error("SDK does not support Timesync RTK control");
+  return api;
+}
+}
+prism::TimeSyncCorsStatus Client::saveTimeSyncCorsConfiguration(const prism::TimeSyncCorsConfiguration& configuration) {
+  return rtkControlApi()->save_cors_configuration(handle_, configuration);
+}
+prism::TimeSyncRtkStatus Client::startRtk(const prism::RtkStartOptions& options) {
+  return rtkControlApi()->start_rtk(handle_, options);
+}
+prism::TimeSyncRtkStatus Client::stopRtk(uint32_t timeout_ms) {
+  return rtkControlApi()->stop_rtk(handle_, timeout_ms);
+}
 prism::TimeSyncRtkStatus Client::timeSyncRtkStatus() {
   return api_->timesync_rtk_status(handle_);
 }

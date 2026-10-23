@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version" FORCE)
 endif()
 
-project(prism_viewer VERSION 1.2.2 LANGUAGES CXX)
+project(prism_viewer VERSION 1.2.3 LANGUAGES CXX)
 
 # Viewer and its pinned binary SDK are versioned independently.
 set(PRISM_USB_SDK_VERSION "1.2.1")
@@ -374,7 +374,7 @@ if(BUILD_TESTING)
   add_test(NAME viewer-version COMMAND prism-viewer --version)
   set_tests_properties(viewer-version PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    PASS_REGULAR_EXPRESSION "Prism Viewer 1.2.2.*Prism SDK 1.2.1")
+    PASS_REGULAR_EXPRESSION "Prism Viewer 1.2.3.*Prism SDK 1.2.1")
   add_executable(gnss-visualization-test src/ui/gnss_visualization.cpp src/common/ui_text.cpp tests/gnss_visualization_test.cpp)
   target_compile_features(gnss-visualization-test PRIVATE cxx_std_17)
   target_include_directories(gnss-visualization-test PRIVATE src)
@@ -473,6 +473,13 @@ if(BUILD_TESTING)
       cors-session-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME cors-session COMMAND cors-session-test)
+  add_executable(native-cors-session-test
+    src/cors/cors_config.cpp src/cors/cors_session.cpp tests/native_cors_session_test.cpp)
+  target_include_directories(native-cors-session-test PRIVATE src)
+  target_compile_features(native-cors-session-test PRIVATE cxx_std_17)
+  target_link_libraries(native-cors-session-test PRIVATE ${QT_PACKAGE}::Core ${QT_PACKAGE}::Network prism-viewer-sdk Threads::Threads)
+  add_test(NAME native-cors-session COMMAND native-cors-session-test)
+
 
   add_executable(rtk-corrections-test
     src/communication/prism_runtime.cpp

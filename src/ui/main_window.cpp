@@ -4335,41 +4335,19 @@ class MainWindow : public QMainWindow {
       return;
     }
 
-    cors_session_.setLiveGga(
-        latest_gnss_timing_status_.has_value()
-            ? prism_viewer::cors::corsGgaDataFromGnssStatus(
-                  *latest_gnss_timing_status_)
-            : std::optional<prism_viewer::cors::CorsGgaData>{});
-    prism_viewer::cors::CorsCorrectionTransport transport;
-    transport.begin = [this]() {
-      return runCorsUsbCommand([this]() {
-        const auto status =
-            prism_viewer::communication::beginRtkCorrections(client_);
-        rememberRtkCorrectionStatus(status);
-        return status;
-      });
+    prism_viewer::cors::NativeCorsTransport transport;
+    transport.port = [this]() { return runCorsUsbCommand([this]() { return client_.timeSyncPortStatus(); }); };
+    transport.save = [this](const prism::TimeSyncCorsConfiguration& config) {
+      return runCorsUsbCommand([this, &config]() { return client_.saveTimeSyncCorsConfiguration(config); });
     };
-    transport.send = [this](const uint8_t* data, size_t size) {
-      const auto received_at = std::chrono::steady_clock::now();
-      return runCorsUsbCommand([this, data, size, received_at]() {
-        const auto status = prism_viewer::communication::sendRtkCorrections(
-            client_, data, size, 3000);
-        rememberRtkCorrectionStatus(status);
-        dataset_recorder_.appendBaseRtcm(data, size, received_at);
-        return status;
-      });
+    transport.start = [this](const prism::RtkStartOptions& options) {
+      return runCorsUsbCommand([this, &options]() { return client_.startRtk(options); });
     };
-    transport.end = [this]() {
-      return runCorsUsbCommand([this]() {
-        const auto status =
-            prism_viewer::communication::endRtkCorrections(client_);
-        rememberRtkCorrectionStatus(status);
-        return status;
-      });
-    };
+    transport.status = [this]() { return runCorsUsbCommand([this]() { return client_.timeSyncRtkStatus(); }); };
+    transport.stop = [this]() { return runCorsUsbCommand([this]() { return client_.stopRtk(5000); }); };
 
     try {
-      cors_session_.start(
+      cors_session_.startNative(
           configuration, std::move(transport),
           [this, provider = configuration.service_provider,
            mountpoint = configuration.mountpoint](
@@ -4414,9 +4392,7 @@ class MainWindow : public QMainWindow {
       cors_panel_->setSessionStatus(stopping);
     }
     cors_session_.stop();
-    latest_cors_status_ = {};
-    cors_panel_->setSessionStatus(latest_cors_status_);
-    appendLog(QStringLiteral("CORS session stopped"));
+    appendLog(QStringLiteral("CORS stop requested; device confirmation pending"));
     refreshControls();
   }
 

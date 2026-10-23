@@ -82,6 +82,9 @@ class Client {
   prism::GnssTimingStatus gnssTimingStatus();
   prism::TimeSyncPortStatus timeSyncPortStatus();
   prism::TimeSyncPortStatus setTimeSyncPortMode(prism::TimeSyncPortMode mode);
+  prism::TimeSyncCorsStatus saveTimeSyncCorsConfiguration(const prism::TimeSyncCorsConfiguration& configuration);
+  prism::TimeSyncRtkStatus startRtk(const prism::RtkStartOptions& options);
+  prism::TimeSyncRtkStatus stopRtk(uint32_t timeout_ms = 5000);
   prism::TimeSyncRtkStatus timeSyncRtkStatus();
   prism::TimeSyncRtkVersions timeSyncRtkVersions();
   prism::GnssReceptionStatus gnssReceptionStatus();

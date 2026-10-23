@@ -1,4 +1,17 @@
-# Prism Viewer 1.2.2 — PPS5 maintenance
+# Prism Viewer 1.2.3 — PPS5 maintenance
+
+This patch is based on Viewer 1.2.2 and retains its SDK 1.2.1 and PPS maintenance behavior.
+CORS now configures and starts the external RTK module through Timesync instead of using
+removed Agent software-solver commands. Select and apply **RTK** under GPS / GNSS first.
+The module needs its own network connection. The Connect action saves credentials on the
+device and allows the module to send its live GNSS position to the selected CORS service.
+Only an IPv4 address and non-TLS port are supported; the selected primary endpoint is used.
+Saved configuration, authentication, and fresh RTCM reception are shown separately.
+Disconnect stops module RTK and reports an unconfirmed stop as an error. Module byte/frame
+counters are cumulative; this path does not forward or record host-side base RTCM bytes.
+
+For Qianxun: `203.107.45.154`, `AUTO`, WGS84 port `8002`, CGCS2000 port `8003`,
+or ITRF2008 port `8001`. Enter your own credentials; none are included in the application.
 
 Supports minimum 5 ms PPS with matching SDK 1.2.1.
 Packages are built separately for Windows x64, macOS Apple Silicon arm64,

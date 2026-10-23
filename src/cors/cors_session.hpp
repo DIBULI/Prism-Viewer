@@ -2,6 +2,7 @@
 
 #include "communication/rtk_corrections.hpp"
 #include "cors/cors_config.hpp"
+#include "prism/usb/timesync_port.hpp"
 
 #include <QtCore/QString>
 
@@ -32,6 +33,8 @@ struct CorsSessionStatus {
   QString error;
   uint64_t received_bytes = 0;
   uint64_t forwarded_bytes = 0;
+  bool native_status_valid = false;
+  prism::TimeSyncRtkStatus native_status;
   bool rtk_status_valid = false;
   communication::RtkCorrectionStatus rtk_status;
 };
@@ -41,6 +44,14 @@ struct CorsCorrectionTransport {
   std::function<communication::RtkCorrectionStatus(
       const uint8_t*, size_t)> send;
   std::function<communication::RtkCorrectionStatus()> end;
+};
+
+struct NativeCorsTransport {
+  std::function<prism::TimeSyncPortStatus()> port;
+  std::function<prism::TimeSyncCorsStatus(const prism::TimeSyncCorsConfiguration&)> save;
+  std::function<prism::TimeSyncRtkStatus(const prism::RtkStartOptions&)> start;
+  std::function<prism::TimeSyncRtkStatus()> status;
+  std::function<prism::TimeSyncRtkStatus()> stop;
 };
 
 class CorsSession final {
@@ -55,6 +66,8 @@ class CorsSession final {
   void start(const CorsConfiguration& configuration,
              CorsCorrectionTransport transport,
              StatusHandler status_handler);
+  void startNative(const CorsConfiguration& configuration, NativeCorsTransport transport,
+                   StatusHandler status_handler);
   void setLiveGga(const std::optional<CorsGgaData>& data);
   void requestStop() noexcept;
   void stop();

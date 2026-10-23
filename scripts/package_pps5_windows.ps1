@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$package = Join-Path $env:RUNNER_TEMP 'Prism-Viewer-1.2.2-windows-x64'
+$package = Join-Path $env:RUNNER_TEMP 'Prism-Viewer-1.2.3-windows-x64'
 cmake --install build --config Release --prefix "$package/stage"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Move-Item "$package/stage/bin/*" $package
@@ -16,7 +16,7 @@ foreach ($required in @('prism-viewer.exe','prism_usb_sdk.dll','Qt6Core.dll','Qt
 }
 $env:PATH = "$env:SystemRoot/system32;$env:SystemRoot"
 $version = & "$package/prism-viewer.exe" --version | Out-String
-if ($LASTEXITCODE -ne 0 -or $version -notmatch 'Prism Viewer 1.2.2 \| Prism SDK 1.2.1') { throw "Version smoke failed: $version" }
+if ($LASTEXITCODE -ne 0 -or $version -notmatch 'Prism Viewer 1.2.3 \| Prism SDK 1.2.1') { throw "Version smoke failed: $version" }
 & "$package/prism-viewer.exe" --startup-self-test
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$package/prism-viewer.exe" --imu-only-recorder-self-test "$env:RUNNER_TEMP/package-recording-smoke"
@@ -27,4 +27,4 @@ $rows = Get-ChildItem $package -Recurse -File | Sort-Object FullName | ForEach-O
   "$hash  $rel"
 }
 $rows | Set-Content "$package/SHA256SUMS.txt" -Encoding utf8
-Compress-Archive -Path $package -DestinationPath 'Prism-Viewer-1.2.2-windows-x64.zip'
+Compress-Archive -Path $package -DestinationPath 'Prism-Viewer-1.2.3-windows-x64.zip'

@@ -71,7 +71,7 @@ struct CorsEndpointAddress {
 CorsEndpointAddress parseCorsEndpointAddress(
     const QString& address, quint16 default_port);
 
-QString validateCorsConfiguration(const CorsConfiguration& configuration);
+QString validateCorsConfiguration(const CorsConfiguration& configuration, bool require_position = true);
 std::optional<CorsGgaData> corsGgaDataFromGnssStatus(
     const prism::GnssTimingStatus& status, uint32_t maximum_age_ms = 2000u);
 QByteArray buildNmeaGga(const CorsGgaData& data);

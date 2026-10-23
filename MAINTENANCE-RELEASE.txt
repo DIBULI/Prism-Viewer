@@ -1,4 +1,4 @@
-Prism Viewer 1.2.2
+Prism Viewer 1.2.3
 Supports minimum 5 ms PPS with matching SDK 1.2.1.
 
 Windows x64; macOS 13+ Apple Silicon arm64; Linux x64/arm64 (GLIBC 2.31+).
