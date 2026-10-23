@@ -253,6 +253,10 @@ if(PRISM_BUILD_BUNDLED_ZSTD)
     URL_HASH SHA256=37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3
     SOURCE_SUBDIR build/cmake)
   FetchContent_MakeAvailable(zstd)
+  # Build the linked static target, but do not install the dependency's SDK
+  # headers, archive or CMake exports into the Viewer runtime distribution.
+  set_property(DIRECTORY "${zstd_SOURCE_DIR}/build/cmake"
+    PROPERTY EXCLUDE_FROM_ALL TRUE)
   set(PRISM_ZSTD_INCLUDE "${zstd_SOURCE_DIR}/lib")
   set(PRISM_ZSTD_LIBRARY libzstd_static)
 else()

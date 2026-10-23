@@ -32,7 +32,7 @@ if errorlevel 1 exit /b 1
 cmake --build "%BUILD_DIR%" --config Release
 if errorlevel 1 exit /b 1
 
-ctest --test-dir "%BUILD_DIR%" -C Release -R sdk-runtime --no-tests=error --output-on-failure
+ctest --test-dir "%BUILD_DIR%" -C Release -R "^(sdk-runtime|windows-runtime-loader)$" --no-tests=error --output-on-failure
 if errorlevel 1 exit /b 1
 
 set "WINDEPLOYQT="
