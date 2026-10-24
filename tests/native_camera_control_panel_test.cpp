@@ -73,6 +73,10 @@ int main(int argc,char** argv){
    narrow.resize(360,2800);narrow.show();app.processEvents();
    std::cout<<"layout style="<<style.toStdString()<<" zh="<<chinese<<" pt="<<points
             <<" minimum="<<narrow.minimumSizeHint().width()<<" actual="<<narrow.width()<<std::endl;
+   if(narrow.minimumSizeHint().width()>360)for(auto* widget:narrow.findChildren<QWidget*>())
+     std::cout<<"width diagnostic type="<<widget->metaObject()->className()
+              <<" name="<<widget->objectName().toStdString()<<" minimum="<<widget->minimumSizeHint().width()
+              <<" actual="<<widget->width()<<" fontpx="<<widget->fontMetrics().height()<<std::endl;
    assert(narrow.minimumSizeHint().width()<=360&&narrow.width()==360);
    for(auto* spin:narrow.findChildren<QAbstractSpinBox*>()) {
     const auto origin=spin->mapTo(&narrow,QPoint{});
