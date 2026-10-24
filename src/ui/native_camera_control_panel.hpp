@@ -16,12 +16,14 @@ class NativeCameraControlPanel final:public QWidget {
   std::function<void(const NativeControlRequest&)> on_request;
  private:
   struct Camera {
-    QCheckBox *ae=nullptr,*agc=nullptr;
-    QSpinBox *rows=nullptr,*min_rows=nullptr,*max_rows=nullptr,*target=nullptr,*deadband=nullptr;
-    QDoubleSpinBox *gain=nullptr,*min_gain=nullptr,*max_gain=nullptr;
+    QSpinBox *rows=nullptr;
+    QDoubleSpinBox *gain=nullptr;
     QLabel* observed=nullptr;
   };
   std::array<Camera,4> cameras_{};
+  QCheckBox *ae_=nullptr,*agc_=nullptr;
+  QSpinBox *min_rows_=nullptr,*max_rows_=nullptr,*target_=nullptr,*deadband_=nullptr;
+  QDoubleSpinBox *min_gain_=nullptr,*max_gain_=nullptr;
   QLabel* status_=nullptr;
   QPushButton *refresh_=nullptr,*apply_=nullptr;
   std::optional<prism::CameraControlIdleStatus> idle_;

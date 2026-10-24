@@ -16,8 +16,10 @@ tiles are downsampled in Viewer; bounded per-camera preview replacement does not
 drop recorded data. RAW12 recording/playback validates lengths and CRC, keeps
 source identity, and reports missing data. RAW12 ROS export is not implemented.
 
-The current 415M panel uses native integer-row exposure, independent AE/AGC,
-manual gain and lower/upper bounds. Accepted configuration is distinct from
+The current 415M panel uses native integer-row exposure and manual gain per
+camera. AE/AGC switches, brightness target/deadband and exposure/gain bounds
+are global settings shared by all cameras.
+Accepted configuration is distinct from
 per-frame observations. Common-trigger timestamps are displayed only when the
 validated frame reports that timing mode. CFA-aware thumbnail generation fixes
 checkerboard sampling without altering original RAW12 pixels or recordings.
@@ -82,7 +84,7 @@ widgets and `gps_rtk.csv` recording/playback are removed; legacy result
 datasets are unsupported. Existing files are never migrated or deleted.
 This source requires matching SDK headers/libraries with Runtime ABI 19.
 41M3 retains four-camera unified automatic exposure with active-camera feedback
-and highlight protection. 415M uses the separate per-camera native controls
+and highlight protection. 415M uses the separate native control panel
 described above (requires the current matching firmware).
 The current firmware publishes only internally aligned IMU samples; startup or
 re-alignment can briefly pause IMU output while other streams continue. Internal
