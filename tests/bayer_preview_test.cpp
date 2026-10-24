@@ -12,6 +12,14 @@
 
 using namespace prism_viewer::ui;
 void require(bool ok,const char* why){if(!ok)throw std::runtime_error(why);}
+QPixmap labelPixmap(const QLabel& label) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  return label.pixmap();
+#else
+  const auto* value=label.pixmap();
+  return value ? *value : QPixmap{};
+#endif
+}
 void uniform(const QImage& image,int expected) {
   require(!image.isNull(),"missing display");
   for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)
@@ -36,18 +44,18 @@ int main(int argc,char** argv){
   ImageViewLabel tile;tile.setTransformationMode(Qt::FastTransformation);
   for(const QSize size:{QSize(233,140),QSize(226,136),QSize(317,191),QSize(640,512)}){
     tile.setFixedSize(size);tile.show();app.processEvents();tile.setImage(native);
-    uniform(tile.pixmap(Qt::ReturnByValue).toImage(),120);
+    uniform(labelPixmap(tile).toImage(),120);
     tile.setImage(cells.scaled(640,384,Qt::IgnoreAspectRatio,Qt::SmoothTransformation));
-    uniform(tile.pixmap(Qt::ReturnByValue).toImage(),120);
+    uniform(labelPixmap(tile).toImage(),120);
   }
   // Legacy JPEG/41M3/default images are unmarked; retain previous sampling.
   QImage jpeg(1280,1024,QImage::Format_RGB32);
   for(int y=0;y<jpeg.height();++y)for(int x=0;x<jpeg.width();++x)
     jpeg.setPixel(x,y,qRgb(x%256,y%256,(x+y)%256));
   tile.setImage(jpeg);
-  require(tile.pixmap(Qt::ReturnByValue).toImage()==QPixmap::fromImage(jpeg).scaled(
+  require(labelPixmap(tile).toImage()==QPixmap::fromImage(jpeg).scaled(
       tile.size(),Qt::KeepAspectRatio,Qt::FastTransformation).toImage(),"legacy grid changed");
-  tile.clearImage("none");require(tile.pixmap(Qt::ReturnByValue).isNull(),"stale tile");
+  tile.clearImage("none");require(labelPixmap(tile).isNull(),"stale tile");
   CameraZoomDialog dialog;dialog.show();
   auto* view=dynamic_cast<ZoomableImageView*>(dialog.findChild<QGraphicsView*>("cameraZoomImage"));
   auto* actual=dialog.findChild<QPushButton*>("cameraZoomActualSize");
@@ -57,7 +65,7 @@ int main(int argc,char** argv){
   for(const QSize size:{QSize(1240,880),QSize(1000,720),QSize(1400,960)}) {
     dialog.resize(size);dialog.setImageSet(images,2,"Bayer test",full);app.processEvents();
     auto* thumb=dialog.findChild<QLabel*>("cameraZoomThumbnail2");require(thumb,"thumbnail");
-    uniform(thumb->pixmap(Qt::ReturnByValue).toImage(),120);
+    uniform(labelPixmap(*thumb).toImage(),120);
     view->fitToWindow();
     uniform(pixmap(*view)->pixmap().toImage(),120);
     require(pixmap(*view)->transform().m11()==2.0,"filtered scene native coordinates");
@@ -80,7 +88,7 @@ int main(int argc,char** argv){
   require(pixmap(*view)->pixmap().toImage()==QPixmap::fromImage(jpeg).toImage(),"legacy zoom changed");
   require(pixmap(*view)->transform().isIdentity(),"legacy inherited Bayer scale");
   auto* thumb=dialog.findChild<QLabel*>("cameraZoomThumbnail1");
-  require(thumb->pixmap(Qt::ReturnByValue).toImage()==QPixmap::fromImage(jpeg).scaled(
+  require(labelPixmap(*thumb).toImage()==QPixmap::fromImage(jpeg).scaled(
       thumb->size(),Qt::KeepAspectRatio,Qt::FastTransformation).toImage(),"legacy thumbnail changed");
   images[2]=cells;dialog.setImageSet(images,2,"late thumbnail",{});
   require(!view->hasImage()&&!actual->isEnabled(),"late thumbnail enlarged");
