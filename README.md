@@ -81,8 +81,9 @@ graphics tab. The retired Agent software RTK raw/smoothed queries, result
 widgets and `gps_rtk.csv` recording/playback are removed; legacy result
 datasets are unsupported. Existing files are never migrated or deleted.
 This source requires matching SDK headers/libraries with Runtime ABI 19.
-Camera settings now include four-camera unified automatic exposure with
-active-camera feedback and highlight protection (requires the current matching firmware).
+41M3 retains four-camera unified automatic exposure with active-camera feedback
+and highlight protection. 415M uses the separate per-camera native controls
+described above (requires the current matching firmware).
 The current firmware publishes only internally aligned IMU samples; startup or
 re-alignment can briefly pause IMU output while other streams continue. Internal
 alignment is not UTC lock. See the [user guide](docs/manual/README.md).
@@ -110,7 +111,8 @@ selected primary IPv4/non-TLS endpoint; it does not inherit Viewer socket
 failover, hostname or TLS support. Account validity is managed
 by the provider; check expiry/renewal if authentication is rejected.
 
-China Mobile additionally supports:
+The retained legacy socket transport (not used by the native connection UI)
+also supports the following China Mobile options:
 
 - automatic primary-to-backup caster failover;
 - an editable caster address accepting an IPv4/IPv6 address, hostname,

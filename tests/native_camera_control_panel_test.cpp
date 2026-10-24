@@ -1,10 +1,12 @@
 #include "ui/native_camera_control_panel.hpp"
+#include "common/ui_text.hpp"
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QStyleFactory>
 #include <cassert>
 #include <iostream>
 int main(int argc,char** argv){
@@ -34,5 +36,23 @@ int main(int argc,char** argv){
  p.setAvailability(true,false,false);p.setIdle(idle);p.resize(360,1800);p.show();app.processEvents();
  assert(p.minimumSizeHint().width()<=360);
  if(argc==2)assert(p.grab().save(QString::fromLocal8Bit(argv[1])));
+ for(const auto& style:QStyleFactory::keys()) {
+  app.setStyle(style);
+  for(bool chinese:{false,true})for(int points:{9,12,14}) {
+   prism_viewer::common::setChineseUi(chinese);
+   prism_viewer::ui::NativeCameraControlPanel narrow;
+   auto font=narrow.font();font.setPointSize(points);narrow.setFont(font);
+   narrow.setAvailability(true,true,false);narrow.setLive(s);
+   narrow.resize(360,2800);narrow.show();app.processEvents();
+   std::cout<<"layout style="<<style.toStdString()<<" zh="<<chinese<<" pt="<<points
+            <<" minimum="<<narrow.minimumSizeHint().width()<<" actual="<<narrow.width()<<std::endl;
+   assert(narrow.minimumSizeHint().width()<=360&&narrow.width()==360);
+   for(auto* spin:narrow.findChildren<QAbstractSpinBox*>()) {
+    const auto origin=spin->mapTo(&narrow,QPoint{});
+    assert(spin->isVisible()&&origin.x()>=0&&origin.x()+spin->width()<=360);
+   }
+  }
+ }
+ prism_viewer::common::setChineseUi(false);
  std::cout<<"PASS native per-camera rows/gain/AE/AGC/limits/epoch UI\n";
 }

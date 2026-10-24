@@ -14,11 +14,23 @@ namespace prism_viewer::ui {
 using prism_viewer::common::uiText;
 NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(parent) {
   auto* layout=new QVBoxLayout(this);
-  auto* title=new QLabel(uiText("External trigger · integer exposure rows · runtime settings",
-                               "外触发 · 整数曝光行数 · 运行时设置"),this);title->setWordWrap(true);layout->addWidget(title);
-  status_=new QLabel(this);status_->setObjectName("nativeControlStatus");status_->setWordWrap(true);layout->addWidget(status_);
+  auto wrappedLabel=[](QWidget* parent) {
+    auto* label=new QLabel(parent);
+    label->setTextFormat(Qt::PlainText);
+    label->setWordWrap(true);
+    // Wrapped telemetry must not impose a platform/font-dependent panel width.
+    // Preserve QLabel's height-for-width policy so text remains fully visible.
+    auto policy=label->sizePolicy();policy.setHorizontalPolicy(QSizePolicy::Ignored);
+    label->setSizePolicy(policy);label->setMinimumWidth(0);
+    return label;
+  };
+  auto* title=wrappedLabel(this);title->setText(uiText("External trigger · integer exposure rows · runtime settings",
+                               "外触发 · 整数曝光行数 · 运行时设置"));layout->addWidget(title);
+  status_=wrappedLabel(this);status_->setObjectName("nativeControlStatus");layout->addWidget(status_);
   for(unsigned i=0;i<4;++i) {
     auto* box=new QGroupBox(QStringLiteral("cam%1").arg(i),this);auto* form=new QFormLayout(box);auto& c=cameras_[i];
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     auto spin=[&](const char* name,int lo,int hi) {auto* w=new QSpinBox(box);w->setObjectName(QString::fromLatin1(name)+QString::number(i));w->setRange(lo,hi);return w;};
     auto gain=[&](const char* name) {auto* w=new QDoubleSpinBox(box);w->setObjectName(QString::fromLatin1(name)+QString::number(i));w->setDecimals(4);w->setRange(1,56.25);w->setSingleStep(.0625);w->setSuffix(" x");return w;};
     c.ae=new QCheckBox(uiText("Auto exposure","自动曝光"),box);c.ae->setObjectName("nativeAe"+QString::number(i));
@@ -31,7 +43,7 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
     form->addRow(c.agc);form->addRow(uiText("Manual gain","手动增益"),c.gain);
     form->addRow(uiText("Minimum gain","最小增益"),c.min_gain);form->addRow(uiText("Maximum gain","最大增益"),c.max_gain);
     form->addRow(uiText("RAW12 target","RAW12 目标亮度"),c.target);form->addRow(uiText("Target deadband","目标亮度容差"),c.deadband);
-    c.observed=new QLabel(box);c.observed->setWordWrap(true);form->addRow(c.observed);
+    c.observed=wrappedLabel(box);form->addRow(c.observed);
     connect(c.ae,&QCheckBox::toggled,this,[this](){updateEnabled();});
     connect(c.agc,&QCheckBox::toggled,this,[this](){updateEnabled();});layout->addWidget(box);
   }
