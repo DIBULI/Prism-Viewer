@@ -10,8 +10,8 @@ struct RawPreviewMetadata {
   uint64_t timestamp_us=0;
   uint32_t source_frame=0,exposure_us=0,gain_x1024=0;
 };
-// Display only: fixed linear12->8 mapping, without ISP/demosaicing. The
-// losslessly decoded packed12 is never overwritten or presented as ISP color.
+// Linear preview cache only, without ISP/demosaicing. Widgets apply sRGB once
+// after CFA filtering/resizing. Lossless packed12 is never overwritten.
 inline QImage decodeRawPreview(const std::vector<uint8_t>& bytes,const QSize& maximum,unsigned camera,uint8_t format=0,
                               RawPreviewMetadata* metadata=nullptr) {
   auto raw=prism::capture::decodeRaw12(bytes,format);

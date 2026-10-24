@@ -59,9 +59,14 @@ class CameraThumbnailLabel final : public QLabel {
  private:
   void refreshPixmap() {
     if (image_.isNull() || width() <= 0 || height() <= 0) return;
+    if (raw12_preview_) {
+      setPixmap(QPixmap::fromImage(raw12SrgbDisplay(image_.scaled(
+          size(), Qt::KeepAspectRatio, Qt::SmoothTransformation))));
+      return;
+    }
     setPixmap(QPixmap::fromImage(image_).scaled(
         size(), Qt::KeepAspectRatio,
-        raw12_preview_ ? Qt::SmoothTransformation : Qt::FastTransformation));
+        Qt::FastTransformation));
   }
 
   QImage image_;

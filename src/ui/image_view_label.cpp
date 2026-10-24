@@ -24,13 +24,14 @@ void ImageViewLabel::setTransformationMode(Qt::TransformationMode mode) {
 }
 
 void ImageViewLabel::setImage(const QImage& image) {
-  raw12_preview_ = isRaw12Preview(image);
-  source_pixmap_ = QPixmap::fromImage(raw12ThumbnailSource(image));
+  linear_raw12_image_ = isRaw12Preview(image) ? raw12ThumbnailSource(image) : QImage();
+  source_pixmap_ = isRaw12Preview(image) ? QPixmap() : QPixmap::fromImage(image);
   refreshPixmap();
 }
 
 void ImageViewLabel::clearImage(const QString& text) {
   source_pixmap_ = QPixmap();
+  linear_raw12_image_ = QImage();
   setPixmap(QPixmap());
   setText(text);
 }
@@ -42,7 +43,8 @@ void ImageViewLabel::resizeEvent(QResizeEvent* event) {
 }
 
 void ImageViewLabel::mousePressEvent(QMouseEvent* event) {
-  if (event->button() == Qt::LeftButton && !source_pixmap_.isNull() &&
+  if (event->button() == Qt::LeftButton &&
+      (!source_pixmap_.isNull() || !linear_raw12_image_.isNull()) &&
       on_click) {
     on_click();
     event->accept();
@@ -52,6 +54,13 @@ void ImageViewLabel::mousePressEvent(QMouseEvent* event) {
 }
 
 void ImageViewLabel::refreshPixmap() {
+  if (!linear_raw12_image_.isNull() && width() > 0 && height() > 0) {
+    // Filtering must operate on linear light, not sRGB-encoded CFA values.
+    const auto scaled = linear_raw12_image_.scaled(
+        size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    setPixmap(QPixmap::fromImage(raw12SrgbDisplay(scaled)));
+    return;
+  }
   if (source_pixmap_.isNull() || width() <= 0 || height() <= 0) return;
   const QSize target_size =
       source_pixmap_.size().scaled(size(), Qt::KeepAspectRatio);
@@ -60,7 +69,7 @@ void ImageViewLabel::refreshPixmap() {
     return;
   }
   setPixmap(source_pixmap_.scaled(target_size, Qt::IgnoreAspectRatio,
-      raw12_preview_ ? Qt::SmoothTransformation : transformation_mode_));
+      transformation_mode_));
 }
 
 }  // namespace prism_viewer::ui
