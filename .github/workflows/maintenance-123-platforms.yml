@@ -10,6 +10,9 @@ env:
   QT_QPA_PLATFORM: offscreen
 jobs:
   macos:
+    # The initial run is already building this fixed source; don't duplicate it
+    # for Linux-container-only corrections. Manual dispatch still builds all.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     timeout-minutes: 40
     steps:
@@ -97,8 +100,10 @@ jobs:
       - name: Verify source identity
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 222cd720f37e33853fb25b1f15c7e15173ba9a8c
-          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = f1e75ed4d6b7832a132ac03ad251bc2f59eb3674
+          # checkout's temporary HOME does not persist in the root container.
+          # Trust only these two checked-out paths, for these read-only commands.
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = 222cd720f37e33853fb25b1f15c7e15173ba9a8c
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE/third_party/Prism-SDK" -C third_party/Prism-SDK rev-parse HEAD)" = f1e75ed4d6b7832a132ac03ad251bc2f59eb3674
           test "$(uname -m)" = '${{ matrix.machine }}'
       - name: Build and test
         run: |
