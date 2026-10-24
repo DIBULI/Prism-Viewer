@@ -12,6 +12,9 @@ struct Raw12Dataset {
   std::vector<std::array<int, 4>> display;
   uint64_t bytes = 0;
   bool complete = false;
+  // Missing or mixed clock semantics cannot form a common time axis. Retain
+  // every image for ordinal/manual browsing instead of inventing timestamps.
+  bool ordinal_only = false;
 };
 Raw12Dataset loadRaw12Dataset(const std::filesystem::path& root,
                              const DatasetValidationCancelCallback& cancelled = {});

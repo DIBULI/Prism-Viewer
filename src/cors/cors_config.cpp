@@ -153,7 +153,7 @@ CorsEndpointAddress parseCorsEndpointAddress(
 }
 
 QString validateCorsConfiguration(
-    const CorsConfiguration& configuration) {
+    const CorsConfiguration& configuration, bool require_position) {
   if (findCorsServiceProvider(configuration.service_provider) == nullptr) {
     return QStringLiteral("Unsupported CORS serviceProvider: %1")
         .arg(configuration.service_provider);
@@ -175,6 +175,7 @@ QString validateCorsConfiguration(
   if (configuration.password.isEmpty()) {
     return QStringLiteral("CORS password is required");
   }
+  if (!require_position) return {};
   if (!std::isfinite(configuration.latitude_degrees) ||
       configuration.latitude_degrees < -90.0 ||
       configuration.latitude_degrees > 90.0) {

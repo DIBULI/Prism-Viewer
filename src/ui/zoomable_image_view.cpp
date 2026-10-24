@@ -1,4 +1,5 @@
 #include "ui/zoomable_image_view.hpp"
+#include "ui/bayer_preview.hpp"
 
 #include <QtGui/QColor>
 #include <QtGui/QMouseEvent>
@@ -47,7 +48,13 @@ void ZoomableImageView::setImage(const QImage& image) {
   }
 
   const bool had_image = hasImage();
-  const QSize previous_size = pixmap_item_->pixmap().size();
+  const QSize previous_size = native_bayer_image_.isNull()
+      ? pixmap_item_->pixmap().size() : native_bayer_image_.size();
+  native_bayer_image_ = isNativeBayerPreview(image) ? image : QImage();
+  averaged_bayer_image_ = native_bayer_image_.isNull()
+      ? QImage() : raw12ThumbnailSource(image);
+  showing_bayer_average_ = false;
+  pixmap_item_->setTransform(QTransform());
   pixmap_item_->setPixmap(QPixmap::fromImage(image));
   pixmap_item_->setVisible(true);
   empty_text_item_->setVisible(false);
@@ -61,6 +68,10 @@ void ZoomableImageView::setImage(const QImage& image) {
 }
 
 void ZoomableImageView::clearImage(const QString& message) {
+  native_bayer_image_ = {};
+  averaged_bayer_image_ = {};
+  showing_bayer_average_ = false;
+  pixmap_item_->setTransform(QTransform());
   pixmap_item_->setPixmap(QPixmap());
   pixmap_item_->setVisible(false);
   empty_text_item_->setText(message);
@@ -84,7 +95,8 @@ void ZoomableImageView::fitToWindow() {
   fit_to_window_ = true;
   resetTransform();
   if (hasImage() && !pixmap_item_->boundingRect().isEmpty()) {
-    fitInView(pixmap_item_, Qt::KeepAspectRatio);
+    if (native_bayer_image_.isNull()) fitInView(pixmap_item_, Qt::KeepAspectRatio);
+    else fitInView(scene()->sceneRect(), Qt::KeepAspectRatio);
   }
   fitting_ = false;
   updateZoomNotification();
@@ -150,10 +162,24 @@ void ZoomableImageView::applyZoom(double requested_scale) {
 }
 
 void ZoomableImageView::updateZoomNotification() {
+  updateBayerPixmap();
   const int percent = zoomPercent();
   if (percent == last_reported_zoom_percent_) return;
   last_reported_zoom_percent_ = percent;
   if (on_zoom_changed) on_zoom_changed(percent);
+}
+
+void ZoomableImageView::updateBayerPixmap() {
+  if (native_bayer_image_.isNull() || averaged_bayer_image_.isNull()) return;
+  // Under 100%, remove the CFA carrier before the scene's interpolation.
+  // Item coordinates remain native pixels, keeping zoom/pan/100% semantics.
+  const bool average = transform().m11() < 1.0 - 1e-9;
+  if (average == showing_bayer_average_) return;
+  pixmap_item_->setPixmap(QPixmap::fromImage(
+      average ? averaged_bayer_image_ : native_bayer_image_));
+  pixmap_item_->setTransform(average ? QTransform::fromScale(2.0, 2.0)
+                                   : QTransform());
+  showing_bayer_average_ = average;
 }
 
 }  // namespace prism_viewer::ui

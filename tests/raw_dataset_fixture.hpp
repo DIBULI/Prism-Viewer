@@ -24,7 +24,8 @@ inline std::vector<uint8_t> frame(unsigned camera, uint32_t id, uint64_t stamp) 
   put(48,prism::capture::rawCrc32(bytes.data()+64,bytes.size()-64));put(52,256);put(56,uint32_t(bytes.size()-64));
   return bytes;
 }
-inline std::string create(const std::filesystem::path& root, bool drops=false, bool empty_camera=false) {
+inline std::string create(const std::filesystem::path& root, bool drops=false, bool empty_camera=false,
+                          unsigned timing=3,bool unknown=false) {
   std::filesystem::create_directories(root);
   std::string info="format=prism-raw12-dataset-v1\ndevice_model=415M\ncodec=raw12-rice-lossless\ncomplete=1\nwidth=5120\nheight=3072\nsource_bits=12\ncamera_count=4\nfps_per_camera=1\n";
   if(drops)info+="drop_accounting=1\nhas_drops=1\nframes_complete=0\n";
@@ -35,10 +36,12 @@ inline std::string create(const std::filesystem::path& root, bool drops=false, b
     for(unsigned i=0;i<count;++i){
       const unsigned before=drops&&c==0?1:0;
       const uint32_t id=10+i+(drops&&c==0?i+1:0);
-      const uint64_t stamp=1000000ULL+(id-10)*1000000ULL+c*1000;
+      const unsigned mode=unknown&&c==2&&i==0?0:timing;
+      const uint64_t stamp=mode?1000000ULL+(id-10)*1000000ULL+(timing==4?0:c*1000):0;
       auto bytes=frame(c,id,stamp);
+      bytes[38]=uint8_t(mode);
       QJsonObject row{{"offset",double(offset)},{"bytes",int(bytes.size())},{"frame_id",double(id)},
-          {"timestamp_us",double(stamp)},{"timing_mode",3},
+          {"timestamp_us",double(stamp)},{"timing_mode",int(mode)},
           {"raw_crc32",double(prism::capture::rawLe32(bytes.data()+20))},
           {"encoded_crc32",double(prism::capture::rawLe32(bytes.data()+48))}};
       if(drops)row.insert("dropped_before",int(before));

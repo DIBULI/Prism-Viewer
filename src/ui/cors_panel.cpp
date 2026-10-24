@@ -220,12 +220,8 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
   config_layout->addLayout(form);
 
   auto* position_note = new QLabel(
-      uiText("Rover position, UTC, fix quality, satellites, HDOP, altitude "
-             "and geoid separation are read from the device GNSS. A fresh "
-             "valid fix is required; GGA is sent to the caster every second.",
-             "流动站位置、UTC、定位质量、卫星数、HDOP、高程和大地水准面差"
-             "均从设备 GNSS 自动读取。连接需要有效且新鲜的定位；GGA 每秒发送"
-             "一次。"),
+      uiText("Connect saves this account on the device and allows the RTK module to send live GNSS position to this CORS service. The module uses its own network. Select Timesync RTK mode first; only IPv4/non-TLS endpoints are supported.",
+             "连接会将此账号保存到设备，并允许 RTK 模块向此 CORS 服务发送实时 GNSS 位置。模块通过自身网络联网；请先选择 Timesync RTK 模式，仅支持 IPv4 / 非 TLS 地址。"),
       config_group);
   position_note->setWordWrap(true);
   position_note->setStyleSheet(
@@ -291,14 +287,14 @@ CorsPanel::CorsPanel(QWidget* parent) : QWidget(parent) {
                  uiText("NTRIP received", "NTRIP 已接收"),
                  received_value_);
   addStatusField(status_layout, status_group,
-                 uiText("Forwarded to RK", "已转发至 RK"), forwarded_value_);
+                 uiText("Module transmitted", "模块已转发"), forwarded_value_);
   addStatusField(status_layout, status_group,
-                 uiText("Agent base source", "Agent 基站源"), source_value_);
+                 uiText("Correction source", "差分来源"), source_value_);
   addStatusField(status_layout, status_group,
                  uiText("RTK solution", "RTK 解状态"),
                  solution_value_);
   addStatusField(status_layout, status_group,
-                 uiText("Agent counters", "Agent 计数"), agent_value_);
+                 uiText("RTK module status", "RTK 模块状态"), agent_value_);
   status_layout->addStretch(1);
 
   auto* gnss_group =
@@ -820,13 +816,7 @@ cors::CorsConfiguration CorsPanel::configuration(QString* error) const {
     result.longitude_degrees = live_gga->longitude_degrees;
     result.altitude_meters = live_gga->altitude_meters;
   }
-  if (validation.isEmpty() && !live_gga.has_value()) {
-    validation = uiText(
-        "A fresh valid device GNSS position is required before connecting CORS",
-        "连接 CORS 前需要设备提供有效且新鲜的 GNSS 定位");
-  } else if (validation.isEmpty()) {
-    validation = cors::validateCorsConfiguration(result);
-  }
+  if (validation.isEmpty()) validation = cors::validateCorsConfiguration(result, false);
   if (error != nullptr) *error = validation;
   return result;
 }
@@ -978,10 +968,7 @@ void CorsPanel::refreshView() {
   username_edit_->setEnabled(device_open_ && !active);
   password_edit_->setEnabled(device_open_ && !active);
   remember_password_checkbox_->setEnabled(device_open_ && !active);
-  const bool live_gga_available =
-      gnss_timing_status_.has_value() &&
-      cors::corsGgaDataFromGnssStatus(*gnss_timing_status_).has_value();
-  connect_button_->setEnabled(device_open_ && !active && live_gga_available);
+  connect_button_->setEnabled(device_open_ && !active);
   disconnect_button_->setEnabled(active);
 
   QString gnss_configuration_message;
@@ -1055,26 +1042,21 @@ void CorsPanel::refreshView() {
       status_.endpoint.isEmpty() ? QStringLiteral("-") : status_.endpoint);
   received_value_->setText(byteCount(status_.received_bytes));
   forwarded_value_->setText(byteCount(status_.forwarded_bytes));
-  if (status_.rtk_status_valid) {
-    source_value_->setText(QString::fromLatin1(
-        communication::rtkBaseSourceName(status_.rtk_status.base_source)));
-    solution_value_->setText(QString::fromLatin1(
-        communication::rtkSolutionName(status_.rtk_status.solution)));
+  if (status_.native_status_valid) {
+    const auto& native = status_.native_status;
+    const bool fresh = native.linked && native.device_status_fresh && native.control_status_fresh;
+    source_value_->setText(uiText("RTK module / NTRIP", "RTK 模块 / NTRIP"));
+    solution_value_->setText(!fresh ? uiText("Stale / unavailable", "已过期 / 未提供") :
+        native.fix == 4 ? QStringLiteral("FIX") : native.fix == 5 ? QStringLiteral("FLOAT") :
+        uiText("GNSS quality: %1", "GNSS 定位质量：%1").arg(native.fix));
+    agent_value_->setText(uiText("State=%1 | SIM=%2 registration=%3 | authenticated=%4\nRTCM=%5 age=%6 ms | errors=%7 drops=%8",
+                                 "状态=%1 | SIM=%2 注册=%3 | 已鉴权=%4\nRTCM=%5 龄期=%6 ms | 错误=%7 丢弃=%8")
+        .arg(native.control_state).arg(native.sim).arg(native.registration)
+        .arg(fresh ? ((native.device_flags & 32) ? QStringLiteral("yes") : QStringLiteral("no")) : QStringLiteral("?"))
+        .arg(native.rtcm_frames).arg(native.rtcm_age_ms).arg(native.rtcm_errors).arg(native.upstream_drops));
   } else {
     source_value_->setText(QStringLiteral("-"));
     solution_value_->setText(QStringLiteral("-"));
-  }
-  if (status_.rtk_status_valid) {
-    agent_value_->setText(
-        QStringLiteral("format=%1 | RTCM=%2 epochs=%3 fix=%4 float=%5 errors=%6")
-            .arg(QString::fromLatin1(communication::rtkCorrectionFormatName(
-                status_.rtk_status.correction_format)))
-            .arg(status_.rtk_status.base_rtcm_messages)
-            .arg(status_.rtk_status.base_observation_epochs)
-            .arg(status_.rtk_status.fix_count)
-            .arg(status_.rtk_status.float_count)
-            .arg(status_.rtk_status.decoder_errors));
-  } else {
     agent_value_->setText(QStringLiteral("-"));
   }
 
@@ -1207,8 +1189,8 @@ void CorsPanel::refreshView() {
     warning = true;
   } else if (status_.phase == cors::CorsSessionPhase::Streaming) {
     message = uiText(
-        "Receiving RTCM 2.x/3.x and forwarding it to the RK Agent",
-        "正在接收 RTCM 2.x/3.x 并转发给 RK Agent");
+        "RTK module is authenticated and receiving RTCM corrections",
+        "RTK 模块已鉴权，正在接收 RTCM 差分数据");
   } else if (status_.phase == cors::CorsSessionPhase::Reconnecting) {
     message = uiText("CORS reconnecting: %1", "CORS 正在重连：%1")
                   .arg(status_.error);

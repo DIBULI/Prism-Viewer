@@ -214,6 +214,7 @@ add_executable(prism-viewer
   src/ui/camera_zoom_dialog.cpp
   src/ui/camera_encoding_panel.cpp
   src/ui/camera_exposure_panel.cpp
+  src/ui/native_camera_control_panel.cpp
   src/ui/cors_panel.cpp
   src/ui/gnss_visualization.cpp
   src/ui/device_info_panel.cpp
@@ -563,6 +564,13 @@ if(BUILD_TESTING)
       cors-session-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME cors-session COMMAND cors-session-test)
+  add_executable(native-cors-session-test
+    src/cors/cors_config.cpp src/cors/cors_session.cpp tests/native_cors_session_test.cpp)
+  target_include_directories(native-cors-session-test PRIVATE src)
+  target_compile_features(native-cors-session-test PRIVATE cxx_std_17)
+  target_link_libraries(native-cors-session-test PRIVATE ${QT_PACKAGE}::Core ${QT_PACKAGE}::Network prism-viewer-sdk Threads::Threads)
+  add_test(NAME native-cors-session COMMAND native-cors-session-test)
+  set_tests_properties(native-cors-session PROPERTIES TIMEOUT 30)
 
   add_executable(rtk-corrections-test
     src/communication/prism_runtime.cpp
@@ -689,6 +697,19 @@ if(BUILD_TESTING)
     target_compile_options(camera-zoom-dialog-test PRIVATE /utf-8)
   endif()
   add_executable(profile-capture-test tests/profile_capture_test.cpp)
+  add_executable(bayer-preview-test
+    src/common/ui_text.cpp src/ui/camera_zoom_dialog.cpp
+    src/ui/zoomable_image_view.cpp src/ui/image_view_label.cpp
+    tests/bayer_preview_test.cpp)
+  target_include_directories(bayer-preview-test PRIVATE src)
+  target_compile_features(bayer-preview-test PRIVATE cxx_std_17)
+  target_link_libraries(bayer-preview-test PRIVATE ${QT_PACKAGE}::Widgets)
+  add_test(NAME bayer-preview COMMAND bayer-preview-test)
+  set_tests_properties(bayer-preview PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software" TIMEOUT 60)
+  if(MSVC)
+    target_compile_options(bayer-preview-test PRIVATE /utf-8)
+  endif()
   target_include_directories(profile-capture-test PRIVATE src)
   target_link_libraries(profile-capture-test PRIVATE prism-viewer-sdk)
   target_compile_features(profile-capture-test PRIVATE cxx_std_17)
@@ -895,6 +916,25 @@ if(BUILD_TESTING)
     src/ui/camera_exposure_panel.cpp
     tests/camera_exposure_panel_test.cpp
   )
+  add_executable(native-camera-control-test tests/native_camera_control_test.cpp)
+  target_include_directories(native-camera-control-test PRIVATE src)
+  target_compile_features(native-camera-control-test PRIVATE cxx_std_17)
+  target_link_libraries(native-camera-control-test PRIVATE prism-viewer-sdk)
+  add_test(NAME native-camera-control COMMAND native-camera-control-test)
+  add_executable(native-camera-control-panel-test
+    src/common/ui_text.cpp src/ui/native_camera_control_panel.cpp tests/native_camera_control_panel_test.cpp)
+  target_include_directories(native-camera-control-panel-test PRIVATE src)
+  target_compile_features(native-camera-control-panel-test PRIVATE cxx_std_17)
+  target_link_libraries(native-camera-control-panel-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Widgets)
+  add_test(NAME native-camera-control-panel COMMAND native-camera-control-panel-test)
+  set_tests_properties(native-camera-control-panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  foreach(native_test native-camera-control-test native-camera-control-panel-test)
+    if(MSVC)
+      target_compile_options(${native_test} PRIVATE /UNDEBUG /W4)
+    else()
+      target_compile_options(${native_test} PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    endif()
+  endforeach()
   target_include_directories(camera-exposure-panel-test PRIVATE src)
   target_compile_features(camera-exposure-panel-test PRIVATE cxx_std_17)
   target_link_libraries(camera-exposure-panel-test PRIVATE

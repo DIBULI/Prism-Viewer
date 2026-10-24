@@ -39,9 +39,13 @@ class ZoomableImageView final : public QGraphicsView {
  private:
   void applyZoom(double requested_scale);
   void updateZoomNotification();
+  void updateBayerPixmap();
 
   QGraphicsPixmapItem* pixmap_item_ = nullptr;
   QGraphicsSimpleTextItem* empty_text_item_ = nullptr;
+  QImage native_bayer_image_;
+  QImage averaged_bayer_image_;
+  bool showing_bayer_average_ = false;
   bool fit_to_window_ = true;
   bool fitting_ = false;
   int last_reported_zoom_percent_ = -1;

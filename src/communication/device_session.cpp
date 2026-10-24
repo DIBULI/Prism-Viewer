@@ -1,5 +1,6 @@
 #include "communication/device_session.hpp"
 #include "communication/profile_capture.hpp"
+#include "communication/native_camera_control.hpp"
 
 #include <stdexcept>
 
@@ -37,8 +38,7 @@ OpenedDevice DeviceSession::readOpenedDevice() {
     (void)captureProduct(opened.device_info.device_model);
     opened.time_sync_provider = device_info.time_sync_provider;
     opened.configuration = client_.deviceConfiguration();
-    opened.exposure = client_.cameraExposure();
-    opened.exposure_limits = client_.cameraExposureLimits();
+    readProductExposure(client_,opened);
     if(!usesProfileCapture(opened.device_info.device_model)) {
       opened.gnss_timing = client_.gnssTimingStatus();
     }

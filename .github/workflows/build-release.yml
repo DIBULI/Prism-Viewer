@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           test "$(cat VERSION)" = 1.3.0
           grep -Fq 'project(prism_viewer VERSION 1.3.0 LANGUAGES CXX)' CMakeLists.txt
-          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = f05a914a1153ef08791b939a419510594209f0ee
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 12f90ae79af7020b46f0122f133d33fcb4d64f50
           test "$(cat third_party/Prism-SDK/VERSION)" = 1.3.0
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
@@ -77,7 +77,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "7503708d11b92a7fc60174a6fbce7cfb267904a8e4afab26ba4ad977222b043e"
+          $expected = "21198616ef26fa01853372143d96ea41941e06e8a55a909307c833d3fce0afaf"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -218,13 +218,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: c50a6d062fd9f019a66af4257e7fcc011dfc17a4402b50b19532f82d2b3b5671
+            sdk_sha256: 1356388c77ac7eb393aa352509a93125f0530e28125883a21990788a4029e9c2
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: 90898d5f2833b3e2156aeeab5c8d160775568ba1cea3bccaf02e3d978aa2bed1
+            sdk_sha256: 324e576cb1c722c5fad3a66fb83e9113c6eb996ceda1a50119f8559c15f18103
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -492,7 +492,7 @@ jobs:
           sdk_commit="$(git -C third_party/Prism-SDK rev-parse HEAD)"
           {
             echo "Prism Viewer version: 1.3.0"
-            echo "Prism SDK version: 1.3.0 (Runtime API ABI 19, Network API 4, Profile API 1)"
+            echo "Prism SDK version: 1.3.0 (Runtime API ABI 19, Network API 4, Profile API 1, CameraControl API 1)"
             echo "Prism SDK commit: $sdk_commit"
             echo "Prism SDK linkage: $LINUX_SDK_LINKAGE"
             echo "Prism SDK source: third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
@@ -683,7 +683,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="88e398373563509175dc631c865d1121578c65d4c7e2e6de6c7b23a1ce3e85bc"
+          sdk_expected="4eeb161392cfe3e3a1add595fd9c770381fa9d43c543058a43a7f521e91b48b5"
           libusb_expected="30cfce3b736acdd5e3e4d276614d7ef917b42d8eddada4932561198bdd4ae414"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"

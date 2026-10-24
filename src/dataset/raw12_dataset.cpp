@@ -1,5 +1,6 @@
 #include "dataset/raw12_dataset.hpp"
 #include "common/ui_text.hpp"
+#include "ui/bayer_preview.hpp"
 #include "prism/usb/profile_video.hpp"
 #include <QFile>
 #include <QJsonArray>
@@ -123,6 +124,7 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
                              const DatasetValidationCancelCallback& cancelled, bool unpublished) {
   const auto fields = manifest(root);
   Raw12Dataset result;
+  unsigned dataset_timing=0;
   const auto complete = number(fields, "complete");
   require(complete == (unpublished ? 0u : 1u), "RAW12 recording completion state mismatch");
   result.complete = complete == 1;
@@ -169,7 +171,12 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
       entry.byte_size = uint32_t(jsonNumber(row, "bytes"));
       entry.frame_id = uint32_t(jsonNumber(row, "frame_id"));
       entry.timestamp_us = jsonNumber(row, "timestamp_us", 9007199254740991ULL);
-      entry.timing_mode = uint8_t(jsonNumber(row, "timing_mode", 3));
+      entry.timing_mode = uint8_t(jsonNumber(row, "timing_mode", 4));
+      require((entry.timing_mode==0||entry.timing_mode==3||entry.timing_mode==4)&&
+              prism::capture::validProfileTiming(entry.timing_mode,entry.timestamp_us),"Invalid image timing semantics");
+      if(!entry.timing_mode)result.ordinal_only=true;
+      else if(!dataset_timing)dataset_timing=entry.timing_mode;
+      else if(dataset_timing!=entry.timing_mode)result.ordinal_only=true;
       entry.raw_crc32 = uint32_t(jsonNumber(row, "raw_crc32"));
       entry.encoded_crc32 = uint32_t(jsonNumber(row, "encoded_crc32"));
       entry.dropped_before = accounted || row.contains("dropped_before") ? jsonNumber(row, "dropped_before") : 0;
@@ -179,7 +186,8 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
               offset <= size && entry.byte_size <= size - offset, "Invalid frame range for " + prefix);
       require(entries.empty() ? (!accounted || entry.frame_id == uint32_t(first + entry.dropped_before)) :
               (entry.frame_id == uint32_t(uint64_t(entries.back().frame_id)+1+entry.dropped_before) &&
-               entry.timestamp_us > entries.back().timestamp_us), "Frame sequence/timestamp mismatch for " + prefix);
+               (!entry.timing_mode || entry.timing_mode!=entries.back().timing_mode ||
+                entry.timestamp_us > entries.back().timestamp_us)), "Frame sequence/timestamp mismatch for " + prefix);
       // Opening reads only fixed-size headers; payload CRCs are checked on display
       // and all payloads are checked by the cancellable Validate action.
       uint8_t h[64]{};
@@ -211,6 +219,17 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
       number(fields, "frames_complete") == (totalDrops == 0), "Manifest drop status mismatch");
   if(fields.count("dropped_frames_total"))require(number(fields,"dropped_frames_total")==totalDrops,
       "Manifest total drop count mismatch");
+  if(result.ordinal_only) {
+    // No time interpolation or substitution. Each camera's ordinal N is a
+    // real entry, not an assertion that four ordinal-N frames were synchronized.
+    size_t count=0;for(const auto& lane:result.cameras)count=std::max(count,lane.size());
+    result.timestamps.assign(count,0);
+    for(size_t n=0;n<count;++n){std::array<int,4> row{};
+      for(size_t c=0;c<4;++c)row[c]=n<result.cameras[c].size()?int(n):-1;
+      result.display.push_back(row);
+    }
+    return result;
+  }
   std::sort(result.timestamps.begin(), result.timestamps.end());
   result.timestamps.erase(std::unique(result.timestamps.begin(), result.timestamps.end()), result.timestamps.end());
   std::array<size_t, 4> next{};
@@ -243,6 +262,9 @@ QImage loadRaw12DatasetImage(const DatasetImageEntry& entry) {
     for (unsigned x = 0; x < raw.width; ++x)
       out[x] = uint8_t(prism::capture::raw12Pixel(raw, size_t(y)*raw.width+x) >> 4);
   }
+  // Same display-only provenance as live USB preview. Files and full decoded
+  // samples remain untouched; UI controls may filter only their scaled view.
+  image.setText(ui::kRaw12PreviewKey, QStringLiteral("native-bayer"));
   return image;
 }
 
@@ -254,6 +276,9 @@ static DatasetValidationResult validateRaw12DatasetImpl(const std::filesystem::p
   try {
     result.device_model = readDatasetIdentity(root).model;
     const auto data = loadRaw12DatasetImpl(root, cancelled, unpublished);
+    bool common=false;for(const auto& lane:data.cameras)if(!lane.empty()){common=lane.front().timing_mode==4;break;}
+    result.time_domain=data.ordinal_only?"unknown-or-mixed-image-clocks":common?
+        "common-external-trigger-device-clock":"diagnostic-not-synchronized-exposure";
     result.cameras_present = true;
     for (size_t c = 0; c < 4; ++c) {
       const auto name = "camera" + std::to_string(c);
@@ -261,7 +286,7 @@ static DatasetValidationResult validateRaw12DatasetImpl(const std::filesystem::p
       std::vector<uint64_t> intervals;
       for (const auto& entry : data.cameras[c]) {
         checkCancelled(cancelled); (void)decode(entry);
-        if (summary.rows) intervals.push_back(entry.timestamp_us - summary.last_timestamp_us);
+        if (summary.rows && !data.ordinal_only) intervals.push_back(entry.timestamp_us - summary.last_timestamp_us);
         else summary.first_timestamp_us = entry.timestamp_us;
         summary.last_timestamp_us = entry.timestamp_us; ++summary.rows; ++result.checked_records;
         if (progress) progress(result.checked_records, name);
@@ -279,6 +304,8 @@ static DatasetValidationResult validateRaw12DatasetImpl(const std::filesystem::p
     }
     ++result.total_warnings;
     result.issues.push_back({DatasetValidationSeverity::Warning, "dataset.info", 0,
+        data.ordinal_only?"Unknown/mixed image timing: original frames retained for ordinal browsing, no timed playback or synchronization claim.":
+        common?"Common physical trigger timestamps on the device clock. UTC synchronization is not asserted by this image flag.":
         "Diagnostic sample timing; not synchronized exposure UTC. Independent camera counts are retained."});
     result.valid = true;
   } catch (const std::exception& e) {

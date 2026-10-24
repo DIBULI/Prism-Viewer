@@ -1,7 +1,7 @@
 # Prism Viewer 1.3.0
 
 Matches the pinned public **Prism SDK 1.3.0** (core Runtime API 19, Network API 4,
-Profile API 1), Agent 1.3.0 and Sensor Board 0.5.0. Headers and binaries must
+Profile API 1, CameraControl API 1), Agent 1.3.0 and Sensor Board 0.5.0. Headers and binaries must
 come from the same current package; an older download with the same version
 number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 
@@ -15,6 +15,12 @@ A missing camera does not stop other camera previews or IMU callbacks.
 tiles are downsampled in Viewer; bounded per-camera preview replacement does not
 drop recorded data. RAW12 recording/playback validates lengths and CRC, keeps
 source identity, and reports missing data. RAW12 ROS export is not implemented.
+
+The current 415M panel uses native integer-row exposure, independent AE/AGC,
+manual gain and lower/upper bounds. Accepted configuration is distinct from
+per-frame observations. Common-trigger timestamps are displayed only when the
+validated frame reports that timing mode. CFA-aware thumbnail generation fixes
+checkerboard sampling without altering original RAW12 pixels or recordings.
 
 **Network connection** accepts Wi-Fi or Ethernet and the device's **Web admin
 login password**. The password is session-only; old TLS certificate pairing and
@@ -99,7 +105,9 @@ NTRIP correction session. Select **中国移动 CORS** or **千寻 CORS** in
 For Qianxun, start with `AUTO` and choose the coordinate system supplied with
 your account. Switching providers preserves the coordinate-system choice but
 updates its port: Qianxun CGCS2000 uses **8003**, not China Mobile's 8001.
-Only China Mobile has a preset backup endpoint. Account validity is managed
+Only China Mobile has a preset backup endpoint. The native RTK module uses the
+selected primary IPv4/non-TLS endpoint; it does not inherit Viewer socket
+failover, hostname or TLS support. Account validity is managed
 by the provider; check expiry/renewal if authentication is rejected.
 
 China Mobile additionally supports:
@@ -116,14 +124,16 @@ China Mobile additionally supports:
   coordinates are not accepted.
 
 The stable `cors/serviceProvider` setting saves the selected provider alongside
-the endpoint, port and mountpoint. Both providers use the same live device-GGA
-and NTRIP authentication path. Caster RTCM is
-forwarded only to the RK Agent's Host CORS input; it is not sent back to the
-sensor-board GNSS receiver. The session can remain active during camera/IMU
-capture, and Viewer serializes correction commands with stream reads on the
-shared USB client.
+the endpoint, port and mountpoint. Explicit **Connect** now saves the account
+on the device, binds the saved configuration generation, and starts the
+Timesync module's native RTK connection using its own network. Select Timesync
+RTK mode first and explicitly consent to sending live GNSS position. The UI
+requires fresh status and confirms module stop; opening this page never starts
+CORS. The older socket transport remains separately tested, not a silent
+fallback when native account saving fails.
 
-Passwords are never written to Viewer logs. They are session-only unless
+Passwords are never written to Viewer logs. Connect explicitly saves the
+account on the device. The Viewer-side copy is session-only unless
 **Remember password** is explicitly enabled; that option stores the password
 in the current user's local Qt settings.
 

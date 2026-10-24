@@ -4,6 +4,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtNetwork/QAbstractSocket>
 #include <QtNetwork/QSslSocket>
+#include <QtNetwork/QHostAddress>
 
 #include <algorithm>
 #include <chrono>
@@ -115,6 +116,95 @@ void CorsSession::start(const CorsConfiguration& configuration,
         workerMain(configuration, std::move(transport),
                    std::move(status_handler));
       });
+}
+
+void CorsSession::startNative(const CorsConfiguration& configuration,
+                              NativeCorsTransport transport,
+                              StatusHandler handler) {
+  stop();
+  const QString validation = validateCorsConfiguration(configuration, false);
+  if (!validation.isEmpty()) throw std::invalid_argument(validation.toStdString());
+  if (!transport.port || !transport.save || !transport.start || !transport.status || !transport.stop)
+    throw std::invalid_argument("Incomplete Timesync RTK transport");
+  const auto endpoint = configuration.endpoints.front();
+  QHostAddress address(endpoint.host);
+  if (endpoint.tls || address.protocol() != QAbstractSocket::IPv4Protocol)
+    throw std::invalid_argument("Timesync CORS requires an IPv4 address and non-TLS port");
+  prism::TimeSyncCorsConfiguration request;
+  request.enabled = true;
+  request.ip = address.toString().toStdString();
+  request.port = endpoint.port;
+  request.mountpoint = configuration.mountpoint.toStdString();
+  request.username = configuration.username.toStdString();
+  request.password = configuration.password.toStdString();
+  stop_requested_.store(false, std::memory_order_release);
+  active_.store(true, std::memory_order_release);
+  worker_ = std::thread([this, request, endpoint, transport = std::move(transport), handler = std::move(handler)]() {
+    CorsSessionStatus state;
+    state.endpoint = endpointLabel(endpoint);
+    state.phase = CorsSessionPhase::Starting;
+    auto publish = [&] { if (handler) handler(state); };
+    bool start_attempted = false;
+    publish();
+    try {
+      const auto port = transport.port();
+      if (port.mode != prism::TimeSyncPortMode::Rtk || !port.applied || port.error_code)
+        throw std::runtime_error("Select and apply Timesync RTK mode in GPS / GNSS before connecting CORS");
+      if (!stop_requested_.load()) {
+        const auto saved = transport.save(request);
+        if (!saved.configuration_saved || !saved.enabled || !saved.credentials_present)
+          throw std::runtime_error("CORS configuration was not saved by the device");
+        if (!stop_requested_.load()) {
+          prism::RtkStartOptions options;
+          options.expected_cors_generation = saved.saved_generation;
+          options.allow_gga = true; // Explicit Connect action; disclosure is next to the button.
+          options.timeout_ms = 10000;
+          start_attempted = true; // A timed-out command may still have reached the module.
+          auto live = transport.start(options);
+          while (!stop_requested_.load()) {
+            state.native_status_valid = true;
+            state.native_status = live;
+            state.received_bytes = live.network_bytes;
+            state.forwarded_bytes = live.transmitted_bytes;
+            const bool fresh = live.linked && live.device_status_fresh && live.control_status_fresh;
+            if (live.error_code || (live.control_status_fresh && (live.control_error || live.control_state == 5)))
+              throw std::runtime_error("RTK module error: agent=" + std::to_string(live.error_code) +
+                                       " control=" + std::to_string(live.control_error));
+            if (fresh && live.control_state == 4)
+              throw std::runtime_error("RTK was stopped by the device or another client");
+            const bool current = live.configuration_applied &&
+                live.saved_generation == saved.saved_generation &&
+                live.applied_generation == saved.saved_generation &&
+                live.current_cors_generation == saved.saved_generation;
+            state.phase = fresh && current && live.control_state == 2 &&
+                          (live.device_flags & 32) && live.rtcm_frames && live.rtcm_age_ms <= 5000
+                              ? CorsSessionPhase::Streaming : CorsSessionPhase::Connecting;
+            publish();
+            if (!waitInterruptibly(stop_requested_, 1000)) break;
+            live = transport.status();
+          }
+        }
+      }
+    } catch (const std::exception& error) {
+      state.error = QString::fromUtf8(error.what());
+      state.phase = CorsSessionPhase::Error;
+    }
+    if (start_attempted) {
+      try {
+        const auto stopped = transport.stop();
+        if (!stopped.linked || !stopped.control_status_fresh || stopped.control_state != 4 || stopped.error_code)
+          throw std::runtime_error("RTK stop was not confirmed; check device status");
+      } catch (const std::exception& error) {
+        if (!state.error.isEmpty()) state.error += QStringLiteral("; ");
+        state.error += QString::fromUtf8(error.what());
+        state.phase = CorsSessionPhase::Error;
+      }
+    }
+    if (state.phase != CorsSessionPhase::Error) state.phase = CorsSessionPhase::Disconnected;
+    state.native_status_valid = false;
+    active_.store(false, std::memory_order_release);
+    publish();
+  });
 }
 
 void CorsSession::requestStop() noexcept {

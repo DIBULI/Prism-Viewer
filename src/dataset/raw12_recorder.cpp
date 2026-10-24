@@ -47,6 +47,7 @@ struct Raw12Recorder::Impl {
   Raw12RecordingStatus state;
   std::array<uint64_t,4> pending{},offset{},stamp{};
   std::array<uint32_t,4> first{},last{};
+  std::array<uint8_t,4> timing{};
   std::thread worker;
   explicit Impl(const std::filesystem::path& parent,Raw12RecordingOptions o):options(std::move(o)){
     require(options.fps==1||options.fps==2,"RAW12 recording supports only1 or2FPS");
@@ -88,7 +89,7 @@ struct Raw12Recorder::Impl {
           <<"fps_per_camera="<<options.fps<<"\ncomplete="<<complete<<"\nbytes="<<state.bytes
           <<"\ndrop_accounting=1\nhas_drops="<<bool(drops)<<"\nframes_complete="<<(!drops&&state.error.empty())
           <<"\nqueue_policy=drop_oldest_queued\ndropped_frames_total="<<drops
-          <<"\ntiming=diagnostic-not-synchronized-exposure\nrecording_host=viewer\n";
+          <<"\ntiming=per-image-discriminator-device-clock\nrecording_host=viewer\n";
       std::string error=state.error;for(char& c:error)if(c=='\n'||c=='\r')c=' ';
       text<<"error="<<error<<'\n';
       for(unsigned c=0;c<4;c++){
@@ -115,10 +116,11 @@ struct Raw12Recorder::Impl {
         "Invalid RAW12 recording frame");
       const auto c=image.camera;const auto id=rawLe32(p+24);
       const auto time=rawLe32(p+40)|(uint64_t(rawLe32(p+44))<<32);
+      require((p[38]==0||p[38]==3||p[38]==4)&&validProfileTiming(p[38],time),"Invalid RAW12 image timing");
       require(state.received[c]<UINT32_MAX&&(!state.received[c]||
-        (id==last[c]+1u&&time>stamp[c])),"RAW12 source sequence/timestamp gap");
+        (id==last[c]+1u&&(!p[38]||p[38]!=timing[c]||time>stamp[c]))),"RAW12 source sequence/timestamp gap");
       if(!state.received[c])first[c]=id;
-      ++state.received[c];last[c]=id;stamp[c]=time;
+      ++state.received[c];last[c]=id;stamp[c]=time;timing[c]=p[38];
       // Reject an oversized incoming frame without destroying useful queued
       // work. The writer's already-popped item is never eligible for eviction.
       if(b.size()<=options.queue_bytes){

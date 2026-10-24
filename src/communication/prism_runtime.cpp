@@ -1,6 +1,7 @@
 #include "communication/prism_runtime.hpp"
 #include "prism/usb/network_runtime_api.hpp"
 #include "prism/usb/profile_runtime_api.hpp"
+#include "prism/usb/camera_control_runtime_api.hpp"
 #include "prism/usb/gnss_reception_runtime_api.hpp"
 
 #ifdef _WIN32
@@ -104,6 +105,15 @@ const prism::NetworkRuntimeApi* networkApi() {
   return api;
 }
 
+const prism::CameraControlRuntimeApi* cameraControlApi() {
+  const auto get = reinterpret_cast<prism::GetCameraControlRuntimeApiFunction>(
+      GetProcAddress(loadModule(), prism::kCameraControlRuntimeApiEntryPoint));
+  const auto* api = get ? get(prism::kCameraControlRuntimeApiVersion) : nullptr;
+  if (!prism::validCameraControlRuntimeApi(api))
+    throw std::runtime_error("Matching row/gain SDK extension required; update the complete Viewer package");
+  return api;
+}
+
 const prism::ProfileRuntimeApi* profileApi() {
   const auto get = reinterpret_cast<prism::GetProfileRuntimeApiFunction>(
       GetProcAddress(loadModule(), prism::kProfileRuntimeApiEntryPoint));
@@ -122,6 +132,14 @@ prism::VideoStatus Client::startProfileVideoGpu(uint32_t fps) { return profileAp
 uint32_t Client::beginLiveExposureRows(uint8_t mask,const std::array<uint16_t,4>& rows) { return profileApi()->begin_live_rows(handle_,mask,rows); }
 bool Client::finishLiveExposureRows(const prism::Frame& frame,prism::ExposureConfiguration& applied) { return profileApi()->finish_live_rows(handle_,frame,applied); }
 bool Client::liveExposureRowsPending() const { return profileApi()->live_rows_pending(handle_); }
+prism::CameraControlIdleStatus Client::cameraControlIdle() { return cameraControlApi()->idle(handle_); }
+prism::CameraControlIdleStatus Client::stageCameraControlIdle(const prism::CameraControlIdleStatus& s,
+    const std::array<prism::CameraRowGainConfig,4>& v) { return cameraControlApi()->stage_idle(handle_,s,v); }
+uint32_t Client::beginCameraControlGet() { return cameraControlApi()->begin_get(handle_); }
+uint32_t Client::beginCameraControlSet(const prism::CameraControlStatus& s,
+    const std::array<prism::CameraRowGainConfig,4>& v) { return cameraControlApi()->begin_set(handle_,s,v); }
+bool Client::finishCameraControl(const prism::Frame& f, prism::CameraControlStatus& s) { return cameraControlApi()->finish(handle_,f,s); }
+bool Client::cameraControlPending() const { return cameraControlApi()->pending(handle_); }
 
 prism::GnssReceptionStatus Client::gnssReceptionStatus() {
   const auto* api = receptionApi();
@@ -192,6 +210,26 @@ prism::TimeSyncPortStatus Client::timeSyncPortStatus() {
 }
 prism::TimeSyncPortStatus Client::setTimeSyncPortMode(prism::TimeSyncPortMode mode) {
   return api_->set_timesync_port_mode(handle_, mode);
+}
+namespace {
+const prism::RtkModuleControlRuntimeApi* rtkControlApi() {
+  const auto get = reinterpret_cast<prism::GetRtkModuleControlRuntimeApiFunction>(
+      GetProcAddress(loadModule(), prism::kRtkModuleControlRuntimeApiEntryPoint));
+  const auto* api = get ? get(prism::kRtkModuleControlRuntimeApiVersion) : nullptr;
+  if (!api || api->abi_version != prism::kRtkModuleControlRuntimeApiVersion ||
+      api->struct_size < sizeof(*api) || !api->save_cors_configuration || !api->start_rtk || !api->stop_rtk)
+    throw std::runtime_error("SDK does not support Timesync RTK control");
+  return api;
+}
+}
+prism::TimeSyncCorsStatus Client::saveTimeSyncCorsConfiguration(const prism::TimeSyncCorsConfiguration& configuration) {
+  return rtkControlApi()->save_cors_configuration(handle_, configuration);
+}
+prism::TimeSyncRtkStatus Client::startRtk(const prism::RtkStartOptions& options) {
+  return rtkControlApi()->start_rtk(handle_, options);
+}
+prism::TimeSyncRtkStatus Client::stopRtk(uint32_t timeout_ms) {
+  return rtkControlApi()->stop_rtk(handle_, timeout_ms);
 }
 prism::TimeSyncRtkStatus Client::timeSyncRtkStatus() {
   return api_->timesync_rtk_status(handle_);

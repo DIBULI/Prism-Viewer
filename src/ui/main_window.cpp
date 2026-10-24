@@ -2,7 +2,7 @@
 #include "prism/usb/lidar_points.hpp"
 #include "communication/prism_runtime.hpp"
 #include "communication/profile_capture.hpp"
-#include "communication/live_exposure_rows.hpp"
+#include "communication/native_camera_control.hpp"
 #include "communication/rtk_corrections.hpp"
 #include "common/ui_text.hpp"
 #include "communication/device_session.hpp"
@@ -21,6 +21,7 @@
 #include "ui/app_theme.hpp"
 #include "ui/camera_encoding_panel.hpp"
 #include "ui/camera_exposure_panel.hpp"
+#include "ui/native_camera_control_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
 #include "ui/zoomable_image_view.hpp"
 #include "ui/cors_panel.hpp"
@@ -301,6 +302,7 @@ void traceProfilePreview(const char* stage, uint64_t generation, unsigned camera
 
 struct CameraPreviewJob {
   std::array<uint8_t,4> formats{};
+  std::array<QString,4> stats{};
   bool independent_image=false;
   uint32_t frame_id = 0;
   uint64_t received_frame_sets = 0;
@@ -310,6 +312,9 @@ struct CameraPreviewJob {
 };
 
 struct DecodedCameraPreviewJob {
+  std::array<QString,4> stats{};
+  std::array<prism_viewer::ui::RawPreviewMetadata,4> raw_metadata{};
+  std::array<bool,4> is_raw{};
   bool independent_image = false;
   uint32_t frame_id = 0;
   uint64_t received_frame_sets = 0;
@@ -2969,8 +2974,15 @@ class MainWindow : public QMainWindow {
     exposure_scroll->setFrameShape(QFrame::NoFrame);
     exposure_scroll->setWidgetResizable(true);
     exposure_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    camera_exposure_panel_ = new CameraExposurePanel(exposure_scroll);
-    exposure_scroll->setWidget(camera_exposure_panel_);
+    auto* exposure_container = new QWidget(exposure_scroll);
+    auto* exposure_layout = new QVBoxLayout(exposure_container);
+    exposure_layout->setContentsMargins(0,0,0,0);
+    camera_exposure_panel_ = new CameraExposurePanel(exposure_container);
+    native_camera_control_panel_ = new prism_viewer::ui::NativeCameraControlPanel(exposure_container);
+    native_camera_control_panel_->hide();
+    exposure_layout->addWidget(camera_exposure_panel_);
+    exposure_layout->addWidget(native_camera_control_panel_);
+    exposure_scroll->setWidget(exposure_container);
     camera_tools->addTab(
         exposure_scroll, uiText("Exposure", "曝光"));
 
@@ -3626,6 +3638,10 @@ class MainWindow : public QMainWindow {
     camera_exposure_panel_->on_refresh =
         [this]() {
           startCameraExposureOperation(std::nullopt, std::nullopt);
+        };
+    native_camera_control_panel_->on_request =
+        [this](const prism_viewer::NativeControlRequest& request) {
+          startNativeCameraControlOperation(request);
         };
     camera_exposure_panel_->on_apply =
         [this](const prism::ExposureConfiguration& configuration,
@@ -4548,41 +4564,19 @@ class MainWindow : public QMainWindow {
       return;
     }
 
-    cors_session_.setLiveGga(
-        latest_gnss_timing_status_.has_value()
-            ? prism_viewer::cors::corsGgaDataFromGnssStatus(
-                  *latest_gnss_timing_status_)
-            : std::optional<prism_viewer::cors::CorsGgaData>{});
-    prism_viewer::cors::CorsCorrectionTransport transport;
-    transport.begin = [this]() {
-      return runCorsUsbCommand([this]() {
-        const auto status =
-            prism_viewer::communication::beginRtkCorrections(client_);
-        rememberRtkCorrectionStatus(status);
-        return status;
-      });
+    prism_viewer::cors::NativeCorsTransport transport;
+    transport.port = [this]() { return runCorsUsbCommand([this]() { return client_.timeSyncPortStatus(); }); };
+    transport.save = [this](const prism::TimeSyncCorsConfiguration& config) {
+      return runCorsUsbCommand([this, &config]() { return client_.saveTimeSyncCorsConfiguration(config); });
     };
-    transport.send = [this](const uint8_t* data, size_t size) {
-      const auto received_at = std::chrono::steady_clock::now();
-      return runCorsUsbCommand([this, data, size, received_at]() {
-        const auto status = prism_viewer::communication::sendRtkCorrections(
-            client_, data, size, 3000);
-        rememberRtkCorrectionStatus(status);
-        dataset_recorder_.appendBaseRtcm(data, size, received_at);
-        return status;
-      });
+    transport.start = [this](const prism::RtkStartOptions& options) {
+      return runCorsUsbCommand([this, &options]() { return client_.startRtk(options); });
     };
-    transport.end = [this]() {
-      return runCorsUsbCommand([this]() {
-        const auto status =
-            prism_viewer::communication::endRtkCorrections(client_);
-        rememberRtkCorrectionStatus(status);
-        return status;
-      });
-    };
+    transport.status = [this]() { return runCorsUsbCommand([this]() { return client_.timeSyncRtkStatus(); }); };
+    transport.stop = [this]() { return runCorsUsbCommand([this]() { return client_.stopRtk(5000); }); };
 
     try {
-      cors_session_.start(
+      cors_session_.startNative(
           configuration, std::move(transport),
           [this, provider = configuration.service_provider,
            mountpoint = configuration.mountpoint](
@@ -4627,9 +4621,7 @@ class MainWindow : public QMainWindow {
       cors_panel_->setSessionStatus(stopping);
     }
     cors_session_.stop();
-    latest_cors_status_ = {};
-    cors_panel_->setSessionStatus(latest_cors_status_);
-    appendLog(QStringLiteral("CORS session stopped"));
+    appendLog(QStringLiteral("CORS stop requested; device confirmation pending"));
     refreshControls();
   }
 
@@ -4851,7 +4843,47 @@ class MainWindow : public QMainWindow {
     bool apply = false;
     prism::ExposureConfiguration configuration;
     prism::ExposureLimits limits;
+    std::optional<prism_viewer::NativeControlRequest> native;
   };
+
+  void publishNativeIdle(const prism::CameraControlIdleStatus& status) {
+    post([this,status]() {
+      camera_exposure_operation_running_=false;
+      native_camera_control_panel_->setBusy(false);
+      if(client_.isOpen() && capture_model_.load()==prism::DeviceModel::Prism415M && !worker_running_) {
+        native_camera_control_panel_->setAvailability(true,false,false);
+        native_camera_control_panel_->setIdle(status);
+      }
+      refreshControls();
+    });
+  }
+
+  void publishNativeLive(const prism::CameraControlStatus& status) {
+    post([this,status]() {
+      camera_exposure_operation_running_=false;
+      native_camera_control_panel_->setBusy(false);
+      if(client_.isOpen() && capture_model_.load()==prism::DeviceModel::Prism415M && worker_running_) {
+        native_camera_control_panel_->setAvailability(true,true,false);
+        native_camera_control_panel_->setLive(status);
+      }
+      refreshControls();
+    });
+  }
+
+  void startNativeCameraControlOperation(const prism_viewer::NativeControlRequest& native) {
+    if(!client_.isOpen() || capture_model_.load()!=prism::DeviceModel::Prism415M ||
+       camera_exposure_operation_running_ || time_sync_running_ || wifi_operation_running_ ||
+       camera_encoding_operation_running_ || upgrade_running_) return;
+    CameraExposureOperationRequest request;request.native=native;request.apply=native.apply;
+    camera_exposure_operation_running_=true;native_camera_control_panel_->setBusy(true);refreshControls();
+    if(worker_running_) {
+      std::lock_guard<std::mutex> lock(camera_exposure_request_mutex_);
+      pending_camera_exposure_request_=request;
+    } else {
+      operation_controller_.join();
+      operation_controller_.start([this,request](){runCameraExposureOperation(request);});
+    }
+  }
 
   void publishCameraExposureResult(
       const prism::ExposureConfiguration& configuration,
@@ -4902,6 +4934,8 @@ class MainWindow : public QMainWindow {
       camera_exposure_operation_running_ = false;
       camera_exposure_panel_->setBusy(false);
       camera_exposure_panel_->setError(error);
+      native_camera_control_panel_->setBusy(false);
+      native_camera_control_panel_->setError(error);
       setStatusAppearance(true);
       status_label_->setText(
           uiText("Camera exposure operation failed: %1",
@@ -4918,6 +4952,19 @@ class MainWindow : public QMainWindow {
   void runCameraExposureOperation(
       const CameraExposureOperationRequest& request) {
     try {
+      if(request.native) {
+        const auto& r=*request.native;
+        if(capture_model_.load()!=prism::DeviceModel::Prism415M || worker_running_)
+          throw std::runtime_error("Capture state changed; refresh row/gain controls");
+        const auto staged=withClientIo([&]() {
+          if(!r.apply)return client_.cameraControlIdle();
+          if(!r.idle || r.live)throw std::runtime_error("Idle state changed; refresh before staging");
+          return client_.stageCameraControlIdle(*r.idle,r.configuration);
+        });
+        publishNativeIdle(staged);return;
+      }
+      if(capture_model_.load()==prism::DeviceModel::Prism415M)
+        throw std::runtime_error("415M requires the native row/gain interface; legacy exposure disabled");
       prism::ExposureLimits limits;
       prism::ExposureConfiguration configuration;
       withClientIo([&]() {
@@ -4946,10 +4993,8 @@ class MainWindow : public QMainWindow {
     }
     if (capture_active && capture_model_.load() == prism::DeviceModel::Prism415M) {
       try {
-        if (!request->apply)
-          throw std::runtime_error("Refresh exposure after capture; live capture only accepts row updates");
-        withClientIo([&]() { live_exposure_rows_.begin(client_, request->configuration); });
-        live_exposure_limits_ = request->limits;
+        if(!request->native)throw std::runtime_error("415M requires the native row/gain interface");
+        withClientIo([&]() { native_camera_control_.begin(client_,*request->native); });
       } catch (const std::exception& ex) {
         publishCameraExposureError(toQString(ex.what()));
       }
@@ -4966,8 +5011,8 @@ class MainWindow : public QMainWindow {
       cancelled = pending_camera_exposure_request_.has_value();
       pending_camera_exposure_request_.reset();
     }
-    cancelled = cancelled || live_exposure_rows_.waiting();
-    live_exposure_rows_.reset();
+    cancelled = cancelled || native_camera_control_.waiting();
+    native_camera_control_.reset();
     if (cancelled) publishCameraExposureError(reason);
   }
 
@@ -5324,11 +5369,21 @@ class MainWindow : public QMainWindow {
       cors_panel_->setDeviceConfiguration(configuration);
       camera_exposure_panel_->setCameraFps(configuration.camera_fps);
       camera_exposure_panel_->setDeviceModel(device_info.device_model);
-      camera_exposure_panel_->setConfiguration(
-          opened.exposure, opened.exposure_limits);
+      const bool native_control=device_info.device_model==prism::DeviceModel::Prism415M;
+      camera_exposure_panel_->setVisible(!native_control);
+      native_camera_control_panel_->setVisible(native_control);
+      native_camera_control_panel_->clear();
+      if(native_control) {
+        if(!opened.native_control_idle)throw std::runtime_error("Missing native idle row/gain status");
+        native_camera_control_panel_->setAvailability(true,false,false);
+        native_camera_control_panel_->setIdle(*opened.native_control_idle);
+      } else camera_exposure_panel_->setConfiguration(opened.exposure, opened.exposure_limits);
       camera_encoding_panel_->setEnabled(!profilePreviewEnabled());
       camera_tools_->setTabEnabled(0, profilePreviewEnabled());
+      // RAW12 is inserted at index 0: index 1 is Stream, not Exposure.
+      // Keep JPEG stream settings disabled for RAW profile products.
       camera_tools_->setTabEnabled(1, !profilePreviewEnabled());
+      camera_tools_->setTabEnabled(2, true);
       camera_tools_->setCurrentIndex(profilePreviewEnabled() ? 0 : 1);
       try {
         updateLidarStatus(client_.lidarStatus());
@@ -5769,7 +5824,7 @@ class MainWindow : public QMainWindow {
       .arg(double(status.bytes)/1048576.0,0,'f',1)
       .arg(!status.error.empty()?toQString(status.error):dropped?
         uiText("WARNING: disk queue overflow, %1 whole frames dropped", "警告：写盘队列溢出，已丢弃 %1 个完整帧").arg(dropped):
-        uiText("Diagnostic timing, not synchronized exposure UTC", "诊断时间戳，非同步曝光 UTC")));
+        uiText("Original per-image timing retained; see each frame's timing mode", "保留各帧原始时标；详见每帧时间类型")));
     imu_record_status_label_->setStyleSheet((dropped||!status.error.empty())?
       QStringLiteral("background:#fffaeb;color:#b54708;padding:4px;"):
       QStringLiteral("background:#ecfdf3;color:#027a48;padding:4px;"));
@@ -6542,6 +6597,10 @@ class MainWindow : public QMainWindow {
       camera_exposure_panel_->setControlsLocked(
           time_syncing || wifi_busy || encoding_busy || upgrading || lidar_network_busy);
     }
+    if(native_camera_control_panel_ != nullptr) {
+      native_camera_control_panel_->setAvailability(device_open,running && !upgrading,
+          time_syncing || wifi_busy || encoding_busy || upgrading || lidar_network_busy);
+    }
     if (camera_encoding_panel_ != nullptr) {
       camera_encoding_panel_->setDeviceOpen(device_open);
       camera_encoding_panel_->setCaptureActive(
@@ -7124,9 +7183,13 @@ class MainWindow : public QMainWindow {
     dataset_camera_zoom_dialog_->activateWindow();
   }
 
-  QString describeDatasetTimestamp(uint64_t timestamp_us) const {
-    if (dataset_raw12_) return uiText("%1 s (diagnostic; not exposure UTC)",
-        "%1 秒（诊断时间，非曝光 UTC）").arg(double(timestamp_us) / 1000000.0, 0, 'f', 6);
+  QString describeDatasetTimestamp(uint64_t timestamp_us,int timing_mode=-1) const {
+    if (dataset_raw12_) {
+      if(timing_mode>=0)return prism_viewer::ui::rawTimingDescription(unsigned(timing_mode),timestamp_us,
+          uiText("en","zh")==QStringLiteral("zh"));
+      return uiText("%1 s (device clock; see per-frame timing)",
+          "%1 秒（设备时标；详见各帧时间类型）").arg(double(timestamp_us)/1000000.0,0,'f',6);
+    }
     // Unix timestamps in the current product are around 1.7e15 us. Smaller
     // values are monotonic device timestamps and must not be rendered as 1970.
     if (timestamp_us >= 100000000000000ULL) {
@@ -7153,7 +7216,7 @@ class MainWindow : public QMainWindow {
 
   void updateDatasetPlaybackControls() {
     const bool has_frames = dataset_frame_count_ != 0u;
-    const bool can_play = !dataset_playback_data_.timeline.empty() &&
+    const bool can_play = !(dataset_raw12_ && raw_dataset_.ordinal_only) && !dataset_playback_data_.timeline.empty() &&
                           !worker_running_ && !rosbag_export_running_;
     if (!can_play && dataset_playback_active_) {
       dataset_playback_active_ = false;
@@ -8021,13 +8084,13 @@ class MainWindow : public QMainWindow {
         if (raw_dataset_.timestamps.empty()) throw std::runtime_error("No recorded RAW12 images");
         dataset_camera_entries_ = raw_dataset_.cameras;
         dataset_frame_count_ = raw_dataset_.timestamps.size();
-        for (size_t i = 0; i < dataset_frame_count_; ++i)
+        if(!raw_dataset_.ordinal_only)for (size_t i = 0; i < dataset_frame_count_; ++i)
           dataset_playback_data_.timeline.push_back({raw_dataset_.timestamps[i], DatasetPlaybackEventType::CameraFrame, i});
         dataset_metadata_only_ = false;
         const auto drops = raw_dataset_.dropped[0] + raw_dataset_.dropped[1] + raw_dataset_.dropped[2] + raw_dataset_.dropped[3];
         dataset_summary_label_->setText(uiText(
-            "Model: %1 | RAW12 lossless · grayscale display | Frames %2 / %3 / %4 / %5 | Recorded drops: %6 | Independent diagnostic timing, not synchronized exposure UTC",
-            "机型：%1 | RAW12 无损 · 灰度显示 | 帧数 %2 / %3 / %4 / %5 | 录制丢帧：%6 | 独立诊断时间，非同步曝光 UTC")
+            "Model: %1 | RAW12 lossless · grayscale display | Frames %2 / %3 / %4 / %5 | Recorded drops: %6 | Original per-frame timing retained",
+            "机型：%1 | RAW12 无损 · 灰度显示 | 帧数 %2 / %3 / %4 / %5 | 录制丢帧：%6 | 保留各帧原始时标")
             .arg(toQString(identity.model)).arg(raw_dataset_.cameras[0].size()).arg(raw_dataset_.cameras[1].size())
             .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size()).arg(drops));
         QString details = QStringLiteral("device_model=%1\nformat=prism-raw12-dataset-v1\nwidth=5120\nheight=3072\nsource_bits=12\n").arg(toQString(identity.model));
@@ -8309,12 +8372,14 @@ class MainWindow : public QMainWindow {
       if (index >= 0) {
         entries[c] = raw_dataset_.cameras[c][size_t(index)];
         const auto& e = entries[c];
-        samples << QStringLiteral("C%1 #%2 Δ%3ms").arg(c).arg(e.frame_id).arg(double(time-e.timestamp_us)/1000.0, 0, 'f', 1);
+        samples << (raw_dataset_.ordinal_only?QStringLiteral("C%1 #%2").arg(c).arg(e.frame_id):
+            QStringLiteral("C%1 #%2 Δ%3ms").arg(c).arg(e.frame_id).arg(double(time-e.timestamp_us)/1000.0, 0, 'f', 1));
         dataset_image_labels_[c]->setToolTip(uiText(
             "Camera %1 · frame %2\nSample time %3\nAge %4 ms (latest real sample, not a synchronized frame set)\nExposure %5 us · gain %6×\nDrops before this frame: %7",
             "相机 %1 · 帧号 %2\n采样时间 %3\n距当前时刻 %4 毫秒（最近真实样本，非同步帧组）\n曝光 %5 微秒 · 增益 %6×\n本帧之前丢帧：%7")
-            .arg(c).arg(e.frame_id).arg(describeDatasetTimestamp(e.timestamp_us))
-            .arg(double(time-e.timestamp_us)/1000.0, 0, 'f', 1).arg(e.exposure_us).arg(double(e.gain_x1024)/1024.0, 0, 'f', 2).arg(e.dropped_before));
+            .arg(c).arg(e.frame_id).arg(describeDatasetTimestamp(e.timestamp_us,e.timing_mode))
+            .arg(raw_dataset_.ordinal_only?QStringLiteral("—"):QString::number(double(time-e.timestamp_us)/1000.0,'f',1))
+            .arg(e.exposure_us).arg(double(e.gain_x1024)/1024.0, 0, 'f', 2).arg(e.dropped_before));
       } else {
         samples << QStringLiteral("C%1 —").arg(c);
         dataset_image_labels_[c]->setToolTip(uiText("No current sample", "当前无有效帧"));
@@ -8329,7 +8394,10 @@ class MainWindow : public QMainWindow {
       }
     }
     dataset_frame_label_->setText(uiText("Time step %1/%2 | %3\n%4", "时间步 %1/%2 | %3\n%4")
-        .arg(frame+1).arg(dataset_frame_count_).arg(describeDatasetTimestamp(time), samples.join(" · ")));
+        .arg(frame+1).arg(dataset_frame_count_).arg(raw_dataset_.ordinal_only?
+            uiText("Ordinal browsing: missing/mixed timing; no synchronized grouping or timed playback",
+                   "按帧序号浏览：存在未知或混合时标，不作为同步帧组，不按时间自动播放"):
+            describeDatasetTimestamp(time), samples.join(" · ")));
     if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Decoding RAW12…", "正在解码 RAW12……"), {true, true, true, true});
     if (!raw_dataset_decoder_) raw_dataset_decoder_ = std::make_unique<prism_viewer::ui::RawDatasetDecoder>(
         [this](prism_viewer::ui::RawDatasetDecoder::Result result) {
@@ -8572,6 +8640,18 @@ class MainWindow : public QMainWindow {
         for (size_t camera = 0; camera < latest_camera_images_.size();
              ++camera) {
           if (!changed[camera]) continue;
+          if(!frame.stats[camera].isEmpty()) {
+            QString detail=frame.stats[camera];
+            if(frame.is_raw[camera]) {
+              const auto& m=frame.raw_metadata[camera];
+              detail+=QStringLiteral(" · source %1 · %2 · %3 μs · %4×").arg(m.source_frame)
+                  .arg(prism_viewer::ui::rawTimingDescription(m.timing_mode,m.timestamp_us,
+                      uiText("en","zh")==QStringLiteral("zh")))
+                  .arg(m.exposure_us?QString::number(m.exposure_us):QStringLiteral("—"))
+                  .arg(m.gain_x1024?QString::number(double(m.gain_x1024)/1024.0,'f',2):QStringLiteral("—"));
+            }
+            frame_labels_[camera]->setStats(detail);
+          }
           if(!profile_preview_fault_[camera].isEmpty())image_labels_[camera]->clearImage(profile_preview_fault_[camera]);
           else image_labels_[camera]->setImage(latest_camera_images_[camera]);
         }
@@ -8598,6 +8678,7 @@ class MainWindow : public QMainWindow {
       }
 
       DecodedCameraPreviewJob decoded;
+      decoded.stats=job.stats;
       decoded.independent_image = job.independent_image;
       decoded.frame_id = job.frame_id;
       decoded.received_frame_sets = job.received_frame_sets;
@@ -8619,9 +8700,11 @@ class MainWindow : public QMainWindow {
         const QSize maximum_size = full_resolution ? QSize() : job.maximum_preview_size;
         const auto decode_start=std::chrono::steady_clock::now();
         try {
-        if(job.formats[camera]==prism::capture::kRaw12Zstd||job.formats[camera]==prism::capture::kRaw12Rice)
+        if(job.formats[camera]==prism::capture::kRaw12Zstd||job.formats[camera]==prism::capture::kRaw12Rice) {
           decoded.images[camera]=prism_viewer::ui::decodeRawPreview(job.jpeg[camera],
-              maximum_size,camera,job.formats[camera]);
+              maximum_size,camera,job.formats[camera],&decoded.raw_metadata[camera]);
+          decoded.is_raw[camera]=true;
+        }
         else decoded.images[camera] = decodePreviewJpeg(
             job.jpeg[camera], maximum_size);
         decoded.full_resolution[camera] = full_resolution && !decoded.images[camera].isNull();
@@ -9338,7 +9421,7 @@ class MainWindow : public QMainWindow {
         }
         throw;
       }
-      appendLog(profile_preview?QStringLiteral("Profile camera preview; original RAW12 recording available over USB3, diagnostic timestamps only"):
+      appendLog(profile_preview?QStringLiteral("Profile camera preview; original RAW12 recording available over USB3; timing semantics come from each validated image"):
           QStringLiteral("IMU started through agent SDK ImuStream"));
       if (requested_lidar_model != prism::LidarModel::None) {
         try {
@@ -9468,6 +9551,13 @@ class MainWindow : public QMainWindow {
       unsigned consecutive_usb_read_errors = 0;
       std::exception_ptr capture_error;
       try {
+        if(capture_product==prism_viewer::CaptureProduct::Strict415M) {
+          try {
+            camera_exposure_operation_running_=true;
+            post([this](){native_camera_control_panel_->setBusy(true);refreshControls();});
+            withClientIo([this](){native_camera_control_.begin(client_,prism_viewer::NativeControlRequest{});});
+          } catch(const std::exception& ex) {publishCameraExposureError(toQString(ex.what()));}
+        }
         while (!stop_requested_) {
           auto expired = camera_assembler.expire();
           for (auto id : expired.discarded_incomplete_frame_ids)
@@ -9524,11 +9614,12 @@ class MainWindow : public QMainWindow {
           // GNSS/RTK and device diagnostics are independent of camera presence.
           // Their existing rate limits still bound control traffic.
           if(!profile_preview)withClientIo([this](){queryGnssObservations();});
-          if (live_exposure_rows_.expired())
+          if (native_camera_control_.expired())
             publishCameraExposureError(uiText(
                 "Exposure response not confirmed; capture continues, no automatic retry",
                 "曝光响应尚未确认；采集继续，不自动重试"));
-          if (loop_now >= next_device_info_query && !client_.liveExposureRowsPending()) {
+          if (loop_now >= next_device_info_query &&
+              (capture_product!=prism_viewer::CaptureProduct::Strict415M || !client_.cameraControlPending())) {
             const auto query_started_at = std::chrono::steady_clock::now();
             try {
               const auto status =
@@ -9599,9 +9690,9 @@ class MainWindow : public QMainWindow {
           // Matching control replies alone are consumed. Camera/IMU frames,
           // including exposure-transition frames, keep their original path.
           try {
-            prism::ExposureConfiguration applied;
-            if (live_exposure_rows_.accept(client_, frame, applied)) {
-              publishCameraExposureResult(applied, live_exposure_limits_, true);
+            prism::CameraControlStatus accepted;
+            if (native_camera_control_.accept(client_, frame, accepted)) {
+              publishNativeLive(accepted);
               continue;
             }
           } catch (const std::exception& ex) {
@@ -9657,14 +9748,13 @@ class MainWindow : public QMainWindow {
                 double fps=elapsed>0?double(count-1)/elapsed:0;
                 if(count>=4&&image->format==4)profile_measured_millifps_[camera].store(unsigned(fps*1000));
                 if(auto raw=rawRecording())raw->append(*image);
-                const QString detail=QStringLiteral("%1 · %2×%3 · frame %4 · %5 FPS · %6 MiB · %7")
+                const QString detail=QStringLiteral("%1 · %2×%3 · frame %4 · %5 FPS · %6 MiB")
                     .arg(image->format==4?QStringLiteral("002 RAW12 GPU lossless / mono preview"):
                          image->format==3?QStringLiteral("002 RAW12 Zstd / mono preview"):QStringLiteral("001 ISP JPEG"))
                     .arg(image->width).arg(image->height).arg(count).arg(fps,0,'f',2)
-                    .arg(double(image->encoded.size())/1048576.0,0,'f',2)
-                    .arg(uiText("exposure time not synchronized","曝光时间戳未同步"));
-                post([this,camera,detail](){if(profile_preview_fault_[camera].isEmpty())frame_labels_[camera]->setStats(detail);});
+                    .arg(double(image->encoded.size())/1048576.0,0,'f',2);
                 CameraPreviewJob job;job.frame_id=image->frame_id;job.independent_image=true;
+                job.stats[camera]=detail;
                 job.received_frame_sets=++received_camera_frame_sets;
                 job.generation=camera_preview_generation_.load(std::memory_order_acquire);
                 traceProfilePreview("rx",job.generation,camera,job.frame_id,job.received_frame_sets,0,
@@ -9880,6 +9970,7 @@ class MainWindow : public QMainWindow {
   QWidget* camera_page_ = nullptr;
   CameraEncodingPanel* camera_encoding_panel_ = nullptr;
   CameraExposurePanel* camera_exposure_panel_ = nullptr;
+  prism_viewer::ui::NativeCameraControlPanel* native_camera_control_panel_ = nullptr;
   QWidget* imu_page_ = nullptr;
   QWidget* lidar_page_ = nullptr;
   QCheckBox* lidar_enabled_checkbox_ = nullptr;
@@ -10031,8 +10122,7 @@ class MainWindow : public QMainWindow {
   std::mutex camera_exposure_request_mutex_;
   std::optional<CameraExposureOperationRequest>
       pending_camera_exposure_request_;
-  prism_viewer::LiveExposureRows live_exposure_rows_;
-  prism::ExposureLimits live_exposure_limits_;
+  prism_viewer::NativeCameraControl native_camera_control_;
   std::condition_variable camera_preview_wakeup_;
   std::deque<CameraPreviewJob> camera_preview_jobs_;
   std::map<uint64_t, DecodedCameraPreviewJob> camera_preview_completed_;

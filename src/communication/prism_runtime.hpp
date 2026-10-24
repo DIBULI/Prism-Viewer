@@ -1,6 +1,7 @@
 #pragma once
 
 #include "prism/usb/runtime_api.hpp"
+#include "prism/usb/camera_control.hpp"
 
 #include <functional>
 #include <stdexcept>
@@ -90,6 +91,9 @@ class Client {
   prism::GnssTimingStatus gnssTimingStatus();
   prism::TimeSyncPortStatus timeSyncPortStatus();
   prism::TimeSyncPortStatus setTimeSyncPortMode(prism::TimeSyncPortMode mode);
+  prism::TimeSyncCorsStatus saveTimeSyncCorsConfiguration(const prism::TimeSyncCorsConfiguration& configuration);
+  prism::TimeSyncRtkStatus startRtk(const prism::RtkStartOptions& options);
+  prism::TimeSyncRtkStatus stopRtk(uint32_t timeout_ms = 5000);
   prism::TimeSyncRtkStatus timeSyncRtkStatus();
   prism::TimeSyncRtkVersions timeSyncRtkVersions();
   prism::GnssReceptionStatus gnssReceptionStatus();
@@ -108,6 +112,14 @@ class Client {
   uint32_t beginLiveExposureRows(uint8_t mask, const std::array<uint16_t,4>& rows);
   bool finishLiveExposureRows(const prism::Frame&, prism::ExposureConfiguration& applied);
   bool liveExposureRowsPending() const;
+  prism::CameraControlIdleStatus cameraControlIdle();
+  prism::CameraControlIdleStatus stageCameraControlIdle(const prism::CameraControlIdleStatus&,
+      const std::array<prism::CameraRowGainConfig,4>&);
+  uint32_t beginCameraControlGet();
+  uint32_t beginCameraControlSet(const prism::CameraControlStatus&,
+      const std::array<prism::CameraRowGainConfig,4>&);
+  bool finishCameraControl(const prism::Frame&, prism::CameraControlStatus&);
+  bool cameraControlPending() const;
   void stopVideo();
   void sendVideoAck(uint32_t last_frame_id);
   prism::LidarStatus lidarStatus();

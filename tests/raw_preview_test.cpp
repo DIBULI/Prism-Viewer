@@ -2,6 +2,22 @@
 #include <QCoreApplication>
 #include <iostream>
 
+// Independent packed12 oracle, including all four CFA phases.
+QImage referenceThumbnail(const std::vector<uint8_t>& packed,QSize size) {
+  auto pixel=[&](size_t index) {
+    const size_t at=index/2*3;
+    return unsigned(packed[at+(index&1)])*16+
+        ((packed[at+2]>>((index&1)*4))&15);
+  };
+  QImage cells(2560,1536,QImage::Format_Grayscale8);
+  for(unsigned y=0;y<1536;++y)for(unsigned x=0;x<2560;++x){
+    const size_t at=size_t(y*2)*5120+x*2;
+    cells.scanLine(y)[x]=uint8_t((pixel(at)+pixel(at+1)+pixel(at+5120)+pixel(at+5121))/64);
+  }
+  return cells.scaled(size,Qt::IgnoreAspectRatio,Qt::SmoothTransformation)
+      .convertToFormat(QImage::Format_Grayscale8);
+}
+
 int main(int argc,char** argv) {
   QCoreApplication app(argc,argv);
   std::vector<uint8_t> packed(23592960);
@@ -51,20 +67,62 @@ int main(int argc,char** argv) {
   auto gpu_small=prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,prism::capture::kRaw12Rice);
   if(gpu_small!=small)return 9;
   if(gpu_small.sizeInBytes()!=640*384)return 10;
-  for(int y=0;y<384;++y)for(int x=0;x<640;++x)
-    if(gpu_small.constScanLine(y)[x]!=gpu_full.constScanLine(y*8)[x*8])return 11;
+  if(gpu_small!=referenceThumbnail(packed,QSize(640,384)))return 11;
   auto narrow=prism_viewer::ui::decodeRawPreview(rice,QSize(320,192),2,prism::capture::kRaw12Rice);
   if(narrow.size()!=QSize(320,192))return 12;
-  for(int y=0;y<192;++y)for(int x=0;x<320;++x)
-    if(narrow.constScanLine(y)[x]!=gpu_full.constScanLine(y*16)[x*16])return 13;
+  if(narrow!=referenceThumbnail(packed,QSize(320,192)))return 13;
   // Opening zoom after thumbnails uses the original bytes, never upscales a
   // cached thumbnail. Closing zoom returns to the small display allocation.
   if(prism_viewer::ui::decodeRawPreview(rice,{},2,4)!=gpu_full ||
      prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4)!=gpu_small)return 14;
   if(prism_viewer::ui::decodeRawPreview(rice,QSize(6000,4000),2,4).size()!=gpu_full.size())return 15;
+  // UI metadata is from the SAME fully validated image, never the most recent
+  // receiver stats or an unvalidated header. Trigger time is not implicit UTC.
+  prism_viewer::ui::RawPreviewMetadata metadata;
+  rice[38]=4;put_rice(40,2345678);put_rice(24,19);put_rice(28,64000);put_rice(32,2048);
+  prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4,&metadata);
+  if(metadata.timing_mode!=4||metadata.timestamp_us!=2345678||metadata.source_frame!=19||
+     metadata.exposure_us!=64000||metadata.gain_x1024!=2048)return 17;
+  using prism_viewer::ui::rawTimingDescription;
+  if(!rawTimingDescription(4,2345678,false).contains("2.345678 s")||
+     !rawTimingDescription(4,2345678,true).contains(QStringLiteral("共同外触发"))||
+     rawTimingDescription(4,2345678,false).contains("UTC")||
+     !rawTimingDescription(3,0,false).contains("diagnostic")||
+     !rawTimingDescription(0,0,false).contains("unknown"))return 18;
+  rice[38]=0;put_rice(40,0);
+  prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4,&metadata);
+  if(metadata.timing_mode||metadata.timestamp_us)return 19;
   // Full USB pixel CRC remains enforced even for the thumbnail display.
   rice[20]^=1;rejected=false;
-  try{prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4);}
+  metadata.source_frame=999;
+  try{prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4,&metadata);}
   catch(const std::runtime_error&){rejected=true;}if(!rejected)return 16;
-  std::cout<<"PASS RAW12 full USB CRC, immutable original, bounded local thumbnail, exact samples, zoom/return, no thumbnail upscaling\n";
+  if(metadata.source_frame!=999)return 20;
+  using namespace prism_viewer::ui;
+  if(!isNativeBayerPreview(full)||!isRaw12Preview(small)||isNativeBayerPreview(small))return 21;
+  // Uniform colored illumination: CFA phase values vary, scene does not.
+  // Two alignments, integer and non-integer resize ratios, enlarged thumbnails.
+  for(unsigned shift=0;shift<2;++shift){
+    const unsigned phase[4]={641,2881,2881,1281}; // Mean 1921 -> fixed 8-bit120.
+    for(unsigned y=0;y<3072;++y)for(unsigned x=0;x<5120;x+=2){
+      const size_t at=(size_t(y)*5120+x)/2*3;
+      unsigned a=phase[((y+shift)&1)*2+shift],b=phase[((y+shift)&1)*2+(1-shift)];
+      packed[at]=a>>4;packed[at+1]=b>>4;packed[at+2]=(a&15)|((b&15)<<4);
+    }
+    wire.resize(48+ZSTD_compressBound(packed.size()));
+    put(20,prism::capture::rawCrc32(packed.data(),packed.size()));
+    bytes=ZSTD_compress(wire.data()+48,wire.size()-48,packed.data(),packed.size(),1);
+    if(ZSTD_isError(bytes))return 22;
+    wire.resize(48+bytes);
+    const auto saved=wire;
+    for(const QSize maximum:{QSize(640,512),QSize(233,140),QSize(226,136),
+        QSize(317,191),QSize(160,100),QSize(4000,2400)}){
+      auto image=decodeRawPreview(wire,maximum,2);
+      if(image.size()!=QSize(5120,3072).scaled(maximum,Qt::KeepAspectRatio))return 23;
+      for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)
+        if(image.constScanLine(y)[x]!=120)return 24;
+      if(wire!=saved||!isRaw12Preview(image)||isNativeBayerPreview(image))return 25;
+    }
+  }
+  std::cout<<"PASS RAW12 full USB CRC, immutable original, bounded CFA-aware thumbnails, multi-size/phase, native zoom/return, same-frame metadata\n";
 }

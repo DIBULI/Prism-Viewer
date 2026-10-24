@@ -17,6 +17,7 @@ struct OpenedDevice {
   prism::DeviceConfiguration configuration;
   prism::ExposureConfiguration exposure;
   prism::ExposureLimits exposure_limits;
+  std::optional<prism::CameraControlIdleStatus> native_control_idle;
   std::optional<prism::GnssTimingStatus> gnss_timing;
   prism::NetworkInfo network;
   std::wstring serial_number;

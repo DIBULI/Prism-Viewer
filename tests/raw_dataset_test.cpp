@@ -1,5 +1,6 @@
 #include "dataset/raw12_dataset.hpp"
 #include "common/ui_text.hpp"
+#include "ui/bayer_preview.hpp"
 #include "raw_dataset_fixture.hpp"
 #include <QCoreApplication>
 #include <QFile>
@@ -44,6 +45,11 @@ int main(int argc,char** argv){
     check(data.display.back()[3]==2,"tail frame omitted");
     auto image=loadRaw12DatasetImage(data.cameras[0][0]);
     check(image.size()==QSize(5120,3072)&&image.constScanLine(0)[0]==0x83,"grayscale mapping");
+    check(prism_viewer::ui::isNativeBayerPreview(image),"replay missing Bayer preview provenance");
+    const auto display=prism_viewer::ui::raw12ThumbnailSource(image);
+    check(display.size()==QSize(2560,1536)&&prism_viewer::ui::isRaw12Preview(display)&&
+          !prism_viewer::ui::isNativeBayerPreview(display),"replay thumbnail filtering");
+    check(image.constScanLine(0)[0]==0x83&&image.size()==QSize(5120,3072),"replay native image mutated");
     auto v=validateRaw12Dataset(root,{},{});check(v.valid&&v.checked_records==9,"full validation");
     check(validateRaw12Dataset(root,{},[]{return true;}).cancelled,"cancel");
     // Text manifests only for new writers; early on-device JSON still replays.
@@ -85,6 +91,18 @@ int main(int argc,char** argv){
     raw_fixture::create(root);
     {std::ofstream f(root/"camera3.prg-stream",std::ios::app|std::ios::binary);f.put(0);}
     check(rejects(),"trailing data accepted");
-    std::cout<<"PASS RAW12 text/legacy, counts/timeline, grayscale, full CRC, drops, cancellation, corruption/bounds\n";
+    raw_fixture::create(root,false,false,4);data=loadRaw12Dataset(root);
+    check(!data.ordinal_only&&data.timestamps.size()==3,"common trigger timeline not grouped by actual time");
+    check(data.display[0]==std::array<int,4>{0,0,0,0},"equal trigger instants mismatch");
+    v=validateRaw12Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
+        v.time_domain=="common-external-trigger-device-clock","common metadata/CRC validation");
+    raw_fixture::create(root,false,false,4,true);data=loadRaw12Dataset(root);
+    check(data.ordinal_only&&data.display.size()==3&&data.cameras[2].size()==2&&
+          data.cameras[2][0].timestamp_us==0,"unknown timing lost original image");
+    for(unsigned c=0;c<4;++c)for(unsigned i=0;i<data.cameras[c].size();++i)
+      check(data.display[i][c]==int(i),"ordinal browse omitted source frame");
+    v=validateRaw12Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
+        v.time_domain=="unknown-or-mixed-image-clocks","unknown preserved without fabricated sync");
+    std::cout<<"PASS RAW12 text/legacy, common-trigger and unknown timing, counts/timeline, grayscale, full CRC, drops, cancellation, corruption/bounds\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

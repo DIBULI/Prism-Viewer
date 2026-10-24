@@ -1,4 +1,5 @@
 #include "ui/camera_zoom_dialog.hpp"
+#include "ui/bayer_preview.hpp"
 
 #include "common/ui_text.hpp"
 #include "ui/zoomable_image_view.hpp"
@@ -27,7 +28,8 @@ class CameraThumbnailLabel final : public QLabel {
   }
 
   void setImage(const QImage& image) {
-    image_ = image;
+    raw12_preview_ = isRaw12Preview(image);
+    image_ = raw12ThumbnailSource(image);
     refreshPixmap();
   }
 
@@ -58,10 +60,12 @@ class CameraThumbnailLabel final : public QLabel {
   void refreshPixmap() {
     if (image_.isNull() || width() <= 0 || height() <= 0) return;
     setPixmap(QPixmap::fromImage(image_).scaled(
-        size(), Qt::KeepAspectRatio, Qt::FastTransformation));
+        size(), Qt::KeepAspectRatio,
+        raw12_preview_ ? Qt::SmoothTransformation : Qt::FastTransformation));
   }
 
   QImage image_;
+  bool raw12_preview_ = false;
 };
 
 CameraZoomDialog::CameraZoomDialog(QWidget* parent) : QDialog(parent) {

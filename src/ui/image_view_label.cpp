@@ -1,4 +1,5 @@
 #include "ui/image_view_label.hpp"
+#include "ui/bayer_preview.hpp"
 
 #include <QtGui/QMouseEvent>
 #include <QtGui/QResizeEvent>
@@ -23,7 +24,8 @@ void ImageViewLabel::setTransformationMode(Qt::TransformationMode mode) {
 }
 
 void ImageViewLabel::setImage(const QImage& image) {
-  source_pixmap_ = QPixmap::fromImage(image);
+  raw12_preview_ = isRaw12Preview(image);
+  source_pixmap_ = QPixmap::fromImage(raw12ThumbnailSource(image));
   refreshPixmap();
 }
 
@@ -58,7 +60,7 @@ void ImageViewLabel::refreshPixmap() {
     return;
   }
   setPixmap(source_pixmap_.scaled(target_size, Qt::IgnoreAspectRatio,
-                                  transformation_mode_));
+      raw12_preview_ ? Qt::SmoothTransformation : transformation_mode_));
 }
 
 }  // namespace prism_viewer::ui

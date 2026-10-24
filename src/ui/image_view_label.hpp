@@ -34,6 +34,7 @@ class ImageViewLabel final : public QLabel {
   void refreshPixmap();
 
   QPixmap source_pixmap_;
+  bool raw12_preview_ = false;
   Qt::TransformationMode transformation_mode_ = Qt::SmoothTransformation;
 };
 
