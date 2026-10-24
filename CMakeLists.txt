@@ -931,6 +931,11 @@ if(BUILD_TESTING)
     # This test exercises QMacStyle too. Qt 6.8's native group-box painter
     # requires an NSView; the offscreen platform supplies only a synthetic ID.
     set_tests_properties(native-camera-control-panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
+  elseif(WIN32)
+    # Match the real Viewer and the other Windows widget tests. Offscreen's
+    # generic font database lacks the Windows system font integration and can
+    # size every glyph as a missing-glyph box instead of the installed font.
+    set_tests_properties(native-camera-control-panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows")
   else()
     set_tests_properties(native-camera-control-panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   endif()

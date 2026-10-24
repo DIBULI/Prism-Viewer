@@ -72,7 +72,10 @@ int main(int argc,char** argv){
    narrow.setAvailability(true,true,false);narrow.setLive(s);
    narrow.resize(360,2800);narrow.show();app.processEvents();
    std::cout<<"layout style="<<style.toStdString()<<" zh="<<chinese<<" pt="<<points
-            <<" minimum="<<narrow.minimumSizeHint().width()<<" actual="<<narrow.width()<<std::endl;
+            <<" minimum="<<narrow.minimumSizeHint().width()<<" actual="<<narrow.width()
+            <<" font="<<narrow.font().family().toStdString()
+            <<" narrow/wide glyph="<<narrow.fontMetrics().horizontalAdvance(QStringLiteral("i"))
+            <<"/"<<narrow.fontMetrics().horizontalAdvance(QStringLiteral("W"))<<std::endl;
    if(narrow.minimumSizeHint().width()>360)for(auto* widget:narrow.findChildren<QWidget*>())
      std::cout<<"width diagnostic type="<<widget->metaObject()->className()
               <<" name="<<widget->objectName().toStdString()<<" minimum="<<widget->minimumSizeHint().width()
