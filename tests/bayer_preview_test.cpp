@@ -51,6 +51,14 @@ int main(int argc,char** argv){
     require(displayRamp.constScanLine(0)[i]==lut[i],"display transfer missing");
   }
   require(raw12SrgbDisplay(displayRamp)==displayRamp,"double sRGB encoding");
+  // Qt5 smooth scaling returns RGB32. Cover this explicitly on Qt6 too.
+  const auto linearRgb=ramp.convertToFormat(QImage::Format_RGB32);
+  const auto displayRgb=raw12SrgbDisplay(linearRgb);
+  for(int i=0;i<256;++i){
+    require(qGray(linearRgb.pixel(i,0))==i,"promoted linear cache mutated");
+    require(displayRgb.constScanLine(0)[i]==lut[i],"RGB32 gray skipped sRGB");
+  }
+  require(raw12SrgbDisplay(displayRgb)==displayRgb,"RGB32 gray double sRGB encoding");
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
   require(displayRamp.colorSpace()==QColorSpace(QColorSpace::SRgb),"missing sRGB color space");
 #endif

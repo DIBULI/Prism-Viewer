@@ -51,9 +51,12 @@ inline QImage raw12ThumbnailSource(const QImage& image) {
 // Display-only copy: caches, decoded samples and recording/AE stay linear.
 // Unmarked JPEG/41M3 images are already display-ready and must not be encoded.
 inline QImage raw12SrgbDisplay(const QImage& image) {
-  if (!isRaw12Preview(image) || image.format() != QImage::Format_Grayscale8 ||
+  if (!isRaw12Preview(image) ||
       image.text(kRaw12TransferKey) == QStringLiteral("srgb")) return image;
-  QImage display = image.copy();
+  // Qt5 smooth scaling promotes Grayscale8 to RGB32 (still linear gray).
+  // Normalize the display copy, otherwise those paths would skip the LUT.
+  QImage display = image.format() == QImage::Format_Grayscale8
+      ? image.copy() : image.convertToFormat(QImage::Format_Grayscale8);
   if (display.isNull()) return {};
   const auto& lut = prism_preview::linear8ToSrgb();
   for (int y = 0; y < display.height(); ++y) {
