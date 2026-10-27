@@ -757,6 +757,12 @@ if(BUILD_TESTING)
     add_test(NAME grouped-preview-sanitized COMMAND grouped-preview-sanitized)
   endif()
   add_test(NAME grouped-preview-ui COMMAND prism-viewer --grouped-preview-self-test)
+  add_test(NAME camera-tools-ui COMMAND prism-viewer --camera-tools-self-test)
+  set_tests_properties(camera-tools-ui PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software;PRISM_VIEWER_LANG=en" TIMEOUT 30)
+  add_test(NAME camera-tools-ui-compact-zh COMMAND prism-viewer --camera-tools-self-test --compact-layout-test)
+  set_tests_properties(camera-tools-ui-compact-zh PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software;PRISM_VIEWER_LANG=zh" TIMEOUT 30)
   set_tests_properties(grouped-preview-ui PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software" TIMEOUT 30)
   add_executable(raw-preview-test tests/raw_preview_test.cpp)

@@ -61,7 +61,19 @@ int main(int argc,char** argv){
  assert(rows->geometry().y()==gain->geometry().y()&&rows->geometry().right()<gain->geometry().left());
  assert(refresh->geometry().y()==apply->geometry().y()&&refresh->geometry().right()<apply->geometry().left());
  assert(apply->text()==QStringLiteral("Apply Settings"));
- assert(p.findChild<QSpinBox*>("nativeMinRows")->geometry().y()==p.findChild<QSpinBox*>("nativeMaxRows")->geometry().y());
+ auto* minRows=p.findChild<QSpinBox*>("nativeMinRows");
+ auto* maxRows=p.findChild<QSpinBox*>("nativeMaxRows");
+ auto* minGain=p.findChild<QDoubleSpinBox*>("nativeMinGain");
+ auto* maxGain=p.findChild<QDoubleSpinBox*>("nativeMaxGain");
+ auto* deadband=p.findChild<QSpinBox*>("nativeDeadband");
+ // Match 41M3's two-column field order, but retain integer rows and global AE/AGC.
+ assert(globalTarget->geometry().y()==minRows->geometry().y());
+ assert(maxRows->geometry().y()==minGain->geometry().y());
+ assert(maxGain->geometry().y()==deadband->geometry().y());
+ assert(globalTarget->geometry().left()==maxRows->geometry().left());
+ assert(minRows->geometry().left()==minGain->geometry().left());
+ assert(minRows->geometry().y()<maxRows->geometry().y()&&maxRows->geometry().y()<maxGain->geometry().y());
+ assert(minRows->singleStep()==1&&rows->singleStep()==1);
  if(argc==2){p.resize(360,p.sizeHint().height());app.processEvents();assert(p.grab().save(QString::fromLocal8Bit(argv[1])));}
  for(const auto& style:QStyleFactory::keys()) {
   app.setStyle(style);

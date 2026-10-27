@@ -88,6 +88,7 @@
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFormLayout>
+#include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QHeaderView>
@@ -3031,9 +3032,38 @@ class MainWindow : public QMainWindow {
     auto* camera_tools = new QTabWidget(camera_splitter);
     camera_tools->setObjectName(QStringLiteral("cameraTools"));
     camera_tools->setMinimumWidth(340);
-    camera_encoding_panel_ = new CameraEncodingPanel(camera_tools);
+    camera_stream_pages_ = new QStackedWidget(camera_tools);
+    camera_stream_pages_->setObjectName(QStringLiteral("cameraStreamPages"));
+    camera_encoding_panel_ = new CameraEncodingPanel(camera_stream_pages_);
+    camera_stream_pages_->addWidget(camera_encoding_panel_);
+    auto* raw_page = new QWidget(camera_stream_pages_);
+    auto* raw_layout = new QVBoxLayout(raw_page);
+    raw_layout->setContentsMargins(0, 0, 0, 0);
+    auto* raw_group = new QGroupBox(uiText("Camera Stream", "相机流"), raw_page);
+    auto* raw_group_layout = new QVBoxLayout(raw_group);
+    raw_group_layout->setSpacing(10);
+    raw_stream_description_ = new QLabel(raw_group);
+    raw_stream_description_->setObjectName(QStringLiteral("rawStreamDescription"));
+    raw_stream_description_->setWordWrap(true);
+    raw_group_layout->addWidget(raw_stream_description_);
+    auto* raw_hint = new QLabel(uiText(
+        "Use the Exposure tab for runtime exposure and gain. JPEG quality does not apply to this stream.",
+        "运行时曝光与增益在“曝光”页设置。此数据流不使用 JPEG 质量设置。"), raw_group);
+    raw_hint->setWordWrap(true);
+    raw_hint->setStyleSheet(QStringLiteral(
+        "color: #475467; background: #f8fafc; border: 1px solid #e4e7ec;"
+        "border-radius: 6px; padding: 7px 9px;"));
+    raw_group_layout->addWidget(raw_hint);
+    raw_record_status_label_ = new QLabel(uiText(
+        "Record saves original RAW12 over USB3. Select a parent directory; a timestamped subdirectory is created automatically.",
+        "通过 USB3 录制原始 RAW12。点击录制并选择父目录，将自动创建时间子目录。"), raw_group);
+    raw_record_status_label_->setWordWrap(true);
+    raw_group_layout->addWidget(raw_record_status_label_);
+    raw_layout->addWidget(raw_group);
+    raw_layout->addStretch(1);
+    camera_stream_pages_->addWidget(raw_page);
     camera_tools->addTab(
-        camera_encoding_panel_, uiText("Stream", "相机流"));
+        camera_stream_pages_, uiText("Stream", "相机流"));
     auto* exposure_scroll = new QScrollArea(camera_tools);
     exposure_scroll->setObjectName(
         QStringLiteral("cameraExposureScrollArea"));
@@ -3060,21 +3090,7 @@ class MainWindow : public QMainWindow {
     meta_text_->setMaximumBlockCount(200);
     metadata_layout->addWidget(meta_text_);
     camera_tools->addTab(metadata_page, uiText("Metadata", "元数据"));
-    {
-      camera_tools_ = camera_tools;
-      auto* raw_page=new QWidget(camera_tools);auto* raw_layout=new QVBoxLayout(raw_page);
-      raw_record_status_label_=new QLabel(uiText(
-        "Original RAW12 recording over USB3. Input must be stable at1 or2FPS.\n"
-        "Use Record to select a parent directory. A timestamped subdirectory is created automatically.\n"
-        "415M requests2FPS; matching firmware is required.\n"
-        "JPEG settings do not apply to this RAW stream.",
-        "通过 USB3 录制原始 RAW12。输入需稳定在1或2FPS。\n"
-        "点击录制并选择父目录，将自动创建时间子目录。\n"
-        "415M请求2FPS，需要配套固件。\n"
-        "JPEG设置不适用于此RAW数据流。"),raw_page);
-      raw_record_status_label_->setWordWrap(true);raw_layout->addWidget(raw_record_status_label_);raw_layout->addStretch();
-      camera_tools->insertTab(0,raw_page,QStringLiteral("RAW12"));camera_tools->setCurrentIndex(0);
-    }
+    camera_tools_ = camera_tools;
     camera_splitter->addWidget(camera_tools);
     camera_splitter->setStretchFactor(0, 4);
     camera_splitter->setStretchFactor(1, 1);
@@ -4292,6 +4308,68 @@ class MainWindow : public QMainWindow {
           latest_camera_full_resolution_);
     image_labels_[camera]->clearImage(message);frame_labels_[camera]->setStats(message);
     frame_labels_[camera]->setStyleSheet(QStringLiteral("color: #b42318;"));
+  }
+
+  void configureCameraTools(prism::DeviceModel model) {
+    const bool profile = prism_viewer::usesProfileCapture(model);
+    const bool native = model == prism::DeviceModel::Prism415M;
+    camera_stream_pages_->setCurrentIndex(profile ? 1 : 0);
+    camera_encoding_panel_->setEnabled(!profile);
+    camera_exposure_panel_->setDeviceModel(model);
+    camera_exposure_panel_->setVisible(!native);
+    native_camera_control_panel_->setVisible(native);
+    raw_stream_description_->setText(native ? uiText(
+        "Format: original RAW12\nTrigger: external\nCapture request: 2 FPS\nMeasured rate is shown with each image.",
+        "格式：原始 RAW12\n触发：外触发\n采集请求：2 FPS\n实测帧率显示在各路图像旁。") : uiText(
+        "Profile camera stream. Native format and measured rate are shown with each image.",
+        "产品相机流。原生格式与实测帧率显示在各路图像旁。"));
+    // The same three tabs and default page apply to every product. Never
+    // expose the legacy JPEG/FPS write path for a native RAW profile.
+    camera_tools_->setCurrentIndex(0);
+  }
+
+  bool runCameraToolsSelfTest(const QString& screenshot_prefix) {
+    tabs_->setCurrentWidget(camera_page_);
+    bool ok = camera_tools_->count() == 3;
+    const QStringList titles{uiText("Stream", "相机流"), uiText("Exposure", "曝光"), uiText("Metadata", "元数据")};
+    for (int i = 0; i < titles.size(); ++i)
+      ok = ok && camera_tools_->tabText(i) == titles[i] && camera_tools_->isTabEnabled(i);
+    // Exercise repeated product switches using the real setup path, without
+    // enumerating hardware or opening a transport.
+    for (auto model : {prism::DeviceModel::Prism415M, prism::DeviceModel::Prism41M3,
+                       prism::DeviceModel::Prism1315, prism::DeviceModel::Prism415M}) {
+      configureCameraTools(model);
+      const bool native = model == prism::DeviceModel::Prism415M;
+      const bool profile = prism_viewer::usesProfileCapture(model);
+      QApplication::processEvents();
+      ok = ok && camera_tools_->currentIndex() == 0 && camera_stream_pages_->currentIndex() == (profile ? 1 : 0)
+          && camera_encoding_panel_->isEnabled() == !profile
+          && camera_encoding_panel_->isVisible() == !profile;
+      camera_tools_->setCurrentIndex(1);
+      QApplication::processEvents();
+      ok = ok && native_camera_control_panel_->isVisible() == native
+          && camera_exposure_panel_->isVisible() == !native;
+      if (native) {
+        prism::CameraControlIdleStatus idle;
+        for (auto& c : idle.requested) c.manual_rows = 1024;
+        native_camera_control_panel_->setAvailability(true, false, false);
+        native_camera_control_panel_->setIdle(idle);
+      }
+      QApplication::processEvents();
+      const auto* exposure_scroll = findChild<QScrollArea*>(QStringLiteral("cameraExposureScrollArea"));
+      ok = ok && exposure_scroll && exposure_scroll->horizontalScrollBar()->maximum() == 0;
+      if (!screenshot_prefix.isEmpty() && model != prism::DeviceModel::Prism1315) {
+        QApplication::processEvents();
+        const auto name = native ? QStringLiteral("415M") : QStringLiteral("41M3");
+        ok = camera_tools_->grab().save(screenshot_prefix + name + QStringLiteral("-exposure.png")) && ok;
+        camera_tools_->setCurrentIndex(0);
+        QApplication::processEvents();
+        ok = camera_tools_->grab().save(screenshot_prefix + name + QStringLiteral("-stream.png")) && ok;
+      }
+    }
+    native_camera_control_panel_->clear();
+    std::cout << "camera_tools_ui_self_test=" << (ok ? "PASS" : "FAIL") << '\n';
+    return ok;
   }
 
   bool runGroupedPreviewSelfTest(const QString& screenshot) {
@@ -5654,23 +5732,14 @@ class MainWindow : public QMainWindow {
       camera_encoding_panel_->setConfiguration(configuration);
       cors_panel_->setDeviceConfiguration(configuration);
       camera_exposure_panel_->setCameraFps(configuration.camera_fps);
-      camera_exposure_panel_->setDeviceModel(device_info.device_model);
+      configureCameraTools(device_info.device_model);
       const bool native_control=device_info.device_model==prism::DeviceModel::Prism415M;
-      camera_exposure_panel_->setVisible(!native_control);
-      native_camera_control_panel_->setVisible(native_control);
       native_camera_control_panel_->clear();
       if(native_control) {
         if(!opened.native_control_idle)throw std::runtime_error("Missing native idle row/gain status");
         native_camera_control_panel_->setAvailability(true,false,false);
         native_camera_control_panel_->setIdle(*opened.native_control_idle);
       } else camera_exposure_panel_->setConfiguration(opened.exposure, opened.exposure_limits);
-      camera_encoding_panel_->setEnabled(!profilePreviewEnabled());
-      camera_tools_->setTabEnabled(0, profilePreviewEnabled());
-      // RAW12 is inserted at index 0: index 1 is Stream, not Exposure.
-      // Keep JPEG stream settings disabled for RAW profile products.
-      camera_tools_->setTabEnabled(1, !profilePreviewEnabled());
-      camera_tools_->setTabEnabled(2, true);
-      camera_tools_->setCurrentIndex(profilePreviewEnabled() ? 0 : 1);
       try {
         updateLidarStatus(client_.lidarStatus());
       } catch (const std::exception& lidar_error) {
@@ -10551,6 +10620,8 @@ class MainWindow : public QMainWindow {
     return prism_viewer::usesProfileCapture(capture_model_.load());
   }
   QTabWidget* camera_tools_ = nullptr;
+  QStackedWidget* camera_stream_pages_ = nullptr;
+  QLabel* raw_stream_description_ = nullptr;
   QLabel* raw_record_status_label_ = nullptr;
   ImuPlotWidget* imu_plot_ = nullptr;
   QTimer* imu_ui_timer_ = nullptr;
@@ -11660,6 +11731,14 @@ int runViewerApplication(int argc, char** argv) {
     window.close();
     app.processEvents();
     return success ? 0 : 14;
+  }
+  const int camera_tools_test=command_line.indexOf(QStringLiteral("--camera-tools-self-test"));
+  if (camera_tools_test >= 0) {
+    window.resize(command_line.contains(QStringLiteral("--compact-layout-test")) ? QSize(1200,680) : QSize(1480,940));
+    window.show(); app.processEvents();
+    return window.runCameraToolsSelfTest(camera_tools_test + 1 < command_line.size() &&
+        !command_line[camera_tools_test + 1].startsWith(QStringLiteral("--"))
+        ? command_line[camera_tools_test + 1] : QString()) ? 0 : 22;
   }
   const int grouped_preview_test=command_line.indexOf(QStringLiteral("--grouped-preview-self-test"));
   if(grouped_preview_test>=0) {

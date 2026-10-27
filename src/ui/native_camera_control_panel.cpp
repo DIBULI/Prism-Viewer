@@ -28,11 +28,12 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
     // Wrapped telemetry must not impose a platform/font-dependent panel width.
     // Preserve QLabel's height-for-width policy so text remains fully visible.
     auto policy=label->sizePolicy();policy.setHorizontalPolicy(QSizePolicy::Ignored);
+    policy.setVerticalPolicy(QSizePolicy::Maximum);
     label->setSizePolicy(policy);label->setMinimumWidth(0);
     return label;
   };
-  auto* title=wrappedLabel(group);title->setText(uiText("External trigger · integer exposure rows · runtime settings",
-                               "外触发 · 整数曝光行数 · 运行时设置"));layout->addWidget(title);
+  group->setToolTip(uiText("External trigger · integer exposure rows · runtime settings",
+                          "外触发 · 整数曝光行数 · 运行时设置"));
   status_=wrappedLabel(group);status_->setObjectName("nativeControlStatus");layout->addWidget(status_);
   auto section=[&](const QString& text){auto* label=wrappedLabel(group);label->setText(text);
     label->setStyleSheet("font-weight: 600; color: #344054;");layout->addWidget(label);return label;};
@@ -47,6 +48,8 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
   target_=globalSpin("nativeTarget",1,4095);deadband_=globalSpin("nativeDeadband",0,4094);
   ae_=new QCheckBox(uiText("Auto exposure","自动曝光"),global);ae_->setObjectName("nativeAe");
   agc_=new QCheckBox(uiText("Auto gain","自动增益"),global);agc_->setObjectName("nativeAgc");
+  ae_->setToolTip(uiText("Shared automatic exposure setting for all cameras.","所有相机共用自动曝光配置。"));
+  agc_->setToolTip(uiText("Shared automatic gain setting for all cameras.","所有相机共用自动增益配置。"));
   shared->addWidget(ae_,0,0);shared->addWidget(agc_,0,1);
   connect(ae_,&QCheckBox::toggled,this,[this](){updateEnabled();});
   connect(agc_,&QCheckBox::toggled,this,[this](){updateEnabled();});
@@ -56,11 +59,13 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
     input->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);
   };
   field(shared,1,0,uiText("Target brightness (RAW12)","目标亮度（RAW12）"),target_);
-  field(shared,1,1,uiText("Brightness deadband (RAW12)","亮度容差（RAW12）"),deadband_);
-  field(shared,3,0,uiText("Minimum exposure (rows)","最小曝光（行）"),min_rows_);
-  field(shared,3,1,uiText("Maximum exposure (rows)","最大曝光（行）"),max_rows_);
-  field(shared,5,0,uiText("Minimum gain","最小增益（×）"),min_gain_);
-  field(shared,5,1,uiText("Maximum gain","最大增益（×）"),max_gain_);
+  // Keep the same field order as CameraExposurePanel (41M3). Native units
+  // and the RAW12 deadband remain explicit rather than imitating microseconds.
+  field(shared,1,1,uiText("Minimum exposure (rows)","最低曝光（行）"),min_rows_);
+  field(shared,3,0,uiText("Maximum exposure (rows)","最高曝光（行）"),max_rows_);
+  field(shared,3,1,uiText("Minimum gain","最低增益"),min_gain_);
+  field(shared,5,0,uiText("Maximum gain","最高增益"),max_gain_);
+  field(shared,5,1,uiText("Brightness deadband (RAW12)","亮度容差（RAW12）"),deadband_);
   layout->addWidget(global);
   section(uiText("Per-camera settings","各相机设置"))->setObjectName("nativeCameraTitle");
   for(unsigned i=0;i<4;++i) {
@@ -82,6 +87,9 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
   auto* actions=new QHBoxLayout();actions->setSpacing(8);
   refresh_=new QPushButton(uiText("Refresh","刷新"),group);refresh_->setObjectName("nativeRefresh");actions->addWidget(refresh_,1);
   apply_=new QPushButton(uiText("Apply Settings","应用设置"),group);apply_->setObjectName("nativeApply");actions->addWidget(apply_,1);
+  for(auto* button:{refresh_,apply_}){button->setMinimumWidth(100);button->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);}
+  refresh_->setToolTip(uiText("Reload runtime exposure settings without pausing capture.","从设备重新读取运行时曝光设置，不暂停采集。"));
+  apply_->setToolTip(uiText("Runtime-only: settings are not saved to flash.","仅在本次运行中生效，不写入 Flash。"));
   layout->addLayout(actions);
   connect(refresh_,&QPushButton::clicked,this,[this](){if(on_request)on_request(NativeControlRequest{});});
   connect(apply_,&QPushButton::clicked,this,[this](){
