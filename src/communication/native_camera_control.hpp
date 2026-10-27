@@ -1,5 +1,6 @@
 #pragma once
 #include "prism/usb/camera_control.hpp"
+#include "communication/profile_capture.hpp"
 #include <chrono>
 #include <optional>
 #include <stdexcept>
@@ -43,6 +44,7 @@ class NativeCameraControl {
   Clock::time_point deadline_{};
 };
 template<class Client,class Opened> void readProductExposure(Client& client,Opened& opened) {
+  (void)captureProduct(opened.device_info.device_model);
   if(opened.device_info.device_model==prism::DeviceModel::Prism415M)
     opened.native_control_idle=client.cameraControlIdle();
   else {

@@ -10,6 +10,7 @@
 namespace prism_viewer::communication {
 
 struct OpenedDevice {
+  bool maintenance_only = false;
   prism::HelloInfo hello;
   prism::DeviceVersions versions;
   prism::DeviceInfo device_info;

@@ -1,6 +1,5 @@
 #include "communication/device_session.hpp"
-#include "communication/profile_capture.hpp"
-#include "communication/native_camera_control.hpp"
+#include "communication/opened_device.hpp"
 
 #include <stdexcept>
 
@@ -30,22 +29,9 @@ OpenedDevice DeviceSession::openNetwork(const prism::NetworkOptions& options) {
 
 OpenedDevice DeviceSession::readOpenedDevice() {
   try {
-    OpenedDevice opened;
-    opened.hello = client_.hello();
-    opened.versions = client_.deviceVersions();
-    const DeviceInfoStatus device_info = readDeviceInfo(client_);
-    opened.device_info = device_info.info;
-    (void)captureProduct(opened.device_info.device_model);
-    opened.time_sync_provider = device_info.time_sync_provider;
-    opened.configuration = client_.deviceConfiguration();
-    readProductExposure(client_,opened);
-    if(!usesProfileCapture(opened.device_info.device_model)) {
-      opened.gnss_timing = client_.gnssTimingStatus();
-    }
-    opened.network = client_.networkInfo();
-    opened.serial_number = client_.serialNumber();
-    opened.path = client_.path();
-    return opened;
+    return readOpenedDeviceSnapshot(client_, [](auto& client) {
+      return readDeviceInfo(client);
+    });
   } catch (...) {
     client_.closeDevice();
     throw;

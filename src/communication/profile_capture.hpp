@@ -9,6 +9,12 @@ namespace prism_viewer {
 
 enum class CaptureProduct { Legacy41M3, Strict415M, Mixed1315 };
 
+inline bool supportsCapture(prism::DeviceModel model) {
+  return model == prism::DeviceModel::Prism41M3 ||
+         model == prism::DeviceModel::Prism415M ||
+         model == prism::DeviceModel::Prism1315;
+}
+
 inline CaptureProduct captureProduct(prism::DeviceModel model) {
   switch (model) {
     case prism::DeviceModel::Prism41M3: return CaptureProduct::Legacy41M3;

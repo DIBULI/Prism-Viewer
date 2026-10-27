@@ -157,6 +157,12 @@ else()
   set(QT_PACKAGE Qt5)
 endif()
 find_package(Threads REQUIRED)
+if(APPLE AND (NOT QT_PACKAGE STREQUAL "Qt6" OR Qt6_VERSION VERSION_LESS "6.10"))
+  # QTBUG-134784: cached Cocoa accessibility table elements could be freed
+  # while still referenced, crashing on device-table clear or dialog close.
+  # Qt 6.10 includes qtbase b1ed5f656f064e553b33752f8e87d2f5b9553e38.
+  message(FATAL_ERROR "macOS Viewer requires Qt 6.10+ (QTBUG-134784 accessibility lifetime fix)")
+endif()
 target_link_libraries(prism-viewer-sdk INTERFACE Threads::Threads)
 
 option(PRISM_DEPLOY_RUNTIME_DEPENDENCIES
@@ -606,6 +612,15 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME device-info-compat COMMAND device-info-compat-test)
 
+  add_executable(opened-device-test
+    src/communication/device_info_compat.cpp
+    src/communication/prism_runtime.cpp
+    tests/opened_device_test.cpp)
+  target_include_directories(opened-device-test PRIVATE src)
+  target_compile_features(opened-device-test PRIVATE cxx_std_17)
+  target_link_libraries(opened-device-test PRIVATE prism-viewer-sdk)
+  add_test(NAME legacy-upgrade-open COMMAND opened-device-test)
+
   add_executable(time-source-display-test
     src/common/ui_text.cpp
     src/communication/prism_runtime.cpp
@@ -646,6 +661,10 @@ if(BUILD_TESTING)
   target_include_directories(imu-timestamp-policy-test PRIVATE src)
   target_compile_features(imu-timestamp-policy-test PRIVATE cxx_std_17)
   add_test(NAME imu-timestamp-policy COMMAND imu-timestamp-policy-test)
+  add_executable(imu-sample-rate-test tests/imu_sample_rate_test.cpp)
+  target_include_directories(imu-sample-rate-test PRIVATE src)
+  target_compile_features(imu-sample-rate-test PRIVATE cxx_std_17)
+  add_test(NAME imu-sample-rate COMMAND imu-sample-rate-test)
 
   add_executable(recording-startup-gate-test tests/recording_startup_gate_test.cpp)
   target_include_directories(recording-startup-gate-test PRIVATE src)

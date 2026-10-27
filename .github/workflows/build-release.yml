@@ -661,15 +661,15 @@ jobs:
           brew install cmake ninja
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0
           qt_root="$RUNNER_TEMP/Qt"
-          aqt install-qt mac desktop 6.8.3 clang_64 \
+          aqt install-qt mac desktop 6.11.1 clang_64 \
             -O "$qt_root"
-          qt_prefix="$qt_root/6.8.3/macos"
+          qt_prefix="$qt_root/6.11.1/macos"
           qt_core="$qt_prefix/lib/QtCore.framework/Versions/A/QtCore"
           for qt_binary in "$qt_core" "$qt_prefix/bin/macdeployqt"; do
             case " $(lipo -archs "$qt_binary") " in
               *" arm64 "*) ;;
               *)
-                echo "Qt 6.8.3 clang_64 does not contain arm64 code" >&2
+                echo "Qt 6.11.1 clang_64 does not contain arm64 code" >&2
                 file "$qt_binary" >&2
                 exit 1
                 ;;

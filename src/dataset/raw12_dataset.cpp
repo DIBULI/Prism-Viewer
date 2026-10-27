@@ -127,8 +127,14 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
   unsigned dataset_timing=0;
   const auto complete = number(fields, "complete");
   require(complete == (unpublished ? 0u : 1u), "RAW12 recording completion state mismatch");
+  if(!unpublished&&fields.count("companion_streams")&&number(fields,"companion_streams")){
+    const auto auxiliary=readBounded(root/"streams.info",1024*1024);
+    require(auxiliary.split('\n').count("complete=1")==1&&
+            auxiliary.split('\n').count("complete=0")==0,"Auxiliary stream recording incomplete");
+  }
   result.complete = complete == 1;
   const bool accounted = fields.count("drop_accounting") != 0;
+  const bool allow_absent=fields.count("allow_absent_cameras")&&number(fields,"allow_absent_cameras")==1;
   if (accounted) require(number(fields, "drop_accounting") == 1, "Unsupported drop accounting");
   else for (const auto& field : fields)
     require(field.first != "has_drops" && field.first != "frames_complete" &&
@@ -152,9 +158,9 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
     const auto tail = accounted ? number(fields, prefix + "_dropped_tail") : 0;
     const auto first = accounted ? number(fields, prefix + "_first_received_frame") : 0;
     const auto final = accounted ? number(fields, prefix + "_last_received_frame") : 0;
-    if (accounted) require(received > 0 && received <= UINT32_MAX && dropped <= received &&
+    if (accounted) require((received > 0 || (allow_absent&&!size&&!dropped&&!tail&&!first&&!final)) && received <= UINT32_MAX && dropped <= received &&
         tail <= dropped && first <= UINT32_MAX && final <= UINT32_MAX &&
-        uint32_t(first + received - 1) == final, "Invalid drop accounting for " + prefix);
+        (!received||uint32_t(first + received - 1) == final), "Invalid drop accounting for " + prefix);
     auto& entries = result.cameras[c];
     while (!index.atEnd()) {
       checkCancelled(cancelled);
