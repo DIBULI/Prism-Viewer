@@ -1,4 +1,5 @@
 #include "ui/raw_preview.hpp"
+#include "ui/raw_preview_group.hpp"
 #include <QCoreApplication>
 #include <iostream>
 
@@ -80,9 +81,25 @@ int main(int argc,char** argv) {
   // receiver stats or an unvalidated header. Trigger time is not implicit UTC.
   prism_viewer::ui::RawPreviewMetadata metadata;
   rice[38]=4;put_rice(40,2345678);put_rice(24,19);put_rice(28,64000);put_rice(32,2048);
+  const auto hint=prism_viewer::ui::rawPreviewGroupHint(rice,2,4);
+  if(hint)return 21; // v1 does not contain an actual group ID.
+  if(prism_viewer::ui::rawPreviewGroupHint(rice,1,4)||
+     prism_viewer::ui::rawPreviewGroupHint(rice,2,3))return 22;
   prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4,&metadata);
   if(metadata.timing_mode!=4||metadata.timestamp_us!=2345678||metadata.source_frame!=19||
      metadata.exposure_us!=64000||metadata.gain_x1024!=2048)return 17;
+  const auto legacy=rice;
+  rice.insert(rice.begin()+64,16,0);rice[4]=2;rice[5]=80;put_rice(64,456);
+  put_rice(76,prism::capture::rawHeaderCrc32(rice.data(),76));
+  const auto group_hint=prism_viewer::ui::rawPreviewGroupHint(rice,2,4);
+  if(!group_hint||group_hint->group_id!=456||group_hint->timestamp!=2345678)return 24;
+  auto grouped=prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4,&metadata);
+  if(grouped!=gpu_small||metadata.trigger_sequence!=456||metadata.source_frame!=19)return 25;
+  rice[64]^=1;
+  if(prism_viewer::ui::rawPreviewGroupHint(rice,2,4))return 26;
+  rejected=false;try{prism_viewer::ui::decodeRawPreview(rice,{},2,4);}
+  catch(const std::runtime_error&){rejected=true;}if(!rejected)return 27;
+  rice=legacy;
   using prism_viewer::ui::rawTimingDescription;
   if(!rawTimingDescription(4,2345678,false).contains("2.345678 s")||
      !rawTimingDescription(4,2345678,true).contains(QStringLiteral("共同外触发"))||
@@ -90,6 +107,7 @@ int main(int argc,char** argv) {
      !rawTimingDescription(3,0,false).contains("diagnostic")||
      !rawTimingDescription(0,0,false).contains("unknown"))return 18;
   rice[38]=0;put_rice(40,0);
+  if(prism_viewer::ui::rawPreviewGroupHint(rice,2,4))return 23;
   prism_viewer::ui::decodeRawPreview(rice,QSize(640,512),2,4,&metadata);
   if(metadata.timing_mode||metadata.timestamp_us)return 19;
   // Full USB pixel CRC remains enforced even for the thumbnail display.

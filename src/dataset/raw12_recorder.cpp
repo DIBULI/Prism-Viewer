@@ -163,9 +163,10 @@ struct Raw12Recorder::Impl {
       if(state.closing||state.done)return;
       using namespace prism::capture;
       const auto& b=image.encoded;const auto* p=b.data();
+      const auto header=parseRaw12Header(p,b.size(),b.size(),kRaw12Rice);
       require(image.format==kRaw12Rice&&image.camera<4&&b.size()>64&&b.size()<=kProfileImageLimit&&
-        !std::memcmp(p,"PRG1",4)&&p[4]==1&&p[5]==64&&p[6]==12&&p[36]==2&&p[37]==image.camera&&
-        rawLe32(p+8)==5120&&rawLe32(p+12)==3072&&rawLe32(p+56)==b.size()-64,
+        !std::memcmp(p,"PRG1",4)&&p[6]==12&&p[36]==2&&p[37]==image.camera&&
+        rawLe32(p+8)==5120&&rawLe32(p+12)==3072&&rawLe32(p+56)==b.size()-header.bytes,
         "Invalid RAW12 recording frame");
       const auto c=image.camera;const auto id=rawLe32(p+24);
       const auto time=rawLe32(p+40)|(uint64_t(rawLe32(p+44))<<32);
@@ -261,13 +262,15 @@ struct Raw12Recorder::Impl {
         require(state.bytes<=options.limit_bytes&&item.bytes.size()<=options.limit_bytes-state.bytes,
                 "RAW12 recording size limit reached");
         const auto c=item.camera;const auto* p=item.bytes.data();
-        require(prism::capture::rawCrc32(p+64,item.bytes.size()-64)==prism::capture::rawLe32(p+48),
+        const auto header=prism::capture::parseRaw12Header(p,item.bytes.size(),item.bytes.size(),prism::capture::kRaw12Rice);
+        require(prism::capture::rawCrc32(p+header.bytes,item.bytes.size()-header.bytes)==prism::capture::rawLe32(p+48),
                 "RAW12 encoded CRC mismatch");
         writeAll(files[c],reinterpret_cast<const char*>(p),qint64(item.bytes.size()));
         QJsonObject row{{"frame_id",double(item.id)},{"timestamp_us",double(item.stamp)},
           {"offset",double(offset[c])},{"bytes",double(item.bytes.size())},{"timing_mode",int(p[38])},
           {"raw_crc32",double(prism::capture::rawLe32(p+20))},{"encoded_crc32",double(prism::capture::rawLe32(p+48))},
           {"dropped_before",double(item.before)}};
+        if(header.trigger_sequence)row.insert("trigger_sequence",double(header.trigger_sequence));
         if(item.before)row.insert("drop_reason","disk_queue_full");
         auto json=QJsonDocument(row).toJson(QJsonDocument::Compact);json+='\n';
         writeAll(indexes[c],json.constData(),json.size());

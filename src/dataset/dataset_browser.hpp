@@ -24,6 +24,7 @@ struct DatasetImageEntry {
   uint8_t camera = 0;
   uint8_t timing_mode = 0;
   uint32_t frame_id = 0;
+  uint32_t trigger_sequence = 0;
   uint32_t gain_x1024 = 0;
   uint32_t raw_crc32 = 0;
   uint32_t encoded_crc32 = 0;

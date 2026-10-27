@@ -9,6 +9,7 @@ struct RawPreviewMetadata {
   uint8_t timing_mode=0;
   uint64_t timestamp_us=0;
   uint32_t source_frame=0,exposure_us=0,gain_x1024=0;
+  uint32_t trigger_sequence=0;
 };
 // Linear preview cache only, without ISP/demosaicing. Widgets apply sRGB once
 // after CFA filtering/resizing. Lossless packed12 is never overwritten.
@@ -16,7 +17,7 @@ inline QImage decodeRawPreview(const std::vector<uint8_t>& bytes,const QSize& ma
                               RawPreviewMetadata* metadata=nullptr) {
   auto raw=prism::capture::decodeRaw12(bytes,format);
   if(raw.camera!=camera)throw std::runtime_error("RAW12 camera identity mismatch");
-  if(metadata)*metadata={raw.timing_mode,raw.source_timestamp_us,raw.frame_id,raw.exposure_us,raw.gain_x1024};
+  if(metadata)*metadata={raw.timing_mode,raw.source_timestamp_us,raw.frame_id,raw.exposure_us,raw.gain_x1024,raw.trigger_sequence};
   // USB always keeps/validates the complete lossless RAW. Only its display
   // allocation changes: normal tiles never allocate a full-resolution QImage.
   // A bounded 1/4-resolution CFA-cell average precedes every thumbnail resize.

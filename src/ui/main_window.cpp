@@ -30,6 +30,7 @@
 #include "ui/time_source_text.hpp"
 #include "ui/image_view_label.hpp"
 #include "ui/independent_preview_mailbox.hpp"
+#include "ui/raw_preview_group.hpp"
 #include "ui/camera_lane_progress.hpp"
 #include "ui/imu_sample_rate.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
@@ -304,6 +305,8 @@ void traceProfilePreview(const char* stage, uint64_t generation, unsigned camera
 }
 
 struct CameraPreviewJob {
+  std::optional<prism_viewer::ui::PreviewGroupKey> group_key;
+  uint64_t group_token = 0;
   std::array<uint8_t,4> formats{};
   std::array<QString,4> stats{};
   bool independent_image=false;
@@ -315,6 +318,8 @@ struct CameraPreviewJob {
 };
 
 struct DecodedCameraPreviewJob {
+  std::optional<prism_viewer::ui::PreviewGroupKey> group_key;
+  uint64_t group_token = 0;
   std::array<QString,4> stats{};
   std::array<prism_viewer::ui::RawPreviewMetadata,4> raw_metadata{};
   std::array<bool,4> is_raw{};
@@ -2670,6 +2675,14 @@ class MainWindow : public QMainWindow {
     camera_layout->setSpacing(10);
     tabs_->addTab(camera_page_, uiText("Camera", "相机"));
 
+    camera_group_warning_ = new QLabel(camera_page_);
+    camera_group_warning_->setObjectName(QStringLiteral("cameraGroupWarning"));
+    camera_group_warning_->setWordWrap(true);
+    camera_group_warning_->setStyleSheet(QStringLiteral(
+        "QLabel { color:#854d0e; background:#fffbeb; border:1px solid #facc15; padding:6px; }"));
+    camera_group_warning_->hide();
+    camera_layout->addWidget(camera_group_warning_);
+
     auto* camera_splitter = new QSplitter(Qt::Horizontal, camera_page_);
     camera_splitter->setChildrenCollapsible(false);
     camera_splitter->setHandleWidth(8);
@@ -3881,6 +3894,10 @@ class MainWindow : public QMainWindow {
     recording_timer->setInterval(250);
     connect(recording_timer, &QTimer::timeout, this, [this]() {
       if (worker_running_) refreshCameraPresence();
+      const auto generation = camera_preview_generation_.load(std::memory_order_acquire);
+      if (camera_preview_enabled_.load(std::memory_order_acquire) &&
+          grouped_preview_mailbox_.expire(generation, cameraMonotonicMs()))
+        postGroupedPreview(generation);
       refreshRecordingControls(client_.isOpen(), worker_running_);
       enforceRecordingUsbLink();
       if(const auto raw=rawRecording();raw&&raw->status().closing&&dataset_recorder_.isActive())
@@ -4277,6 +4294,81 @@ class MainWindow : public QMainWindow {
     frame_labels_[camera]->setStyleSheet(QStringLiteral("color: #b42318;"));
   }
 
+  bool runGroupedPreviewSelfTest(const QString& screenshot) {
+    tabs_->setCurrentWidget(camera_page_);
+    const auto settle=[] {
+      for(int n=0;n<4;++n){QApplication::processEvents();QApplication::sendPostedEvents(nullptr,QEvent::LayoutRequest);}
+    };
+    bool ok=true;
+    const auto begin=[&](uint32_t group,uint64_t stamp,bool raw=true) {
+      const auto generation=camera_preview_generation_.load();
+      auto arrival=grouped_preview_mailbox_.arrive({group,stamp,raw},generation,15,cameraMonotonicMs());
+      if(arrival.post)postGroupedPreview(generation);
+      return arrival.token;
+    };
+    const auto lane=[&](uint64_t token,uint32_t group,uint64_t stamp,unsigned camera,bool raw=true) {
+      DecodedCameraPreviewJob d;
+      d.generation=camera_preview_generation_.load();d.group_token=token;
+      d.group_key=prism_viewer::ui::PreviewGroupKey{group,stamp,raw};
+      d.independent_image=raw;d.frame_id=group*4+camera;
+      d.received_frame_sets=group*4+camera+1;d.is_raw[camera]=raw;
+      d.raw_metadata[camera]={4,stamp,group+camera*100,1000,1024,group};
+      d.stats[camera]=QStringLiteral("fixture");
+      d.images[camera]=QImage(8,8,QImage::Format_RGB32);
+      d.images[camera].fill(qRgb(group,camera,30));
+      camera_lane_progress_.receive(uint8_t(1u<<camera),d.received_frame_sets,cameraMonotonicMs());
+      publishDecodedCameraPreview(std::move(d));
+    };
+    for(bool raw:{false,true}) {
+      resetUi();
+      auto first=begin(1,raw?1000:0,raw);
+      for(unsigned c:{3u,0u,2u}){lane(first,1,raw?1000:0,c,raw);settle();}
+      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{};
+      lane(first,1,raw?1000:0,1,raw);settle();
+      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&!camera_group_warnings_;
+      for(unsigned c=0;c<4;++c) {
+        ok=ok&&!latest_camera_images_[c].isNull()&&latest_camera_images_[c].pixel(0,0)==qRgb(1,c,30);
+        if(raw)ok=ok&&frame_labels_[c]->text().contains(uiText("Group 1","组帧号 1"));
+      }
+      auto second=begin(2,raw?2000:0,raw);
+      for(unsigned c:{0u,2u,3u})lane(second,2,raw?2000:0,c,raw);
+      settle();
+      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1};
+      auto third=begin(3,raw?3000:0,raw);settle();
+      ok=ok&&camera_group_warnings_==1&&camera_group_warning_->isVisible()&&
+          profile_preview_rendered_==std::array<uint64_t,4>{2,1,2,2};
+      lane(second,2,raw?2000:0,1,raw);settle(); // Late decode cannot mix into group3.
+      ok=ok&&profile_preview_rendered_[1]==1;
+      for(unsigned c:{2u,1u,3u,0u})lane(third,3,raw?3000:0,c,raw);
+      settle();
+      for(unsigned c=0;c<4;++c)
+        ok=ok&&latest_camera_images_[c].pixel(0,0)==qRgb(3,c,30);
+      // Complete group4 waits for Qt; receiving group5 warns but never stops.
+      auto fourth=begin(4,raw?4000:0,raw);
+      for(unsigned c=0;c<4;++c)lane(fourth,4,raw?4000:0,c,raw);
+      auto fifth=begin(5,raw?5000:0,raw);settle();
+      ok=ok&&camera_group_warnings_==2;
+      lane(fifth,5,raw?5000:0,0,raw);
+      if(grouped_preview_mailbox_.expire(camera_preview_generation_.load(),cameraMonotonicMs()+1001))
+        postGroupedPreview(camera_preview_generation_.load());
+      settle();
+      ok=ok&&camera_group_warnings_==3&&latest_camera_images_[0].pixel(0,0)==qRgb(5,0,30);
+      // A queued callback from the previous capture must not consume new data.
+      auto old=begin(6,raw?6000:0,raw);
+      for(unsigned c=0;c<4;++c)lane(old,6,raw?6000:0,c,raw);
+      resetUi();auto fresh=begin(1,raw?7000:0,raw);
+      for(unsigned c=0;c<4;++c)lane(fresh,1,raw?7000:0,c,raw);
+      settle();
+      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&!camera_group_warnings_;
+    }
+    auto incomplete=begin(2,8000);lane(incomplete,2,8000,0);
+    begin(3,9000);settle();
+    if(!screenshot.isEmpty())ok=camera_page_->grab().save(screenshot)&&ok;
+    resetUi();
+    std::cout<<"grouped_preview_ui="<<(ok?"PASS":"FAIL")<<'\n';
+    return ok;
+  }
+
   bool runCameraTransferSelfTest(const QString& screenshot) {
     const bool was_chinese = prism_viewer::common::chineseUi();
     QWidget* previous_page = tabs_->currentWidget();
@@ -4601,6 +4693,7 @@ class MainWindow : public QMainWindow {
       const auto generation =
           camera_preview_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
       independent_preview_mailbox_.reset(generation);
+      resetGroupedPreview(generation);
       std::lock_guard<std::mutex> lock(camera_preview_mutex_);
       camera_preview_jobs_.clear();
       camera_preview_completed_.clear();
@@ -6627,6 +6720,7 @@ class MainWindow : public QMainWindow {
     start_time_ = std::chrono::steady_clock::now();
     camera_preview_generation_.fetch_add(1, std::memory_order_acq_rel);
     independent_preview_mailbox_.reset(camera_preview_generation_.load(std::memory_order_acquire));
+    resetGroupedPreview(camera_preview_generation_.load(std::memory_order_acquire));
     {
       std::lock_guard<std::mutex> lock(camera_preview_mutex_);
       camera_preview_jobs_.clear();
@@ -8759,6 +8853,17 @@ class MainWindow : public QMainWindow {
 
   void enqueueCameraPreview(CameraPreviewJob job) {
     if (!camera_preview_enabled_.load(std::memory_order_acquire)) return;
+    uint8_t expected = 0;
+    for (unsigned c=0;c<4;++c) if (!job.jpeg[c].empty()) expected |= uint8_t(1u<<c);
+    if (!job.independent_image)
+      job.group_key = prism_viewer::ui::PreviewGroupKey{job.frame_id,0,false};
+    if (job.group_key) {
+      const auto arrival = grouped_preview_mailbox_.arrive(*job.group_key,
+          job.generation, job.independent_image ? 15 : expected, cameraMonotonicMs());
+      if (arrival.post) postGroupedPreview(job.generation);
+      job.group_token = arrival.token;
+      if (!job.group_token) return; // Already retired preview; ACK/recording unchanged.
+    }
     {
       std::lock_guard<std::mutex> lock(camera_preview_mutex_);
       /*
@@ -8788,6 +8893,22 @@ class MainWindow : public QMainWindow {
   }
 
   void publishDecodedCameraPreview(DecodedCameraPreviewJob decoded) {
+    if (decoded.group_token) {
+      for (unsigned c=0;c<4;++c) {
+        if (decoded.images[c].isNull()) continue;
+        // Hint enrollment is not validation. Only the decoder's CRC-validated
+        // common-trigger metadata can complete a RAW display group.
+        if (decoded.group_key && decoded.group_key->common_trigger &&
+            (!decoded.is_raw[c] || decoded.raw_metadata[c].timing_mode!=4 ||
+             decoded.raw_metadata[c].timestamp_us!=decoded.group_key->timestamp ||
+             decoded.raw_metadata[c].trigger_sequence!=decoded.group_key->group_id)) continue;
+        auto lane = decoded;
+        for (unsigned other=0;other<4;++other) if (other!=c) lane.images[other]={};
+        if (grouped_preview_mailbox_.publish(decoded.group_token,decoded.generation,c,std::move(lane)))
+          postGroupedPreview(decoded.generation);
+      }
+      return;
+    }
     if (decoded.independent_image) {
       const auto generation = decoded.generation;
       for (size_t camera=0;camera<decoded.images.size();++camera) {
@@ -8860,6 +8981,51 @@ class MainWindow : public QMainWindow {
   }
 
   // UI thread only. Independent images touch only their own pane.
+  void resetGroupedPreview(uint64_t generation) {
+    grouped_preview_mailbox_.reset(generation);
+    camera_group_warnings_ = 0;
+    camera_group_last_log_ms_ = 0;
+    if (camera_group_warning_) camera_group_warning_->hide();
+  }
+
+  void postGroupedPreview(uint64_t generation) {
+    post([this,generation]() {
+      if (generation != camera_preview_generation_.load(std::memory_order_acquire)) return;
+      auto delivery = grouped_preview_mailbox_.take(generation);
+      if (delivery.warnings != camera_group_warnings_) {
+        camera_group_warnings_ = delivery.warnings;
+        QStringList unfinished;
+        for(unsigned c=0;c<4;++c) if(delivery.unfinished&(1u<<c)) unfinished<<QString::number(c);
+        const QString detail = delivery.unfinished
+            ? uiText("group %1, camera %2 not ready", "组帧号 %1，相机 %2 尚未就绪")
+                .arg(delivery.group_id).arg(unfinished.join(QStringLiteral(", ")))
+            : uiText("group %1 still waiting for display", "组帧号 %1 仍在等待显示").arg(delivery.group_id);
+        const auto message = uiText(
+            "Preview warning (%1): %2. Ready images continue; capture and recording are not stopped.",
+            "预览警告（累计 %1）：%2。继续显示已就绪图像，不中断采集或录制。")
+                .arg(delivery.warnings).arg(detail);
+        camera_group_warning_->setText(message);
+        camera_group_warning_->show();
+        const auto now = cameraMonotonicMs();
+        if (!camera_group_last_log_ms_ || now-camera_group_last_log_ms_>=5000) {
+          appendLog(message);
+          camera_group_last_log_ms_ = now;
+        }
+      }
+      // Both panes and the separate zoom dialog get one paint opportunity,
+      // after every ready member of THIS group has been applied. Never fill a
+      // missing member using a different group's newly decoded image.
+      const bool page_updates = camera_page_->updatesEnabled();
+      const bool zoom_updates = live_camera_zoom_dialog_->updatesEnabled();
+      camera_page_->setUpdatesEnabled(false);
+      live_camera_zoom_dialog_->setUpdatesEnabled(false);
+      for (auto& frame : delivery.frames) if (frame) applyDecodedCameraPreview(std::move(*frame));
+      camera_page_->setUpdatesEnabled(page_updates);
+      live_camera_zoom_dialog_->setUpdatesEnabled(zoom_updates);
+      if (grouped_preview_mailbox_.presented(generation)) postGroupedPreview(generation);
+    });
+  }
+
   void applyDecodedCameraPreview(DecodedCameraPreviewJob frame) {
         if (frame.generation != camera_preview_generation_.load(std::memory_order_acquire)) return;
         refreshCameraPresence();
@@ -8893,6 +9059,8 @@ class MainWindow : public QMainWindow {
             QString detail=frame.stats[camera];
             if(frame.is_raw[camera]) {
               const auto& m=frame.raw_metadata[camera];
+              if(m.trigger_sequence)
+                detail=uiText("Group %1", "组帧号 %1").arg(m.trigger_sequence)+QStringLiteral(" · ")+detail;
               detail+=QStringLiteral(" · source %1 · %2 · %3 μs · %4×").arg(m.source_frame)
                   .arg(prism_viewer::ui::rawTimingDescription(m.timing_mode,m.timestamp_us,
                       uiText("en","zh")==QStringLiteral("zh")))
@@ -8927,12 +9095,14 @@ class MainWindow : public QMainWindow {
       }
 
       DecodedCameraPreviewJob decoded;
+      decoded.group_key = job.group_key;
+      decoded.group_token = job.group_token;
       decoded.stats=job.stats;
       decoded.independent_image = job.independent_image;
       decoded.frame_id = job.frame_id;
       decoded.received_frame_sets = job.received_frame_sets;
       decoded.generation = job.generation;
-      if (!job.independent_image &&
+      if (!job.independent_image && !job.group_token &&
           camera_preview_ui_posts_pending_.load(std::memory_order_acquire) >=
           kMaximumQueuedPreviewFrameSets) {
         continue;
@@ -10066,6 +10236,7 @@ class MainWindow : public QMainWindow {
                     image->format==4&&image->encoded.size()>=64?
                     prism::capture::rawLe32(image->encoded.data()+24):0);
                 job.formats[camera]=image->format;job.jpeg[camera]=std::move(image->encoded);
+                job.group_key=prism_viewer::ui::rawPreviewGroupHint(job.jpeg[camera],camera,image->format);
                 job.maximum_preview_size=QSize(camera_preview_width_.load(),camera_preview_height_.load());
                 enqueueCameraPreview(std::move(job));
               } catch(const std::exception& e) {
@@ -10423,6 +10594,10 @@ class MainWindow : public QMainWindow {
   std::atomic<uint64_t> camera_preview_generation_{0};
   std::atomic<size_t> camera_preview_ui_posts_pending_{0};
   prism_viewer::ui::IndependentPreviewMailbox<DecodedCameraPreviewJob> independent_preview_mailbox_;
+  prism_viewer::ui::GroupedPreviewMailbox<DecodedCameraPreviewJob> grouped_preview_mailbox_;
+  QLabel* camera_group_warning_ = nullptr;
+  uint64_t camera_group_warnings_ = 0;
+  int64_t camera_group_last_log_ms_ = 0;
   std::atomic<int> camera_preview_width_{kCameraPreviewWidth};
   std::atomic<int> camera_preview_height_{kCameraPreviewHeight};
   std::mutex camera_preview_mutex_;
@@ -11482,6 +11657,12 @@ int runViewerApplication(int argc, char** argv) {
     window.close();
     app.processEvents();
     return success ? 0 : 14;
+  }
+  const int grouped_preview_test=command_line.indexOf(QStringLiteral("--grouped-preview-self-test"));
+  if(grouped_preview_test>=0) {
+    window.show();app.processEvents();
+    return window.runGroupedPreviewSelfTest(grouped_preview_test+1<command_line.size()
+        ?command_line[grouped_preview_test+1]:QString())?0:21;
   }
   const int camera_transfer_test = command_line.indexOf(QStringLiteral("--camera-transfer-self-test"));
   if (camera_transfer_test >= 0) {

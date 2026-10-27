@@ -27,6 +27,26 @@ int main(int argc,char**argv){
       auto put=[&](size_t at,uint32_t n){for(unsigned k=0;k<4;k++)i.encoded[at+k]=uint8_t(n>>(8*k));};
       i.encoded[37]=uint8_t(c);put(24,id);put(40,1000000+id*500000+c);return i;};
     Raw12RecordingOptions options;options.fps=2;
+    // Actual v2 recording/replay retains shared group ID AND distinct native
+    // counters. The preview barrier must not rewrite or drop recorded frames.
+    {
+      Raw12Recorder r(parent,options);
+      for(unsigned c=0;c<4;++c) {
+        auto i=image(c,10+c*100);
+        auto& b=i.encoded;b.insert(b.begin()+64,16,0);b[4]=2;b[5]=80;b[38]=4;
+        const auto put=[&](size_t at,uint32_t v){for(unsigned n=0;n<4;++n)b[at+n]=uint8_t(v>>(8*n));};
+        put(40,9000000);put(44,0);put(64,91);put(76,prism::capture::rawHeaderCrc32(b.data(),76));
+        r.append(i);
+      }
+      const auto status=wait(r);
+      check(status.complete&&status.frames==std::array<uint64_t,4>{1,1,1,1},"v2 group recording");
+      const auto dataset=loadRaw12Dataset(status.root);
+      check(dataset.timestamps.size()==1&&dataset.display[0]==std::array<int,4>{0,0,0,0},"v2 common playback");
+      for(unsigned c=0;c<4;++c)
+        check(dataset.cameras[c][0].trigger_sequence==91&&dataset.cameras[c][0].frame_id==10+c*100,
+              "v2 group/source lost in index");
+      check(validateRaw12Dataset(status.root,{},{}).valid,"v2 complete pixel CRC readback");
+    }
     // A late companion failure during full readback must not race a success
     // manifest. This reproduces a real Stop -> verification status race.
     {

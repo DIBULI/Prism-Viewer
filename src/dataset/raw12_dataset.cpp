@@ -111,6 +111,7 @@ prism::capture::Raw12Image decode(const DatasetImageEntry& entry) {
   const auto bytes = readFrame(entry);
   auto raw = prism::capture::decodeRaw12Rice(bytes); // Both encoded and decoded CRCs.
   require(raw.camera == entry.camera && raw.frame_id == entry.frame_id &&
+          raw.trigger_sequence == entry.trigger_sequence &&
           raw.source_timestamp_us == entry.timestamp_us && raw.timing_mode == entry.timing_mode &&
           raw.exposure_us == entry.exposure_us && raw.gain_x1024 == entry.gain_x1024 &&
           prism::capture::rawLe32(bytes.data()+20) == entry.raw_crc32 &&
@@ -196,17 +197,28 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
                 entry.timestamp_us > entries.back().timestamp_us)), "Frame sequence/timestamp mismatch for " + prefix);
       // Opening reads only fixed-size headers; payload CRCs are checked on display
       // and all payloads are checked by the cancellable Validate action.
-      uint8_t h[64]{};
+      uint8_t h[80]{};
       data.seekg(std::streamoff(offset)); data.read(reinterpret_cast<char*>(h), 64);
-      require(data.gcount() == 64 && !std::memcmp(h, "PRG1", 4) && h[4] == 1 && h[5] == 64 &&
+      require(data.gcount()==64,"Truncated RAW12 header");
+      size_t header_available=64;
+      if(h[4]==2) {
+        data.read(reinterpret_cast<char*>(h+64),16);
+        require(data.gcount()==16,"Truncated RAW12 group header");
+        header_available=80;
+      }
+      const auto header=prism::capture::parseRaw12Header(h,header_available,entry.byte_size,prism::capture::kRaw12Rice);
+      require(!std::memcmp(h, "PRG1", 4) &&
               h[6] == 12 && h[7] <= 3 && h[36] == 2 && h[37] == c && h[38] == entry.timing_mode && h[39] == 0 &&
               prism::capture::rawLe32(h+8) == 5120 && prism::capture::rawLe32(h+12) == 3072 &&
               prism::capture::rawLe32(h+16) == 23592960 && prism::capture::rawLe32(h+20) == entry.raw_crc32 &&
               prism::capture::rawLe32(h+24) == entry.frame_id &&
               (prism::capture::rawLe32(h+40) | (uint64_t(prism::capture::rawLe32(h+44)) << 32)) == entry.timestamp_us &&
               prism::capture::rawLe32(h+48) == entry.encoded_crc32 && prism::capture::rawLe32(h+52) == 256 &&
-              prism::capture::rawLe32(h+56) == entry.byte_size - 64 && prism::capture::rawLe32(h+60) == 0,
+              prism::capture::rawLe32(h+56) == entry.byte_size - header.bytes && prism::capture::rawLe32(h+60) == 0,
               "RAW12 header/index mismatch for " + prefix);
+      require((row.contains("trigger_sequence") ? uint32_t(jsonNumber(row,"trigger_sequence")) : 0u)==header.trigger_sequence,
+              "RAW12 trigger-group/index mismatch for "+prefix);
+      entry.trigger_sequence=header.trigger_sequence;
       entry.exposure_us = prism::capture::rawLe32(h+28); entry.gain_x1024 = prism::capture::rawLe32(h+32);
       require(result.timestamps.size() < 1000000, "Dataset index exceeds playback limit (one million images)");
       entries.push_back(entry); result.timestamps.push_back(entry.timestamp_us);
