@@ -3070,6 +3070,10 @@ class MainWindow : public QMainWindow {
     exposure_scroll->setFrameShape(QFrame::NoFrame);
     exposure_scroll->setWidgetResizable(true);
     exposure_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Both exposure panels are validated at a 360-pixel content width. The
+    // sidebar must additionally reserve the vertical scrollbar and tab frame;
+    // a 340-pixel total width clips Chinese controls on Windows compact screens.
+    camera_tools->setMinimumWidth(360 + exposure_scroll->verticalScrollBar()->sizeHint().width() + 8);
     auto* exposure_container = new QWidget(exposure_scroll);
     auto* exposure_layout = new QVBoxLayout(exposure_container);
     exposure_layout->setContentsMargins(0,0,0,0);
@@ -4358,6 +4362,13 @@ class MainWindow : public QMainWindow {
       QApplication::processEvents();
       const auto* exposure_scroll = findChild<QScrollArea*>(QStringLiteral("cameraExposureScrollArea"));
       ok = ok && exposure_scroll && exposure_scroll->horizontalScrollBar()->maximum() == 0;
+      std::cout << "camera_tools model=" << static_cast<unsigned>(model)
+                << " sidebar=" << camera_tools_->width()
+                << " native-min=" << native_camera_control_panel_->minimumSizeHint().width()
+                << " legacy-min=" << camera_exposure_panel_->minimumSizeHint().width()
+                << " viewport=" << (exposure_scroll ? exposure_scroll->viewport()->width() : -1)
+                << " horizontal-overflow=" << (exposure_scroll ? exposure_scroll->horizontalScrollBar()->maximum() : -1)
+                << " ok=" << ok << '\n';
       if (!screenshot_prefix.isEmpty() && model != prism::DeviceModel::Prism1315) {
         QApplication::processEvents();
         const auto name = native ? QStringLiteral("415M") : QStringLiteral("41M3");
