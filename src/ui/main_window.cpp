@@ -2677,14 +2677,6 @@ class MainWindow : public QMainWindow {
     camera_layout->setSpacing(10);
     tabs_->addTab(camera_page_, uiText("Camera", "相机"));
 
-    camera_group_warning_ = new QLabel(camera_page_);
-    camera_group_warning_->setObjectName(QStringLiteral("cameraGroupWarning"));
-    camera_group_warning_->setWordWrap(true);
-    camera_group_warning_->setStyleSheet(QStringLiteral(
-        "QLabel { color:#854d0e; background:#fffbeb; border:1px solid #facc15; padding:6px; }"));
-    camera_group_warning_->hide();
-    camera_layout->addWidget(camera_group_warning_);
-
     auto* camera_splitter = new QSplitter(Qt::Horizontal, camera_page_);
     camera_splitter->setChildrenCollapsible(false);
     camera_splitter->setHandleWidth(8);
@@ -4390,6 +4382,12 @@ class MainWindow : public QMainWindow {
       for(int n=0;n<4;++n){QApplication::processEvents();QApplication::sendPostedEvents(nullptr,QEvent::LayoutRequest);}
     };
     bool ok=true;
+    const auto no_group_notice=[&] {
+      const auto log=log_text_->toPlainText();
+      return !findChild<QLabel*>(QStringLiteral("cameraGroupWarning"))&&
+          !log.contains(QStringLiteral("Preview warning ("))&&
+          !log.contains(QStringLiteral("预览警告（累计"));
+    };
     const auto begin=[&](uint32_t group,uint64_t stamp,bool raw=true) {
       const auto generation=camera_preview_generation_.load();
       auto arrival=grouped_preview_mailbox_.arrive({group,stamp,raw},generation,15,cameraMonotonicMs());
@@ -4416,7 +4414,7 @@ class MainWindow : public QMainWindow {
       for(unsigned c:{3u,0u,2u}){lane(first,1,raw?1000:0,c,raw);settle();}
       ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{};
       lane(first,1,raw?1000:0,1,raw);settle();
-      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&!camera_group_warnings_&&
+      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&no_group_notice()&&
           latest_camera_frame_id_==1;
       for(unsigned c=0;c<4;++c) {
         ok=ok&&!latest_camera_images_[c].isNull()&&latest_camera_images_[c].pixel(0,0)==qRgb(1,c,30);
@@ -4427,7 +4425,7 @@ class MainWindow : public QMainWindow {
       settle();
       ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1};
       auto third=begin(3,raw?3000:0,raw);settle();
-      ok=ok&&camera_group_warnings_==1&&camera_group_warning_->isVisible()&&
+      ok=ok&&no_group_notice()&&
           profile_preview_rendered_==std::array<uint64_t,4>{2,1,2,2};
       lane(second,2,raw?2000:0,1,raw);settle(); // Late decode cannot mix into group3.
       ok=ok&&profile_preview_rendered_[1]==1;
@@ -4435,23 +4433,24 @@ class MainWindow : public QMainWindow {
       settle();
       for(unsigned c=0;c<4;++c)
         ok=ok&&latest_camera_images_[c].pixel(0,0)==qRgb(3,c,30);
-      // Complete group4 waits for Qt; receiving group5 warns but never stops.
+      // Complete group4 waits for Qt; group5 must not prevent its display or
+      // create a cumulative UI/log warning. Mailbox diagnostics stay internal.
       auto fourth=begin(4,raw?4000:0,raw);
       for(unsigned c=0;c<4;++c)lane(fourth,4,raw?4000:0,c,raw);
       auto fifth=begin(5,raw?5000:0,raw);settle();
-      ok=ok&&camera_group_warnings_==2;
+      ok=ok&&no_group_notice()&&latest_camera_frame_id_==4;
       lane(fifth,5,raw?5000:0,0,raw);
       if(grouped_preview_mailbox_.expire(camera_preview_generation_.load(),cameraMonotonicMs()+1001))
         postGroupedPreview(camera_preview_generation_.load());
       settle();
-      ok=ok&&camera_group_warnings_==3&&latest_camera_images_[0].pixel(0,0)==qRgb(5,0,30);
+      ok=ok&&no_group_notice()&&latest_camera_images_[0].pixel(0,0)==qRgb(5,0,30);
       // A queued callback from the previous capture must not consume new data.
       auto old=begin(6,raw?6000:0,raw);
       for(unsigned c=0;c<4;++c)lane(old,6,raw?6000:0,c,raw);
       resetUi();auto fresh=begin(1,raw?7000:0,raw);
       for(unsigned c=0;c<4;++c)lane(fresh,1,raw?7000:0,c,raw);
       settle();
-      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&!camera_group_warnings_;
+      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&no_group_notice();
     }
     // Enlarged preview must see one fully committed group, not four
     // intermediate lane updates. Observe the real scene update synchronously.
@@ -4486,7 +4485,7 @@ class MainWindow : public QMainWindow {
         expected_zoom_group=group;
         settle();
         expected_zoom_group=0;
-        ok=ok&&!camera_group_warnings_&&camera_preview_generation_.load()==generation;
+        ok=ok&&no_group_notice()&&camera_preview_generation_.load()==generation;
         for(unsigned c=0;c<4;++c)
           ok=ok&&profile_preview_rendered_[c]==group;
       }
@@ -9109,35 +9108,15 @@ class MainWindow : public QMainWindow {
   // UI thread only. Independent images touch only their own pane.
   void resetGroupedPreview(uint64_t generation) {
     grouped_preview_mailbox_.reset(generation);
-    camera_group_warnings_ = 0;
-    camera_group_last_log_ms_ = 0;
-    if (camera_group_warning_) camera_group_warning_->hide();
   }
 
   void postGroupedPreview(uint64_t generation) {
     post([this,generation]() {
       if (generation != camera_preview_generation_.load(std::memory_order_acquire)) return;
       auto delivery = grouped_preview_mailbox_.take(generation);
-      if (delivery.warnings != camera_group_warnings_) {
-        camera_group_warnings_ = delivery.warnings;
-        QStringList unfinished;
-        for(unsigned c=0;c<4;++c) if(delivery.unfinished&(1u<<c)) unfinished<<QString::number(c);
-        const QString detail = delivery.unfinished
-            ? uiText("group %1, camera %2 not ready", "组帧号 %1，相机 %2 尚未就绪")
-                .arg(delivery.group_id).arg(unfinished.join(QStringLiteral(", ")))
-            : uiText("group %1 still waiting for display", "组帧号 %1 仍在等待显示").arg(delivery.group_id);
-        const auto message = uiText(
-            "Preview warning (%1): %2. Ready images continue; capture and recording are not stopped.",
-            "预览警告（累计 %1）：%2。继续显示已就绪图像，不中断采集或录制。")
-                .arg(delivery.warnings).arg(detail);
-        camera_group_warning_->setText(message);
-        camera_group_warning_->show();
-        const auto now = cameraMonotonicMs();
-        if (!camera_group_last_log_ms_ || now-camera_group_last_log_ms_>=5000) {
-          appendLog(message);
-          camera_group_last_log_ms_ = now;
-        }
-      }
+      // Display scheduling remains bounded, but does not create a cumulative
+      // warning banner/log. Per-camera absence and real transport/recording
+      // errors use their separate, unchanged reporting paths.
       // Both panes and the separate zoom dialog get one paint opportunity,
       // after every ready member of THIS group has been applied. Never fill a
       // missing member using a different group's newly decoded image.
@@ -10733,9 +10712,6 @@ class MainWindow : public QMainWindow {
   std::atomic<size_t> camera_preview_ui_posts_pending_{0};
   prism_viewer::ui::IndependentPreviewMailbox<DecodedCameraPreviewJob> independent_preview_mailbox_;
   prism_viewer::ui::GroupedPreviewMailbox<DecodedCameraPreviewJob> grouped_preview_mailbox_;
-  QLabel* camera_group_warning_ = nullptr;
-  uint64_t camera_group_warnings_ = 0;
-  int64_t camera_group_last_log_ms_ = 0;
   std::atomic<int> camera_preview_width_{kCameraPreviewWidth};
   std::atomic<int> camera_preview_height_{kCameraPreviewHeight};
   std::mutex camera_preview_mutex_;
