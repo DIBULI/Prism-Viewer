@@ -10615,7 +10615,10 @@ int runViewerApplication(int argc, char** argv) {
       DatasetRecorder::ReceivedStreamsPolicy policy{true,combination==3,model};
       if(policy.raw12_companion){
         for(const auto* name:{"dataset.info","imu_metadata.csv","imu0.tum","imu1.tum"}){
-          std::ofstream seed(root/name);seed<<"RAW writer owned\n";
+          // Match the production RAW writer's exact LF bytes on Windows too;
+          // text-mode ofstream would translate LF to CRLF before comparison.
+          std::ofstream seed(root/name,std::ios::binary);seed<<"RAW writer owned\n";
+          if(!seed){std::cerr<<"cannot seed RAW-owned companion fixture\n";return 10;}
         }
         if(received.start(root,true,DatasetRecordingMode::Full,false,DatasetTimestampDomain::SensorBoardBoot,
               &error,0,false,&policy)){std::cerr<<"companion overwrite allowed\n";return 10;}
