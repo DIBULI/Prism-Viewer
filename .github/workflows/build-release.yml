@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           test "$(cat VERSION)" = 1.3.0
           grep -Fq 'project(prism_viewer VERSION 1.3.0 LANGUAGES CXX)' CMakeLists.txt
-          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 46b2a20e3ef7f145a20b2f4c4452d57b46d6d577
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = d4ac1e91c09137b21501fcc5a3a47db218021ee8
           test "$(cat third_party/Prism-SDK/VERSION)" = 1.3.0
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$GITHUB_REF_NAME" = "v$(cat VERSION)"

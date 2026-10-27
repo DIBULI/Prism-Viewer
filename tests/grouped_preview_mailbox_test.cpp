@@ -2,6 +2,7 @@
 #include <iostream>
 #include <thread>
 #include <stdexcept>
+#include <string>
 using prism_viewer::ui::GroupedPreviewMailbox;
 using prism_viewer::ui::PreviewGroupKey;
 #define CHECK(x) do { if (!(x)) throw std::runtime_error("line " + std::to_string(__LINE__) + ": " #x); } while (0)
