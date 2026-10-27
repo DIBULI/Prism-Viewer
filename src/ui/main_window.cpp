@@ -4325,7 +4325,8 @@ class MainWindow : public QMainWindow {
       for(unsigned c:{3u,0u,2u}){lane(first,1,raw?1000:0,c,raw);settle();}
       ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{};
       lane(first,1,raw?1000:0,1,raw);settle();
-      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&!camera_group_warnings_;
+      ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&!camera_group_warnings_&&
+          latest_camera_frame_id_==1;
       for(unsigned c=0;c<4;++c) {
         ok=ok&&!latest_camera_images_[c].isNull()&&latest_camera_images_[c].pixel(0,0)==qRgb(1,c,30);
         if(raw)ok=ok&&frame_labels_[c]->text().contains(uiText("Group 1","组帧号 1"));
@@ -9051,7 +9052,9 @@ class MainWindow : public QMainWindow {
               changed[c]=true;
             }
           }
-        latest_camera_frame_id_ = frame.frame_id;
+        // Display the shared group ID, not the last camera's USB transfer ID.
+        // Transport/ACK identity remains frame.frame_id on the receive path.
+        latest_camera_frame_id_ = frame.group_key ? frame.group_key->group_id : frame.frame_id;
         for (size_t camera = 0; camera < latest_camera_images_.size();
              ++camera) {
           if (!changed[camera]) continue;
@@ -9076,7 +9079,7 @@ class MainWindow : public QMainWindow {
           live_camera_zoom_dialog_->setImageSet(
               latest_camera_images_,
               live_camera_zoom_dialog_->selectedCamera(),
-              uiText("Live frame %1", "实时帧 %1").arg(frame.frame_id),
+              uiText("Live frame %1", "实时帧 %1").arg(latest_camera_frame_id_),
               latest_camera_full_resolution_);
         }
   }
