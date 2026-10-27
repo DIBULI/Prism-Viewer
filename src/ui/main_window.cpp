@@ -30,6 +30,7 @@
 #include "ui/time_source_text.hpp"
 #include "ui/image_view_label.hpp"
 #include "ui/independent_preview_mailbox.hpp"
+#include "ui/camera_lane_progress.hpp"
 #include "ui/imu_sample_rate.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
 #include "ui/lidar_power_panel.hpp"
@@ -3879,6 +3880,7 @@ class MainWindow : public QMainWindow {
     auto* recording_timer = new QTimer(this);
     recording_timer->setInterval(250);
     connect(recording_timer, &QTimer::timeout, this, [this]() {
+      if (worker_running_) refreshCameraPresence();
       refreshRecordingControls(client_.isOpen(), worker_running_);
       enforceRecordingUsbLink();
       if(const auto raw=rawRecording();raw&&raw->status().closing&&dataset_recorder_.isActive())
@@ -4312,7 +4314,7 @@ class MainWindow : public QMainWindow {
       settle();
       ok = ok && frame_labels_[0]->text().contains(uiText("camera unknown", "无法确定具体相机"));
       prism::VideoMeta metadata;
-      queueCameraFrameSetStatus(12346, 1, 30, {}, metadata);
+      queueCameraFrameSetStatus(12346, 1, 30, {4,4,4,4}, metadata);
       settle();
       for (const auto* label : frame_labels_)
         ok = ok && label->styleSheet().isEmpty() && label->toolTip().isEmpty();
@@ -4433,6 +4435,56 @@ class MainWindow : public QMainWindow {
       if (!resumed) std::cerr << "independent camera resume after tab switch FAILED round=" << round << '\n';
       ok=resumed&&ok;
     }
+    // Missing-camera UI must be driven by RX evidence, not a four-lane stall
+    // or the lossy decode queue. Exercise all masks and recovery in both UIs.
+    for (bool chinese : {false, true}) {
+      prism_viewer::common::setChineseUi(chinese);
+      for (unsigned mask = 0; mask < 16; ++mask) {
+        resetUi();
+        const auto now = cameraMonotonicMs();
+        camera_lane_progress_.start(now);
+        camera_lane_progress_.receive(static_cast<uint8_t>(mask), 1, now, true);
+        prism::VideoMeta meta; meta.valid = true; meta.cameras = 4;
+        std::array<size_t,4> sizes{};
+        for (unsigned c=0;c<4;++c) if(mask&(1u<<c)) {sizes[c]=4; meta.exposure_us[c]=100;}
+        queueCameraFrameSetStatus(1,1,30,sizes,meta);
+        refreshCameraPresence(); settle();
+        for(unsigned c=0;c<4;++c) independent(c,1,qRgb(10+c,20,30));
+        for(unsigned c=0;c<4;++c) {
+          const bool missing=!(mask&(1u<<c));
+          ok=ok&&camera_missing_notice_[c]==missing&&latest_camera_images_[c].isNull()==missing&&
+              camera_frames_[c]==(missing?0u:1u);
+          if(missing) ok=ok&&frame_labels_[c]->text().contains(uiText("no image received","未收到图像"))&&
+              frame_labels_[c]->styleSheet().contains(QStringLiteral("#b42318"));
+        }
+        if(chinese&&mask==13&&!screenshot.isEmpty()) ok=camera_page_->grab().save(screenshot)&&ok;
+        const auto log_before=log_text_->toPlainText();
+        refreshCameraPresence();
+        ok=ok&&log_before==log_text_->toPlainText(); // No repeated warning flood.
+        camera_lane_progress_.receive(15,2,now+1,true);
+        refreshCameraPresence();
+        // Decode queued before recovery cannot restore an absent lane.
+        for(unsigned c=0;c<4;++c) independent(c,1,qRgb(255,0,0));
+        for(unsigned c=0;c<4;++c) if(!(mask&(1u<<c))) ok=ok&&latest_camera_images_[c].isNull();
+        for(unsigned c=0;c<4;++c) independent(c,2,qRgb(50+c,60,70));
+        for(unsigned c=0;c<4;++c) ok=ok&&!camera_missing_notice_[c]&&
+            !latest_camera_images_[c].isNull()&&frame_labels_[c]->styleSheet().isEmpty();
+      }
+      resetUi();
+      const auto now=cameraMonotonicMs();
+      camera_lane_progress_.start(now-6000);
+      camera_lane_progress_.receive(15,1,now-6000);
+      camera_lane_progress_.receive(13,2,now);
+      refreshCameraPresence();
+      ok=ok&&camera_missing_notice_==std::array<bool,4>{false,true,false,false};
+      tabs_->setCurrentWidget(imu_page_); settle();
+      tabs_->setCurrentWidget(camera_page_); settle();
+      independent(1,1,qRgb(255,0,0));
+      ok=ok&&latest_camera_images_[1].isNull()&&camera_missing_notice_[1];
+      camera_lane_progress_.receive(2,3,cameraMonotonicMs());
+      independent(1,3,qRgb(50,60,70));
+      ok=ok&&!camera_missing_notice_[1]&&!latest_camera_images_[1].isNull();
+    }
     resetUi();
     prism_viewer::common::setChineseUi(was_chinese);
     tabs_->setCurrentWidget(previous_page);
@@ -4502,7 +4554,7 @@ class MainWindow : public QMainWindow {
       if (!screenshot.isEmpty() && chinese)
         ok = camera_page_->grab().save(screenshot) && ok;
       meta.valid = false;  // Never retain or invent gain for unavailable metadata.
-      queueCameraFrameSetStatus(2, 2, 10, {}, meta);
+      queueCameraFrameSetStatus(2, 2, 10, {4,4,4,4}, meta);
       updateMeta(meta);
       settle();
       for (const auto* label : frame_labels_) {
@@ -6582,6 +6634,8 @@ class MainWindow : public QMainWindow {
       camera_preview_next_sequence_ = 1;
     }
     camera_frames_.fill(0);
+    camera_lane_progress_.reset();
+    camera_missing_notice_.fill(false);
     profile_preview_rendered_.fill(0);
     profile_preview_first_ms_.fill(0);
     profile_preview_last_ms_.fill(0);
@@ -8568,6 +8622,49 @@ class MainWindow : public QMainWindow {
     raw_dataset_decoder_->submit(++raw_dataset_generation_, std::move(entries));
   }
 
+  static int64_t cameraMonotonicMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  // UI-only notice state; receive evidence is updated before preview/recording.
+  void refreshCameraPresence(int64_t now = cameraMonotonicMs()) {
+    using State = prism_viewer::ui::CameraLaneProgress::State;
+    const auto lanes = camera_lane_progress_.snapshot(now);
+    bool zoom_changed = false;
+    for (unsigned c = 0; c < 4; ++c) {
+      if (!profile_preview_fault_[c].isEmpty()) continue;
+      const bool missing = lanes[c].state == State::Missing;
+      const auto message = uiText("Camera %1: no image received", "相机 %1：未收到图像").arg(c);
+      if (missing && (!camera_missing_notice_[c] || !frame_labels_[c]->text().contains(message))) {
+        const bool newly_missing = !camera_missing_notice_[c];
+        camera_missing_notice_[c] = true;
+        frame_labels_[c]->setStats(message + uiText(
+            " · other streams continue", " · 不影响其他路接收"));
+        frame_labels_[c]->setStyleSheet(QStringLiteral("color: #b42318;"));
+        frame_labels_[c]->setToolTip((lanes[c].declared_absent ? uiText(
+            "This validated frame does not contain this camera. ", "当前有效帧未包含这一路图像。") : uiText(
+            "No complete image received for at least 5 seconds. ", "至少 5 秒未收到完整图像。")) + uiText(
+            "Check camera connection or stream status. Receiver evidence alone does not establish a hardware failure.",
+            "请检查相机连接或数据流状态；接收端现象不能单独确定硬件故障。"));
+        latest_camera_images_[c] = {};
+        latest_camera_full_resolution_[c] = false;
+        image_labels_[c]->clearImage(message);
+        zoom_changed = true;
+        if (newly_missing)
+          appendLog(QStringLiteral("Camera%1: no complete image received; other streams continue").arg(c));
+      } else if (!missing && camera_missing_notice_[c]) {
+        camera_missing_notice_[c] = false;
+        frame_labels_[c]->setStats(uiText("Camera %1: receiving again", "相机 %1：已恢复接收").arg(c));
+        appendLog(QStringLiteral("Camera%1: image reception recovered").arg(c));
+      }
+    }
+    if (zoom_changed && live_camera_zoom_dialog_->isVisible())
+      live_camera_zoom_dialog_->setImageSet(latest_camera_images_,
+          live_camera_zoom_dialog_->selectedCamera(), uiText("Live preview", "实时预览"),
+          latest_camera_full_resolution_);
+  }
+
   void queueCameraTransferDiagnostic(
       const std::optional<prism_viewer::transfer::CameraFrameDiagnostic>& diagnostic,
       bool stalled) {
@@ -8612,6 +8709,8 @@ class MainWindow : public QMainWindow {
             "Receiver observations only. Missing data does not by itself prove a physical camera failure. Preview frame skipping is not counted as transfer loss.",
             "仅表示接收端所见，未收到数据不等同于物理相机故障；预览跳帧不计为传输丢帧。"));
       }
+      // A discarded frame is transient; a known missing lane is persistent.
+      refreshCameraPresence();
     });
   }
 
@@ -8628,26 +8727,26 @@ class MainWindow : public QMainWindow {
         return;
       }
 
-      /*
-       * These are transport/assembly counters, not preview counters. A complete
-       * four-camera frame set has already been assembled and acknowledged
-       * before this update is queued. Lossy preview decode/render scheduling
-       * must never make one camera appear to have dropped on the link.
-       */
+      // Per-lane transport counters: a missing slot must not inherit the
+      // healthy lanes' FPS or frame count. Preview skipping is not RX loss.
       camera_frame_sets_ = received_frame_sets;
-      camera_frames_.fill(camera_frame_sets_);
+      const auto lanes = camera_lane_progress_.snapshot(cameraMonotonicMs());
+      refreshCameraPresence();
       const QString preview_frame =
           latest_camera_images_[0].isNull()
               ? QStringLiteral("-")
               : QString::number(latest_camera_frame_id_);
       for (size_t camera = 0; camera < frame_labels_.size(); ++camera) {
+        camera_frames_[camera] = lanes[camera].count;
+        if (!jpeg_sizes[camera] || camera_missing_notice_[camera] ||
+            !profile_preview_fault_[camera].isEmpty()) continue;
         frame_labels_[camera]->setStats(
             uiText("RX frame=%1 fps=%2 preview frame=%3 JPEG=%4 KiB "
                    "exposure=%5 us analog gain=%6",
                    "接收帧=%1 帧率=%2 预览帧=%3 JPEG=%4 KiB "
                    "曝光=%5 微秒 模拟增益=%6")
                 .arg(frame_id)
-                .arg(received_fps, 0, 'f', 2)
+                .arg(lanes[camera].count ? lanes[camera].fps : received_fps, 0, 'f', 2)
                 .arg(preview_frame)
                 .arg(static_cast<double>(jpeg_sizes[camera]) / 1024.0, 0,
                      'f', 1)
@@ -8763,10 +8862,15 @@ class MainWindow : public QMainWindow {
   // UI thread only. Independent images touch only their own pane.
   void applyDecodedCameraPreview(DecodedCameraPreviewJob frame) {
         if (frame.generation != camera_preview_generation_.load(std::memory_order_acquire)) return;
+        refreshCameraPresence();
+        const auto lanes = camera_lane_progress_.snapshot(cameraMonotonicMs());
         std::array<bool,4> changed{};
-        if(frame.independent_image) {
           for(size_t c=0;c<frame.images.size();c++) {
-            if(profile_preview_fault_[c].isEmpty()&&!frame.images[c].isNull()&&frame.received_frame_sets>profile_preview_latest_sequence_[c]) {
+            // A delayed decode cannot restore an image from before absence.
+            // Only fresh received images can clear the per-lane notice.
+            if(profile_preview_fault_[c].isEmpty()&&!camera_missing_notice_[c]&&
+               frame.received_frame_sets>=lanes[c].minimum_preview_sequence&&
+               !frame.images[c].isNull()&&frame.received_frame_sets>profile_preview_latest_sequence_[c]) {
               profile_preview_latest_sequence_[c]=frame.received_frame_sets;
               const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -8781,11 +8885,6 @@ class MainWindow : public QMainWindow {
               changed[c]=true;
             }
           }
-        } else {
-          latest_camera_images_ = std::move(frame.images);
-          latest_camera_full_resolution_ = frame.full_resolution;
-          changed.fill(true);
-        }
         latest_camera_frame_id_ = frame.frame_id;
         for (size_t camera = 0; camera < latest_camera_images_.size();
              ++camera) {
@@ -9269,8 +9368,9 @@ class MainWindow : public QMainWindow {
                           "RK 与 sensor-board 已连接，正在开始采集"));
 
       /*
-       * Camera and IMU form one capture transaction.  A camera failure must
-       * abort the operation instead of silently leaving an IMU-only stream.
+       * Start the acquisition session once. A fixed-model board may report
+       * zero active cameras while still acquiring IMU. Transport/start errors
+       * still abort; an absent physical camera is not such an error.
        * Legacy/mixed capture uses the saved FPS. Strict 415M uses the
        * development 2 FPS path without changing persistent settings.
        */
@@ -9287,6 +9387,9 @@ class MainWindow : public QMainWindow {
             return prism_viewer::startProductCapture(client_, capture_product);
           });
       video_started = true;
+      camera_lane_progress_.start(cameraMonotonicMs());
+      if (!status.enabled)
+        appendLog(QStringLiteral("No camera pipeline active; continuing IMU and selected auxiliary streams"));
       if(profile_preview)appendLog(QStringLiteral("Profile video started: per-camera native dimensions and measured FPS are shown with each image"));
       else appendLog(QStringLiteral("Video started cameras=%1 fps=%2 size=%3x%4")
                     .arg(status.cameras)
@@ -9314,10 +9417,12 @@ class MainWindow : public QMainWindow {
       auto handleCompletedCameraFrame =
           [this, &camera_rate_samples, &received_camera_frame_sets,
            &last_completed_camera_frame_set_at,
-           &last_completed_camera_frame_id, &next_camera_status_post](
+           &last_completed_camera_frame_id, &next_camera_status_post,
+           &camera_progress_stalled](
               prism_viewer::transfer::CameraFrameSet completed, bool acknowledge = true) {
             const auto received_at = std::chrono::steady_clock::now();
             last_completed_camera_frame_set_at = received_at;
+            camera_progress_stalled = false;
             last_completed_camera_frame_id = completed.frame_id;
             camera_rate_samples.push_back(received_at);
             while (camera_rate_samples.size() > 2 &&
@@ -9338,10 +9443,13 @@ class MainWindow : public QMainWindow {
                           camera_elapsed
                     : 0.0;
             ++received_camera_frame_sets;
+            camera_lane_progress_.receive(completed.camera_mask,
+                received_camera_frame_sets, cameraMonotonicMs(),
+                acknowledge && completed.metadata.valid && completed.metadata.cameras == 4);
 
             /*
-             * Return flow-control credit once the four JPEGs and their exact
-             * per-frame metadata are both available in memory.
+             * Return flow-control credit once the JPEGs advertised by this
+             * frame's exact metadata are available in memory.
              */
             if (acknowledge) withClientIo([this, &completed]() {
               client_.sendVideoAck(completed.frame_id);
@@ -9664,13 +9772,14 @@ class MainWindow : public QMainWindow {
         }
       };
       appendLog(profile_preview ? QStringLiteral("Independent camera progress watchdog armed; healthy lanes continue if another lane is missing") : QStringLiteral(
-                    "Camera frame-set progress watchdog armed: timeout=%1 ms; "
-                    "only complete four-camera frame sets count as progress")
+                    "Camera progress monitor armed: timeout=%1 ms; "
+                    "complete images from any connected camera count as progress")
                     .arg(std::chrono::duration_cast<std::chrono::milliseconds>(
                              kCameraFrameSetProgressTimeout)
                              .count()));
       auto throwIfCameraFrameSetProgressStalled =
           [&](std::chrono::steady_clock::time_point now) {
+            if (!status.enabled) return; // Explicit IMU/auxiliary-only session.
             compensateCorsUsbCommandTime();
             now = std::chrono::steady_clock::now();
             const auto camera_progress_age =
@@ -9687,14 +9796,13 @@ class MainWindow : public QMainWindow {
                     now - last_usb_frame_at)
                     .count();
             std::ostringstream error;
-            error << "Camera frame-set progress stalled: no complete "
-                     "four-camera frame set for "
+            error << "Camera progress stalled: no complete camera image for "
                   << stalled_ms << " ms";
             if (last_completed_camera_frame_id.has_value()) {
               error << ", last complete frame-id="
                     << *last_completed_camera_frame_id;
             } else {
-              error << ", no complete frame set received since stream start";
+              error << ", no complete camera image received since stream start";
             }
             error << ", last delivered USB frame=" << usb_idle_ms << " ms ago";
             if (last_video_chunk_frame_id.has_value()) {
@@ -9951,6 +10059,8 @@ class MainWindow : public QMainWindow {
                 CameraPreviewJob job;job.frame_id=image->frame_id;job.independent_image=true;
                 job.stats[camera]=detail;
                 job.received_frame_sets=++received_camera_frame_sets;
+                camera_lane_progress_.receive(static_cast<uint8_t>(1u << camera),
+                    job.received_frame_sets, cameraMonotonicMs());
                 job.generation=camera_preview_generation_.load(std::memory_order_acquire);
                 traceProfilePreview("rx",job.generation,camera,job.frame_id,job.received_frame_sets,0,
                     image->format==4&&image->encoded.size()>=64?
@@ -10332,6 +10442,8 @@ class MainWindow : public QMainWindow {
   bool camera_preview_stop_ = false;
   std::chrono::steady_clock::time_point start_time_ = std::chrono::steady_clock::now();
   std::array<uint64_t, 4> camera_frames_{};
+  prism_viewer::ui::CameraLaneProgress camera_lane_progress_;
+  std::array<bool, 4> camera_missing_notice_{}; // UI thread only.
   std::array<uint64_t, 4> profile_preview_rendered_{};
   std::array<int64_t, 4> profile_preview_first_ms_{},profile_preview_last_ms_{},profile_preview_max_gap_ms_{};
   std::array<QString,4> profile_preview_fault_{};

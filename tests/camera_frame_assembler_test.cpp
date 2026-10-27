@@ -125,6 +125,54 @@ void testDiagnostics() {
 }  // namespace
 
 int main() {
+  // Membership belongs to each exact frame, not the previous inventory.
+  {
+    prism_viewer::transfer::CameraFrameAssembler a;
+    for(unsigned mask : {15u,1u,8u,6u,0u,15u}) {
+      static unsigned frame=500;
+      prism::VideoMeta meta;meta.valid=true;meta.cameras=4;meta.host_frame_id=frame++;
+      for(unsigned c=0;c<4;++c)meta.exposure_us[c]=(mask&(1u<<c))?100:0;
+      require(!a.addMetadata(meta),"metadata fabricated an image");
+      std::optional<prism_viewer::transfer::CameraFrameSet> out;
+      for(unsigned c=0;c<4;++c)if(mask&(1u<<c))
+        out=a.ingest(makeChunk(c,meta.host_frame_id,0,{1,2,3,4})).completed;
+      require(bool(out)==bool(mask),"empty/rejoining population misdelivered");
+      if(out)require(out->camera_mask==mask,"stale inventory reused");
+    }
+  }
+  {
+    prism_viewer::transfer::CameraFrameAssembler a;
+    prism::VideoMeta meta;meta.valid=true;meta.cameras=4;meta.host_frame_id=600;
+    meta.exposure_us[1]=100;meta.exposure_us[3]=100;a.addMetadata(meta);
+    require(!a.ingest(makeChunk(1,600,0,{1,2,3,4})).completed,"advertised camera silently omitted");
+    a.ingest(makeChunk(3,600,0,{1,2}));a.ingest(makeChunk(3,600,3,{4}));
+    auto failed=a.expire(std::chrono::steady_clock::now()+std::chrono::seconds(2));
+    require(failed.discarded_incomplete_frame_ids==std::vector<uint32_t>{600}&&
+            failed.partial_frames.size()==1&&failed.partial_frames[0].camera_mask==2&&
+            failed.partial_frames[0].jpeg[3].empty(),"corrupt lane blocked/contaminated healthy camera");
+  }
+  // A surviving subset must retire immediately, not wait for the next frame
+  // or an expiry. This preserves throughput and returns exactly one credit.
+  for (unsigned mask=1;mask<16;++mask) for (bool late : {false,true}) {
+    prism_viewer::transfer::CameraFrameAssembler a;
+    prism::VideoMeta meta;
+    meta.valid=true; meta.cameras=4; meta.host_frame_id=1000+mask;
+    for (unsigned c=0;c<4;++c) meta.exposure_us[c]=(mask&(1u<<c))?200:0;
+    if (!late) a.addMetadata(meta);
+    std::optional<prism_viewer::transfer::CameraFrameSet> out;
+    for (unsigned c=0;c<4;++c) if(mask&(1u<<c)) {
+      auto r=a.ingest(makeChunk(c,meta.host_frame_id,0,{1,2,3,4}));
+      require(r.discarded_incomplete_frame_ids.empty(),"healthy subset discarded");
+      if(r.completed) {require(!out,"duplicate delivery");out=std::move(r.completed);}
+    }
+    if (late) {require(!out,"missing metadata accepted");out=a.addMetadata(meta);}
+    require(out && out->camera_mask==mask,"surviving subset did not complete");
+    for(unsigned c=0;c<4;++c)
+      require(out->jpeg[c].empty()==!(mask&(1u<<c)),"missing camera fabricated");
+    require(!a.addMetadata(meta),"duplicate metadata delivered twice");
+    require(a.expire(std::chrono::steady_clock::now()+std::chrono::seconds(2))
+                .discarded_incomplete_frame_ids.empty(),"duplicate ACK after completion");
+  }
   try { testDiagnostics(); }
   catch (const std::exception& e) {
     std::cerr << "camera diagnostic regression: " << e.what() << '\n';
