@@ -1,4 +1,9 @@
-Prism Viewer 1.2.3
+Prism Viewer 1.2.4
+Based exactly on v1.2.3; only the RTK page trajectory zoom/ruler is added.
+Wheel/trackpad and buttons zoom; the ruler switches between m, cm and mm.
+Manual zoom is retained as new data arrives; Fit restores the full trajectory.
+The ruler describes display scale, not measurement accuracy.
+SDK, CORS, acquisition, device protocols and firmware are unchanged.
 Supports minimum 5 ms PPS with matching SDK 1.2.1.
 
 Windows x64; macOS 13+ Apple Silicon arm64; Linux x64/arm64 (GLIBC 2.31+).

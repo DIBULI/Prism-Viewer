@@ -1,4 +1,18 @@
-# Prism Viewer 1.2.3 — PPS5 maintenance
+# Prism Viewer 1.2.4 — RTK trajectory scale
+
+This release is based exactly on **v1.2.3**, adding only trajectory zoom and a
+visible distance ruler on the **RTK → Sky / trajectories** page (GGA and ADRNAV).
+Use the mouse wheel, trackpad or +/− buttons to zoom from meters to millimeters;
+the ruler automatically selects **m / cm / mm**. Drag in 2D to pan; in 3D drag
+to rotate, or Shift/right-drag to pan. **Fit trajectory** or double-click restores
+auto-fit without deleting data. Manual zoom stays fixed while new positions arrive.
+The 3D ruler measures projected length, not actual 3D distance or receiver accuracy.
+
+SDK **1.2.1**, CORS, acquisition and device protocols are unchanged from 1.2.3.
+No 1.3.0 features or firmware changes are included. See the
+[1.2.4 release notes](docs/release-notes/v1.2.4.md).
+
+## Retained 1.2.3 maintenance behavior
 
 This patch is based on Viewer 1.2.2 and retains its SDK 1.2.1 and PPS maintenance behavior.
 CORS now configures and starts the external RTK module through Timesync instead of using

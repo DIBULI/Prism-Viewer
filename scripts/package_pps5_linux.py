@@ -10,7 +10,7 @@ import tarfile
 
 source = Path(__file__).resolve().parents[1]
 build = source / 'package'
-viewer_version = '1.2.3'
+viewer_version = '1.2.4'
 arch = os.environ['PRISM_PACKAGE_ARCH']
 assert arch in ('x64', 'arm64')
 package = build / f'Prism-Viewer-{viewer_version}-linux-{arch}'

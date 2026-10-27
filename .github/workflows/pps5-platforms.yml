@@ -1,14 +1,24 @@
-name: Viewer 1.2.3 Windows CORS fix
+name: Viewer 1.2.4 RTK scale packages
 on:
   push:
-    branches: [codex/viewer-1.2.3-timesync-cors]
+    branches: [codex/viewer-1.2.4-rtk-scale]
   workflow_dispatch:
 permissions:
   contents: read
 env:
   QT_QPA_PLATFORM: offscreen
 jobs:
+  source-scope:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - run: python3 scripts/verify_124_scope.py
   windows:
+    needs: source-scope
     runs-on: windows-2022
     timeout-minutes: 40
     # Use the native Windows font/style metrics, matching the shipped GUI.
@@ -46,6 +56,113 @@ jobs:
         run: ./scripts/package_pps5_windows.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: viewer-1.2.3-windows-x64
-          path: Prism-Viewer-1.2.3-windows-x64.zip
+          name: viewer-1.2.4-windows-x64
+          path: Prism-Viewer-1.2.4-windows-x64.zip
+          if-no-files-found: error
+  macos:
+    needs: source-scope
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Qt 6.8.3 release toolchain
+        run: |
+          set -euo pipefail
+          python -m pip install aqtinstall==3.3.0
+          aqt install-qt mac desktop 6.8.3 clang_64 -O "$RUNNER_TEMP/Qt" -m qtcharts
+          echo "QT_PREFIX=$RUNNER_TEMP/Qt/6.8.3/macos" >> "$GITHUB_ENV"
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_PREFIX" -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DBUILD_TESTING=ON
+          cmake --build build -j4
+          ctest --test-dir build --output-on-failure
+      - name: Package and smoke test
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/viewer-stage"
+          app="$stage/Prism-Viewer.app"
+          cmake --install build --prefix "$stage"
+          "$QT_PREFIX/bin/macdeployqt" "$app" -always-overwrite
+          bash scripts/prune_macos_qt_plugins.sh "$app" "$QT_PREFIX"
+          bash scripts/deploy_macos_offscreen_plugin.sh "$app" "$QT_PREFIX"
+          bash scripts/restore_macos_sdk_runtime.sh "$app"
+          bash scripts/fixup_macos_bundle.sh "$app"
+          codesign --force --deep --sign - "$app"
+          bash scripts/verify_macos_bundle.sh "$app"
+          "$app/Contents/MacOS/Prism-Viewer" --version | grep -F 'Prism Viewer 1.2.4 | Prism SDK 1.2.1'
+          "$app/Contents/MacOS/Prism-Viewer" --startup-self-test
+          "$app/Contents/MacOS/Prism-Viewer" --imu-only-recorder-self-test "$RUNNER_TEMP/recording-smoke"
+          ditto -c -k --sequesterRsrc --keepParent "$app" Prism-Viewer-1.2.4-macos-arm64.zip
+          unzip -t Prism-Viewer-1.2.4-macos-arm64.zip
+          shasum -a 256 Prism-Viewer-1.2.4-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewer-1.2.4-macos-arm64
+          path: Prism-Viewer-1.2.4-macos-arm64.zip
+          if-no-files-found: error
+  linux:
+    needs: source-scope
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            machine: x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:20.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential binutils ca-certificates git file libgl1-mesa-dev libqt5charts5-dev libqt5sql5-sqlite libusb-1.0-0-dev libssl-dev libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xkb1 libxkbcommon-x11-0 ninja-build patchelf pkg-config python3-pip qt5-image-formats-plugins qtbase5-dev
+          python3 -m pip install cmake==3.31.6
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify source identity
+        run: |
+          set -euo pipefail
+          checkout_root="$(pwd -P)"
+          git config --global --add safe.directory "$checkout_root"
+          git config --global --add safe.directory "$checkout_root/third_party/Prism-SDK"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = f1e75ed4d6b7832a132ac03ad251bc2f59eb3674
+          test "$(uname -m)" = '${{ matrix.machine }}'
+      - name: Build and test
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib -DPRISM_LINK_STATIC_LINUX_SDK=OFF
+          cmake --build build -j4
+          ctest --test-dir build --output-on-failure
+      - name: Package and smoke test
+        env:
+          PRISM_PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          cmake --install build --prefix "$PWD/package/Prism-Viewer-1.2.4-linux-$PRISM_PACKAGE_ARCH"
+          python3 scripts/package_pps5_linux.py
+          sha256sum "package/Prism-Viewer-1.2.4-linux-$PRISM_PACKAGE_ARCH.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewer-1.2.4-linux-${{ matrix.arch }}
+          path: package/Prism-Viewer-1.2.4-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
