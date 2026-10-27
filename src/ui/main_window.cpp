@@ -85,6 +85,7 @@
 #include <QtCore/QRegularExpression>
 #include <QtNetwork/QHostAddress>
 #include <QtWidgets/QGridLayout>
+#include <QtWidgets/QGraphicsScene>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFormLayout>
@@ -4395,7 +4396,7 @@ class MainWindow : public QMainWindow {
       if(arrival.post)postGroupedPreview(generation);
       return arrival.token;
     };
-    const auto lane=[&](uint64_t token,uint32_t group,uint64_t stamp,unsigned camera,bool raw=true) {
+    const auto lane=[&](uint64_t token,uint32_t group,uint64_t stamp,unsigned camera,bool raw=true,int width=8) {
       DecodedCameraPreviewJob d;
       d.generation=camera_preview_generation_.load();d.group_token=token;
       d.group_key=prism_viewer::ui::PreviewGroupKey{group,stamp,raw};
@@ -4403,8 +4404,9 @@ class MainWindow : public QMainWindow {
       d.received_frame_sets=group*4+camera+1;d.is_raw[camera]=raw;
       d.raw_metadata[camera]={4,stamp,group+camera*100,1000,1024,group};
       d.stats[camera]=QStringLiteral("fixture");
-      d.images[camera]=QImage(8,8,QImage::Format_RGB32);
+      d.images[camera]=QImage(width,8,QImage::Format_RGB32);
       d.images[camera].fill(qRgb(group,camera,30));
+      d.full_resolution[camera]=true;
       camera_lane_progress_.receive(uint8_t(1u<<camera),d.received_frame_sets,cameraMonotonicMs());
       publishDecodedCameraPreview(std::move(d));
     };
@@ -4451,6 +4453,49 @@ class MainWindow : public QMainWindow {
       settle();
       ok=ok&&profile_preview_rendered_==std::array<uint64_t,4>{1,1,1,1}&&!camera_group_warnings_;
     }
+    // Enlarged preview must see one fully committed group, not four
+    // intermediate lane updates. Observe the real scene update synchronously.
+    auto* zoom_view = dynamic_cast<prism_viewer::ui::ZoomableImageView*>(
+        live_camera_zoom_dialog_->findChild<QGraphicsView*>(QStringLiteral("cameraZoomImage")));
+    unsigned expected_zoom_group=0, observed_zoom_updates=0;
+    bool atomic_zoom=true;
+    const auto zoom_observer=connect(zoom_view->scene(),&QGraphicsScene::sceneRectChanged,
+        this,[&](const QRectF&) {
+          if(!expected_zoom_group)return;
+          ++observed_zoom_updates;
+          for(unsigned c=0;c<4;++c)
+            atomic_zoom=atomic_zoom&&!latest_camera_images_[c].isNull()&&
+                latest_camera_images_[c].pixel(0,0)==qRgb(expected_zoom_group,c,30);
+        });
+    for(bool raw:{false,true}) {
+      resetUi();
+      const auto generation=camera_preview_generation_.load();
+      for(unsigned group=1;group<=12;++group) {
+        const auto stamp=raw?group*1000:0;
+        const auto token=begin(group,stamp,raw);
+        for(unsigned c=0;c<2;++c)lane(token,group,stamp,c,raw,8+group);
+        // Toggle while the new group is incomplete, or while its complete
+        // delivery is queued; neither operation invalidates capture generation.
+        if(group>1) {
+          showLiveCameraZoom((group-1)%4);
+          live_camera_zoom_dialog_->hide();
+          if(group%2)showLiveCameraZoom((group-1)%4);
+        }
+        for(unsigned c=2;c<4;++c)lane(token,group,stamp,c,raw,8+group);
+        if(group>1&&!(group%2))showLiveCameraZoom((group-1)%4);
+        expected_zoom_group=group;
+        settle();
+        expected_zoom_group=0;
+        ok=ok&&!camera_group_warnings_&&camera_preview_generation_.load()==generation;
+        for(unsigned c=0;c<4;++c)
+          ok=ok&&profile_preview_rendered_[c]==group;
+      }
+      live_camera_zoom_dialog_->hide();
+    }
+    disconnect(zoom_observer);
+    ok=ok&&atomic_zoom&&observed_zoom_updates>0;
+    std::cout<<"grouped_zoom_atomic="<<atomic_zoom<<" observed="<<observed_zoom_updates<<'\n';
+    resetUi();
     auto incomplete=begin(2,8000);lane(incomplete,2,8000,0);
     begin(3,9000);settle();
     if(!screenshot.isEmpty())ok=camera_page_->grab().save(screenshot)&&ok;
@@ -8803,7 +8848,7 @@ class MainWindow : public QMainWindow {
   }
 
   // UI-only notice state; receive evidence is updated before preview/recording.
-  void refreshCameraPresence(int64_t now = cameraMonotonicMs()) {
+  void refreshCameraPresence(int64_t now = cameraMonotonicMs(), bool refresh_zoom = true) {
     using State = prism_viewer::ui::CameraLaneProgress::State;
     const auto lanes = camera_lane_progress_.snapshot(now);
     bool zoom_changed = false;
@@ -8834,7 +8879,7 @@ class MainWindow : public QMainWindow {
         appendLog(QStringLiteral("Camera%1: image reception recovered").arg(c));
       }
     }
-    if (zoom_changed && live_camera_zoom_dialog_->isVisible())
+    if (refresh_zoom && zoom_changed && live_camera_zoom_dialog_->isVisible())
       live_camera_zoom_dialog_->setImageSet(latest_camera_images_,
           live_camera_zoom_dialog_->selectedCamera(), uiText("Live preview", "实时预览"),
           latest_camera_full_resolution_);
@@ -9100,16 +9145,30 @@ class MainWindow : public QMainWindow {
       const bool zoom_updates = live_camera_zoom_dialog_->updatesEnabled();
       camera_page_->setUpdatesEnabled(false);
       live_camera_zoom_dialog_->setUpdatesEnabled(false);
-      for (auto& frame : delivery.frames) if (frame) applyDecodedCameraPreview(std::move(*frame));
+      refreshCameraPresence(cameraMonotonicMs(), false);
+      for (auto& frame : delivery.frames)
+        if (frame) applyDecodedCameraPreview(std::move(*frame), false);
+      // Disabling paints alone does not defer pixmap conversion or layout.
+      // Commit every lane first, then update the enlarged view exactly once.
+      refreshLiveCameraZoom();
       camera_page_->setUpdatesEnabled(page_updates);
       live_camera_zoom_dialog_->setUpdatesEnabled(zoom_updates);
       if (grouped_preview_mailbox_.presented(generation)) postGroupedPreview(generation);
     });
   }
 
-  void applyDecodedCameraPreview(DecodedCameraPreviewJob frame) {
+  void refreshLiveCameraZoom() {
+    if (live_camera_zoom_dialog_->isVisible()) {
+      live_camera_zoom_dialog_->setImageSet(
+          latest_camera_images_, live_camera_zoom_dialog_->selectedCamera(),
+          uiText("Live frame %1", "实时帧 %1").arg(latest_camera_frame_id_),
+          latest_camera_full_resolution_);
+    }
+  }
+
+  void applyDecodedCameraPreview(DecodedCameraPreviewJob frame, bool refresh_shared_views = true) {
         if (frame.generation != camera_preview_generation_.load(std::memory_order_acquire)) return;
-        refreshCameraPresence();
+        if (refresh_shared_views) refreshCameraPresence();
         const auto lanes = camera_lane_progress_.snapshot(cameraMonotonicMs());
         std::array<bool,4> changed{};
           for(size_t c=0;c<frame.images.size();c++) {
@@ -9155,13 +9214,7 @@ class MainWindow : public QMainWindow {
           if(!profile_preview_fault_[camera].isEmpty())image_labels_[camera]->clearImage(profile_preview_fault_[camera]);
           else image_labels_[camera]->setImage(latest_camera_images_[camera]);
         }
-        if (live_camera_zoom_dialog_->isVisible()) {
-          live_camera_zoom_dialog_->setImageSet(
-              latest_camera_images_,
-              live_camera_zoom_dialog_->selectedCamera(),
-              uiText("Live frame %1", "实时帧 %1").arg(latest_camera_frame_id_),
-              latest_camera_full_resolution_);
-        }
+        if (refresh_shared_views) refreshLiveCameraZoom();
   }
 
   void cameraPreviewWorkerMain() {

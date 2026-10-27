@@ -107,7 +107,9 @@ int main(int argc,char** argv){
     require(pixmap(*view)->transform().isIdentity(),"100% scaled item");
     for(int n=0;n<5;++n)view->zoomOut();
     const auto before=view->transform();const auto bounds=view->scene()->sceneRect();
+    const auto pixmap_key=pixmap(*view)->pixmap().cacheKey();
     dialog.setImageSet(images,2,"next frame",full);
+    require(pixmap(*view)->pixmap().cacheKey()==pixmap_key,"unchanged RAW repeated CFA/sRGB conversion");
     require(view->transform()==before&&view->scene()->sceneRect()==bounds,"live zoom jump");
     uniform(pixmap(*view)->pixmap().toImage(),lut[120]);
     actual->click();view->zoomIn();

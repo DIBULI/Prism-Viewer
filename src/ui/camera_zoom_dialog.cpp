@@ -215,15 +215,27 @@ void CameraZoomDialog::refresh(bool refresh_thumbnails, bool reset_view) {
       common::uiText("%1 | enlarged Camera %2", "%1 | 放大相机 %2")
           .arg(context_)
           .arg(selected_camera_));
-  if (images_[selected_camera_].isNull()) {
-    main_image_->clearImage(common::uiText("No frame", "无图像"));
-  } else if (!full_resolution_[selected_camera_]) {
-    main_image_->clearImage(common::uiText(
-        "Waiting for a full-resolution frame…", "正在等待完整分辨率图像……"));
-  } else {
-    main_image_->setImage(images_[selected_camera_]);
-    if (reset_view) main_image_->fitToWindow();
+  const auto image_key = images_[selected_camera_].cacheKey();
+  const bool full_resolution = full_resolution_[selected_camera_];
+  // A context/other-lane update or reopening the dialog must not repeat a
+  // full image conversion (including RAW sRGB/CFA work) on the UI thread.
+  // Identity includes resolution provenance: the same pixels becoming a
+  // thumbnail must still clear the enlarged image immediately.
+  if (displayed_camera_ != selected_camera_ || displayed_image_key_ != image_key ||
+      displayed_full_resolution_ != full_resolution) {
+    if (images_[selected_camera_].isNull()) {
+      main_image_->clearImage(common::uiText("No frame", "无图像"));
+    } else if (!full_resolution) {
+      main_image_->clearImage(common::uiText(
+          "Waiting for a full-resolution frame…", "正在等待完整分辨率图像……"));
+    } else {
+      main_image_->setImage(images_[selected_camera_]);
+    }
+    displayed_camera_ = selected_camera_;
+    displayed_image_key_ = image_key;
+    displayed_full_resolution_ = full_resolution;
   }
+  if (reset_view && main_image_->hasImage()) main_image_->fitToWindow();
 
   if (refresh_thumbnails) {
     for (int camera = 0; camera < 4; ++camera) {

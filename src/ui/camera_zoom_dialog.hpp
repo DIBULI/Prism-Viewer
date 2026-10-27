@@ -49,6 +49,9 @@ class CameraZoomDialog final : public QDialog {
   std::array<QImage, 4> images_{};
   // A thumbnail may populate the selector, but never the enlarged view.
   std::array<bool, 4> full_resolution_{};
+  qint64 displayed_image_key_ = 0;
+  bool displayed_full_resolution_ = false;
+  int displayed_camera_ = -1;
   std::chrono::steady_clock::time_point next_thumbnail_refresh_{};
   int selected_camera_ = 0;
   QString context_;

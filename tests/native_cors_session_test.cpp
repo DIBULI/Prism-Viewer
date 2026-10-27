@@ -65,6 +65,41 @@ int main(int argc, char** argv) {
       bool rejected=false;try {session.startNative(bad,transport,handler);}catch(const std::invalid_argument&){rejected=true;}
       check(rejected,"Reject unsupported endpoint before starting worker");
     }
+    // Changing the account must save the new values and bind START to that
+    // generation. Authenticated telemetry for the prior account is not success.
+    fail_stop=false;
+    auto revised=config;
+    revised.username="replacement-user";revised.password="replacement-password";
+    revised.mountpoint="SECOND";
+    NativeCorsTransport replacement=transport;
+    std::atomic<bool> replacement_saved{false};
+    std::atomic<uint32_t> active_generation{17};
+    replacement.save=[&](const prism::TimeSyncCorsConfiguration& c) {
+      check(c.enabled && c.ip=="203.0.113.1" && c.port==8002 &&
+            c.username=="replacement-user" && c.password=="replacement-password" &&
+            c.mountpoint=="SECOND","Replacement account fields were not saved");
+      replacement_saved=true;
+      prism::TimeSyncCorsStatus s;s.configuration_saved=s.enabled=s.credentials_present=true;
+      s.saved_generation=18;return s;
+    };
+    replacement.status=[&] {
+      auto s=transport.status();
+      s.saved_generation=18;s.applied_generation=s.current_cors_generation=active_generation.load();
+      return s;
+    };
+    replacement.start=[&](const prism::RtkStartOptions& options) {
+      check(replacement_saved && options.expected_cors_generation==18 && options.allow_gga,
+            "Replacement account must be saved before START with its generation");
+      return replacement.status();
+    };
+    session.startNative(revised,replacement,handler);
+    until([&] {return replacement_saved && snapshot().phase==CorsSessionPhase::Connecting;});
+    check(snapshot().native_status.current_cors_generation==17,
+          "Old-account fixture was not delivered");
+    active_generation=18;
+    until([&] {return snapshot().phase==CorsSessionPhase::Streaming;});
+    check(snapshot().native_status.current_cors_generation==18,"Replacement generation missing");
+    session.stop();check(snapshot().phase==CorsSessionPhase::Disconnected,"Replacement stop failed");
   } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
   return 0;
 }

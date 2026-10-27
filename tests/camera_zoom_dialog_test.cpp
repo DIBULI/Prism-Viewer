@@ -33,6 +33,13 @@ QString emptyMessage(const prism_viewer::ui::ZoomableImageView& view) {
   return {};
 }
 
+qint64 displayedKey(const prism_viewer::ui::ZoomableImageView& view) {
+  for (auto* item : view.scene()->items())
+    if (auto* pixmap = dynamic_cast<QGraphicsPixmapItem*>(item))
+      if (pixmap->isVisible()) return pixmap->pixmap().cacheKey();
+  return 0;
+}
+
 void run(bool chinese) {
   using namespace prism_viewer;
   common::setChineseUi(chinese);
@@ -62,8 +69,19 @@ void run(bool chinese) {
   require(displayedSize(*view) == QSize(5120, 3072), "RAW source pixels reduced");
   actual->click();
   require(view->zoomPercent() == 100, "100 percent is not native size");
+  const auto unchanged_key = displayedKey(*view);
   dialog.setImageSet(images, 0, QStringLiteral("RAW12 next frame"), full);
   require(view->zoomPercent() == 100, "live update changed zoom");
+  require(displayedKey(*view) == unchanged_key,
+          "unchanged selected image was converted/uploaded again");
+  images[3].fill(90);
+  dialog.setImageSet(images, 0, QStringLiteral("Other lane updated"), full);
+  require(displayedKey(*view) == unchanged_key,
+          "other lane update reuploaded the selected image");
+  images[0].fill(102);
+  dialog.setImageSet(images, 0, QStringLiteral("New selected image"), full);
+  require(displayedKey(*view) != unchanged_key,
+          "new image content was incorrectly deduplicated");
 
   int selected = -1;
   dialog.on_selected_camera_changed = [&](int camera) { selected = camera; };
@@ -80,6 +98,21 @@ void run(bool chinese) {
   full[1] = true;
   dialog.setImageSet(images, 1, QStringLiteral("JPEG"), full);
   require(displayedSize(*view) == QSize(1280, 1024), "JPEG source pixels reduced");
+  const auto jpeg_key = displayedKey(*view);
+  for (int n = 0; n < 8; ++n) {
+    dialog.hide();
+    dialog.setImageSet(images, 1, QStringLiteral("Reopen JPEG"), full);
+    dialog.show();
+    QApplication::processEvents();
+    require(displayedKey(*view) == jpeg_key, "reopen reuploaded unchanged JPEG");
+  }
+  // Provenance, not dimensions or pixel identity, grants full-resolution use.
+  full[1] = false;
+  dialog.setImageSet(images, 1, QStringLiteral("Same pixels, thumbnail provenance"), full);
+  require(!view->hasImage(), "same-image thumbnail provenance was ignored");
+  full[1] = true;
+  dialog.setImageSet(images, 1, QStringLiteral("Full resolution restored"), full);
+  require(displayedSize(*view) == QSize(1280, 1024), "same-image full frame not restored");
   // A preview already in flight when selection changed cannot overwrite the
   // main image with an upscaled thumbnail, even if it is a newer frame.
   images[1] = images[1].scaled(640, 512);
