@@ -19,14 +19,14 @@ struct Client {
     return int(value);
   }
   int startVideo1280x1024() { return start(0); }
-  int startPrism415mVideo(unsigned value) { fps=value; return start(7); }
+  int startPrism415rsv0Video(unsigned value) { fps=value; return start(7); }
   int startProfileVideoGpu() { return start(3); }
 };
 }
 
 int main() {
   try {
-    for (auto model : {prism::DeviceModel::Prism41M3, prism::DeviceModel::Prism415M, prism::DeviceModel::Prism1315}) {
+    for (auto model : {prism::DeviceModel::Prism41M3, prism::DeviceModel::Prism415RSV0, prism::DeviceModel::Prism1315}) {
       const auto product = prism_viewer::captureProduct(model);
       const unsigned expected = model == prism::DeviceModel::Prism41M3 ? 0 : model == prism::DeviceModel::Prism1315 ? 3 : 7;
       require(prism_viewer::captureOptions(product) == expected, "wrong options");
@@ -34,8 +34,8 @@ int main() {
       require(prism_viewer::startProductCapture(client, product) == int(expected),
               "wrong SDK entry");
       require(client.calls == 1 && client.options == expected, "multiple STARTs");
-      require(client.fps == (product == prism_viewer::CaptureProduct::Strict415M ? 2u : 0u),
-              "415M must request2FPS; other products preserve saved rates");
+      require(client.fps == (product == prism_viewer::CaptureProduct::Strict415RSV0 ? 2u : 0u),
+              "415RSV0 must request2FPS; other products preserve saved rates");
       client.calls = 0;
       client.reject = true;
       bool threw = false;
@@ -53,7 +53,7 @@ int main() {
       } catch (const std::invalid_argument&) { threw = true; }
       require(threw && client.calls == 0, "invalid selection sent START");
     }
-    std::cout << "41M3=0, 415M=7, 1315=3; invalid/rejected START never retried\n";
+    std::cout << "41M3=0, 415RSV0=7, 1315=3; invalid/rejected START never retried\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << e.what() << '\n';

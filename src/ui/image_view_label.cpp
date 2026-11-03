@@ -24,14 +24,14 @@ void ImageViewLabel::setTransformationMode(Qt::TransformationMode mode) {
 }
 
 void ImageViewLabel::setImage(const QImage& image) {
-  linear_raw12_image_ = isRaw12Preview(image) ? raw12ThumbnailSource(image) : QImage();
-  source_pixmap_ = isRaw12Preview(image) ? QPixmap() : QPixmap::fromImage(image);
+  linear_raw8_image_ = isRaw8Preview(image) ? raw8ThumbnailSource(image) : QImage();
+  source_pixmap_ = isRaw8Preview(image) ? QPixmap() : QPixmap::fromImage(image);
   refreshPixmap();
 }
 
 void ImageViewLabel::clearImage(const QString& text) {
   source_pixmap_ = QPixmap();
-  linear_raw12_image_ = QImage();
+  linear_raw8_image_ = QImage();
   setPixmap(QPixmap());
   setText(text);
 }
@@ -44,7 +44,7 @@ void ImageViewLabel::resizeEvent(QResizeEvent* event) {
 
 void ImageViewLabel::mousePressEvent(QMouseEvent* event) {
   if (event->button() == Qt::LeftButton &&
-      (!source_pixmap_.isNull() || !linear_raw12_image_.isNull()) &&
+      (!source_pixmap_.isNull() || !linear_raw8_image_.isNull()) &&
       on_click) {
     on_click();
     event->accept();
@@ -54,11 +54,11 @@ void ImageViewLabel::mousePressEvent(QMouseEvent* event) {
 }
 
 void ImageViewLabel::refreshPixmap() {
-  if (!linear_raw12_image_.isNull() && width() > 0 && height() > 0) {
+  if (!linear_raw8_image_.isNull() && width() > 0 && height() > 0) {
     // Filtering must operate on linear light, not sRGB-encoded CFA values.
-    const auto scaled = linear_raw12_image_.scaled(
+    const auto scaled = linear_raw8_image_.scaled(
         size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    setPixmap(QPixmap::fromImage(raw12SrgbDisplay(scaled)));
+    setPixmap(QPixmap::fromImage(raw8SrgbDisplay(scaled)));
     return;
   }
   if (source_pixmap_.isNull() || width() <= 0 || height() <= 0) return;

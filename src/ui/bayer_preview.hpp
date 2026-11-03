@@ -8,20 +8,20 @@
 
 namespace prism_viewer::ui {
 
-// Display-only provenance, attached only after a complete 415M RAW12 decode.
+// Display-only provenance, attached only after a complete 415RSV0 RAW8 decode.
 // It is not wire metadata and never changes or accompanies recorded RAW bytes.
-inline constexpr auto kRaw12PreviewKey = "prism.raw12.preview";
-inline constexpr auto kRaw12TransferKey = "prism.raw12.transfer";
+inline constexpr auto kRaw8PreviewKey = "prism.raw8.preview";
+inline constexpr auto kRaw8TransferKey = "prism.raw8.transfer";
 
-inline bool isRaw12Preview(const QImage& image) {
-  const auto kind = image.text(kRaw12PreviewKey);
+inline bool isRaw8Preview(const QImage& image) {
+  const auto kind = image.text(kRaw8PreviewKey);
   return kind == QStringLiteral("native-bayer") ||
          kind == QStringLiteral("cell-average");
 }
 
 inline bool isNativeBayerPreview(const QImage& image) {
-  return image.text(kRaw12PreviewKey) == QStringLiteral("native-bayer") &&
-         image.text(kRaw12TransferKey) != QStringLiteral("srgb") &&
+  return image.text(kRaw8PreviewKey) == QStringLiteral("native-bayer") &&
+         image.text(kRaw8TransferKey) != QStringLiteral("srgb") &&
          image.format() == QImage::Format_Grayscale8 &&
          image.size() == QSize(5120, 3072);
 }
@@ -29,7 +29,7 @@ inline bool isNativeBayerPreview(const QImage& image) {
 // Equal weight for every CFA phase, independent of Bayer order. This is a
 // linear monochrome preview, not a color demosaic or automatic tone mapping.
 // Cache this bounded 1/4-size display image once per frame, not per resize.
-inline QImage raw12ThumbnailSource(const QImage& image) {
+inline QImage raw8ThumbnailSource(const QImage& image) {
   if (!isNativeBayerPreview(image)) return image;
   QImage average(image.width() / 2, image.height() / 2,
                  QImage::Format_Grayscale8);
@@ -44,15 +44,15 @@ inline QImage raw12ThumbnailSource(const QImage& image) {
                         b[sx] + b[sx + 1]) / 4);
     }
   }
-  average.setText(kRaw12PreviewKey, QStringLiteral("cell-average"));
+  average.setText(kRaw8PreviewKey, QStringLiteral("cell-average"));
   return average;
 }
 
 // Display-only copy: caches, decoded samples and recording/AE stay linear.
 // Unmarked JPEG/41M3 images are already display-ready and must not be encoded.
-inline QImage raw12SrgbDisplay(const QImage& image) {
-  if (!isRaw12Preview(image) ||
-      image.text(kRaw12TransferKey) == QStringLiteral("srgb")) return image;
+inline QImage raw8SrgbDisplay(const QImage& image) {
+  if (!isRaw8Preview(image) ||
+      image.text(kRaw8TransferKey) == QStringLiteral("srgb")) return image;
   // Qt5 smooth scaling promotes Grayscale8 to RGB32 (still linear gray).
   // Normalize the display copy, otherwise those paths would skip the LUT.
   QImage display = image.format() == QImage::Format_Grayscale8
@@ -63,7 +63,7 @@ inline QImage raw12SrgbDisplay(const QImage& image) {
     auto* row = display.scanLine(y);
     for (int x = 0; x < display.width(); ++x) row[x] = lut[row[x]];
   }
-  display.setText(kRaw12TransferKey, QStringLiteral("srgb"));
+  display.setText(kRaw8TransferKey, QStringLiteral("srgb"));
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
   // Qt 5.12 has no color-space metadata API; its pixels use the same LUT.
   display.setColorSpace(QColorSpace::SRgb);

@@ -31,7 +31,7 @@ int main(int argc,char** argv){
     for(unsigned c=0;c<4;++c){auto& im=images[c];im.camera=c;im.format=4;std::ifstream f(argv[c+1],std::ios::binary);require(bool(f));im.encoded.assign(std::istreambuf_iterator<char>(f),{});}
     std::array<unsigned,4> verified{};
     auto started=std::chrono::steady_clock::now();
-    BoundedCameraAudit<prism::capture::ProfileImage> raw([&](const auto& im){auto r=prism::capture::decodeRaw12(im.encoded,im.format);require(r.camera==im.camera&&r.width==5120&&r.height==3072);++verified[im.camera];});
+    BoundedCameraAudit<prism::capture::ProfileImage> raw([&](const auto& im){auto r=prism::capture::decodeRawImage(im.encoded,im.format);require(r.camera==im.camera&&r.width==5120&&r.height==3072);++verified[im.camera];});
     for(unsigned i=0;i<2;++i)for(const auto& im:images)raw.submit(im);
     raw.finish();for(auto n:verified)require(n==2);
     std::cout<<"8actualRAW full12bitCRC elapsed_ms="<<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()<<"\n";

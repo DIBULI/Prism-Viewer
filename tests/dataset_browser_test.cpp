@@ -110,7 +110,7 @@ int main() {
                               bool defaulted, bool raw = false) {
       writeText(models / "dataset.info", manifest);
       const auto info = prism_viewer::dataset::readDatasetIdentity(models);
-      if (info.model != model || info.defaulted != defaulted || info.raw12_recording != raw)
+      if (info.model != model || info.defaulted != defaulted || info.raw8_recording != raw)
         throw std::runtime_error("dataset identity mismatch");
     };
     if (prism_viewer::dataset::readDatasetIdentity(models).model != "41M3")
@@ -122,16 +122,16 @@ int main() {
     identity("device_model=Prism-41m3\n", "41M3", false);
     identity("device_model=41M3\nmodel=Prism-A4L\n", "41M3", false);
     identity(R"({"model":"Prism-A4L"})", "41M3", false);
-    identity("\xef\xbb\xbf" "device_model=415M\n", "415M", false);
-    identity("device_model=415M\n", "415M", false);
-    identity(" # comment\r\n device_model = Prism-415M \r\n", "415M", false);
+    identity("\xef\xbb\xbf" "device_model=415RSV0\n", "415RSV0", false);
+    identity("device_model=415RSV0\n", "415RSV0", false);
+    identity(" # comment\r\n device_model = Prism-415RSV0 \r\n", "415RSV0", false);
     identity("device_model=NEXT-1\n", "NEXT-1", false);
-    identity("device_model=415M\nmodel=Prism-415M\ncodec=raw12-rice-lossless\n", "415M", false, true);
-    identity("codec=raw12-rice-lossless\n", "41M3", true, true);
-    identity(R"({"model":"Prism-415M","codec":"raw12-rice-lossless"})", "415M", false, true);
+    identity("device_model=415RSV0\nmodel=Prism-415RSV0\ncodec=raw8-rice-lossless\n", "415RSV0", false, true);
+    identity("codec=raw8-rice-lossless\n", "41M3", true, true);
+    identity(R"({"model":"Prism-415RSV0","codec":"raw8-rice-lossless"})", "415RSV0", false, true);
     identity(R"({"schema":1})", "41M3", true);
-    for (const auto& bad : {"device_model=A4L\ndevice_model=415M\n",
-                           "device_model=A4L\nmodel=415M\n", "device_model=<script>\n",
+    for (const auto& bad : {"device_model=A4L\ndevice_model=415RSV0\n",
+                           "device_model=A4L\nmodel=415RSV0\n", "device_model=<script>\n",
                            "{\"device_model\":42}", "{invalid}"}) {
       writeText(models / "dataset.info", bad);
       bool rejected=false;
@@ -139,10 +139,10 @@ int main() {
       catch (const std::exception&) { rejected=true; }
       if (!rejected) throw std::runtime_error("malformed identity accepted");
     }
-    identity("device_model=415M\ncodec=raw12-rice-lossless\n", "415M", false, true);
+    identity("device_model=415RSV0\ncodec=raw8-rice-lossless\n", "415RSV0", false, true);
     const auto raw = prism_viewer::dataset::validatePrismDataset(models);
-    if (raw.valid || raw.device_model != "415M" || raw.errorCount() != 1)
-      throw std::runtime_error("model recognition claimed unsupported RAW12 validation");
+    if (raw.valid || raw.device_model != "415RSV0" || raw.errorCount() != 1)
+      throw std::runtime_error("model recognition claimed unsupported RAW8 validation");
 
     // Missing all camera indexes is the valid IMU-only dataset layout.
     expectInspection(root, 0u);

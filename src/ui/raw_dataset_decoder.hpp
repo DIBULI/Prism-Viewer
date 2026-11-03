@@ -1,5 +1,5 @@
 #pragma once
-#include "dataset/raw12_dataset.hpp"
+#include "dataset/raw8_dataset.hpp"
 #include <condition_variable>
 #include <mutex>
 #include <optional>
@@ -51,7 +51,7 @@ class RawDatasetDecoder {
         if (entry.absolute_path == old.absolute_path && entry.byte_offset == old.byte_offset &&
             entry.byte_size == old.byte_size && entry.raw_crc32 == old.raw_crc32 && !cache.images[c].isNull()) continue;
         cache.images[c] = {}; cache.errors[c].clear();
-        try { cache.images[c] = dataset::loadRaw12DatasetImage(entry); }
+        try { cache.images[c] = dataset::loadRaw8DatasetImage(entry); }
         catch (const std::exception& e) { cache.errors[c] = QString::fromUtf8(e.what()); }
         previous[c] = entry;
       }

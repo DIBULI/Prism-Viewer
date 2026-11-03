@@ -20,7 +20,7 @@ struct DatasetImageEntry {
   uint64_t byte_offset = 0;
   uint32_t byte_size = 0;
   uint32_t exposure_us = 0;
-  bool raw12 = false;
+  bool raw8 = false;
   uint8_t camera = 0;
   uint8_t timing_mode = 0;
   uint32_t frame_id = 0;

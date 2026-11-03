@@ -177,11 +177,11 @@ int main(int argc, char** argv) {
   // The unit decision is explicit DeviceInfo, not a heuristic based on FPS.
   panel.setCameraFps(2u);
   require(exposure0->suffix() == QStringLiteral(" us"),
-          "2 FPS alone never selects the 415M row unit");
-  panel.setDeviceModel(prism::DeviceModel::Prism415M);
+          "2 FPS alone never selects the 415RSV0 row unit");
+  panel.setDeviceModel(prism::DeviceModel::Prism415RSV0);
   require(exposure0->suffix() == QStringLiteral(" rows") &&
               exposure0->singleStep() == 1 && !apply->isEnabled(),
-          "415M changes units and invalidates the previous device readback");
+          "415RSV0 changes units and invalidates the previous device readback");
   prism::ExposureConfiguration rows_config;
   rows_config.automatic_camera_mask = 0;
   rows_config.manual_exposure_time_us.fill(64000u);
@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
   require(effective_max_label->text().contains(QStringLiteral("7920 rows")) &&
               !effective_max_label->text().contains(QStringLiteral(" us")),
           "effective limit is expressed in rows, not microseconds");
-  panel.setDeviceModel(prism::DeviceModel::Prism415M);
+  panel.setDeviceModel(prism::DeviceModel::Prism415RSV0);
   require(exposure0->value() == 1025 && exposure0->isEnabled(),
           "periodic unchanged DeviceInfo does not erase user edits");
   rows_limits.effective_max_exposure_time_us = 128000u;
@@ -219,7 +219,7 @@ int main(int argc, char** argv) {
               !min_exposure->isEnabled() && !max_exposure->isEnabled() &&
               !min_gain->isEnabled() && !max_gain->isEnabled() &&
               exposure0->isEnabled() && exposure0->maximum() == 4096,
-          "415M live controls expose bounded rows, not synchronous gain/limit changes");
+          "415RSV0 live controls expose bounded rows, not synchronous gain/limit changes");
   require(exposure0->value() == 1024,
           "starting live capture restores confirmed values, not stale unsent edits");
   exposure0->setValue(1025);
@@ -275,7 +275,7 @@ int main(int argc, char** argv) {
           "disconnect and 41M3 reopen restore original microsecond controls");
   prism_viewer::common::setChineseUi(true);
   panel.setCameraFps(2u);
-  panel.setDeviceModel(prism::DeviceModel::Prism415M);
+  panel.setDeviceModel(prism::DeviceModel::Prism415RSV0);
   rows_limits.effective_max_exposure_time_us = 495000u;
   panel.setConfiguration(rows_config, rows_limits);
   require(exposure0->suffix() == QString::fromUtf8(" 行") &&
@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
     prism_viewer::ui::CameraExposurePanel chinese_panel;
     chinese_panel.setDeviceOpen(true);
     chinese_panel.setCameraFps(2u);
-    chinese_panel.setDeviceModel(prism::DeviceModel::Prism415M);
+    chinese_panel.setDeviceModel(prism::DeviceModel::Prism415RSV0);
     chinese_panel.setConfiguration(rows_config, rows_limits);
     chinese_panel.resize(360, 1020);
     chinese_panel.show();

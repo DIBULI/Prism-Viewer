@@ -16,7 +16,7 @@ namespace prism_viewer::dataset {
 struct DatasetIdentity {
   std::string model = "41M3";
   bool defaulted = true;
-  bool raw12_recording = false;
+  bool raw8_recording = false;
 };
 
 // Additive metadata: never infer a model from directory names or image sizes.
@@ -53,8 +53,8 @@ inline DatasetIdentity readDatasetIdentity(const std::filesystem::path& root) {
     };
     declared = field("device_model");
     legacy = field("model");
-    result.raw12_recording = object.value(QStringLiteral("codec")).toString() ==
-                            QStringLiteral("raw12-rice-lossless");
+    result.raw8_recording = object.value(QStringLiteral("codec")).toString() ==
+                            QStringLiteral("raw8-rice-lossless");
   } else {
     std::istringstream lines(bytes.toStdString());
     std::map<std::string, QString> models;
@@ -64,8 +64,8 @@ inline DatasetIdentity readDatasetIdentity(const std::filesystem::path& root) {
       const auto separator = value.indexOf('=');
       if (separator < 0) continue;  // Full format validation is separate.
       const auto key = value.left(separator).trimmed().toStdString();
-      if (key == "codec") result.raw12_recording =
-          value.mid(separator + 1).trimmed() == QStringLiteral("raw12-rice-lossless");
+      if (key == "codec") result.raw8_recording =
+          value.mid(separator + 1).trimmed() == QStringLiteral("raw8-rice-lossless");
       if (key != "device_model" && key != "model") continue;
       if (!models.emplace(key, value.mid(separator + 1).trimmed()).second)
         throw std::runtime_error("Duplicate dataset model field");
@@ -79,9 +79,9 @@ inline DatasetIdentity readDatasetIdentity(const std::filesystem::path& root) {
         model.compare(QStringLiteral("Prism-41M3"), Qt::CaseInsensitive) == 0 ||
         model.compare(QStringLiteral("41M3"), Qt::CaseInsensitive) == 0)
       return QStringLiteral("41M3");
-    if (model.compare(QStringLiteral("Prism-415M"), Qt::CaseInsensitive) == 0 ||
-        model.compare(QStringLiteral("415M"), Qt::CaseInsensitive) == 0)
-      return QStringLiteral("415M");
+    if (model.compare(QStringLiteral("Prism-415RSV0"), Qt::CaseInsensitive) == 0 ||
+        model.compare(QStringLiteral("415RSV0"), Qt::CaseInsensitive) == 0)
+      return QStringLiteral("415RSV0");
     if (model.size() > 64) throw std::runtime_error("Dataset model is too long");
     for (const auto c : model)
       if (!(c.isLetterOrNumber() || c == '-' || c == '_' || c == '.'))

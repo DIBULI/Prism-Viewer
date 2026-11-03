@@ -1,4 +1,4 @@
-#include "dataset/raw12_dataset.hpp"
+#include "dataset/raw8_dataset.hpp"
 #include "common/ui_text.hpp"
 #include "ui/bayer_preview.hpp"
 #include "raw_dataset_fixture.hpp"
@@ -28,44 +28,44 @@ int main(int argc,char** argv){
     }
     if(argc==2){
       const auto root=prism_viewer::common::toFilesystemPath(QString::fromLocal8Bit(argv[1]));
-      const auto validation=validateRaw12Dataset(root,{},{});
+      const auto validation=validateRaw8Dataset(root,{},{});
       for(const auto& i:validation.issues)std::cout<<i.file<<": "<<i.message<<'\n';
       check(validation.valid,"real dataset validation failed");
-      const auto data=loadRaw12Dataset(root);
+      const auto data=loadRaw8Dataset(root);
       for(size_t c=0;c<4;++c){std::cout<<"camera"<<c<<"="<<data.cameras[c].size()<<'\n';
-        if(!data.cameras[c].empty())check(!loadRaw12DatasetImage(data.cameras[c].back()).isNull(),"real tail decode");}
+        if(!data.cameras[c].empty())check(!loadRaw8DatasetImage(data.cameras[c].back()).isNull(),"real tail decode");}
       std::cout<<"PASS real frames="<<validation.checked_records<<" steps="<<data.timestamps.size()<<'\n';return 0;
     }
     QTemporaryDir dir;check(dir.isValid(),"temp dir");
     const auto root=prism_viewer::common::toFilesystemPath(dir.path());
     auto info=raw_fixture::create(root);
-    auto data=loadRaw12Dataset(root);
+    auto data=loadRaw8Dataset(root);
     check(data.cameras[3].size()==3 && data.timestamps.size()==9,"unequal counts lost");
     check(data.display.front()[0]==0 && data.display.front()[1]==-1,"future sample shown");
     check(data.display.back()[3]==2,"tail frame omitted");
-    auto image=loadRaw12DatasetImage(data.cameras[0][0]);
+    auto image=loadRaw8DatasetImage(data.cameras[0][0]);
     check(image.size()==QSize(5120,3072)&&image.constScanLine(0)[0]==0x83,"grayscale mapping");
     check(prism_viewer::ui::isNativeBayerPreview(image),"replay missing Bayer preview provenance");
-    const auto display=prism_viewer::ui::raw12ThumbnailSource(image);
-    check(display.size()==QSize(2560,1536)&&prism_viewer::ui::isRaw12Preview(display)&&
+    const auto display=prism_viewer::ui::raw8ThumbnailSource(image);
+    check(display.size()==QSize(2560,1536)&&prism_viewer::ui::isRaw8Preview(display)&&
           !prism_viewer::ui::isNativeBayerPreview(display),"replay thumbnail filtering");
     check(image.constScanLine(0)[0]==0x83&&image.size()==QSize(5120,3072),"replay native image mutated");
-    auto v=validateRaw12Dataset(root,{},{});check(v.valid&&v.checked_records==9,"full validation");
-    check(validateRaw12Dataset(root,{},[]{return true;}).cancelled,"cancel");
+    auto v=validateRaw8Dataset(root,{},{});check(v.valid&&v.checked_records==9,"full validation");
+    check(validateRaw8Dataset(root,{},[]{return true;}).cancelled,"cancel");
     // Text manifests only for new writers; early on-device JSON still replays.
-    QJsonObject legacy{{"schema",1},{"model","Prism-415M"},{"codec","raw12-rice-lossless"},
-        {"complete",true},{"width",5120},{"height",3072},{"source_bits",12},{"camera_count",4},
+    QJsonObject legacy{{"schema",1},{"model","Prism-415RSV0"},{"codec","raw8-rice-lossless"},
+        {"complete",true},{"width",5120},{"height",3072},{"source_bits",8},{"camera_count",4},
         {"fps_per_camera",1},{"bytes",double(data.bytes)},{"frames",QJsonArray{2,2,2,3}}};
     raw_fixture::save(root/"dataset.info",QJsonDocument(legacy).toJson().toStdString());
-    check(loadRaw12Dataset(root).timestamps==data.timestamps,"legacy JSON");
-    auto rejects=[&]{try{(void)loadRaw12Dataset(root);}catch(const std::exception&){return true;}return false;};
+    check(loadRaw8Dataset(root).timestamps==data.timestamps,"legacy JSON");
+    auto rejects=[&]{try{(void)loadRaw8Dataset(root);}catch(const std::exception&){return true;}return false;};
     raw_fixture::save(root/"dataset.info",info+"complete=0\n");check(rejects(),"duplicate metadata");
     auto incomplete=info;incomplete.replace(incomplete.find("complete=1"),10,"complete=0");
     raw_fixture::save(root/"dataset.info",incomplete);check(rejects(),"incomplete accepted");
     raw_fixture::save(root/"dataset.info",info);
-    {std::fstream f(root/"camera0.prg-stream",std::ios::binary|std::ios::in|std::ios::out);f.seekp(70);f.put(1);}
-    check(!validateRaw12Dataset(root,{},{}).valid,"encoded corruption accepted");
-    bool crc=false;try{loadRaw12DatasetImage(data.cameras[0][0]);}catch(const std::exception&){crc=true;}check(crc,"display CRC");
+    {std::fstream f(root/"camera0.pr8-stream",std::ios::binary|std::ios::in|std::ios::out);f.seekp(81);f.put(1);}
+    check(!validateRaw8Dataset(root,{},{}).valid,"encoded corruption accepted");
+    bool crc=false;try{loadRaw8DatasetImage(data.cameras[0][0]);}catch(const std::exception&){crc=true;}check(crc,"display CRC");
     raw_fixture::create(root);
     // Match a deliberately wrong decoded CRC in the header and JSON index.
     // Structural checks must pass, but full pixel verification must reject it.
@@ -75,34 +75,36 @@ int main(int argc,char** argv){
       auto row=QJsonDocument::fromJson(lines[0]).object();const uint32_t wrong=uint32_t(row["raw_crc32"].toDouble())^1;
       row["raw_crc32"]=double(wrong);lines[0]=QJsonDocument(row).toJson(QJsonDocument::Compact);
       raw_fixture::save(root/"camera0.jsonl",lines.join('\n').toStdString());
-      std::fstream f(root/"camera0.prg-stream",std::ios::binary|std::ios::in|std::ios::out);f.seekp(20);
-      for(unsigned i=0;i<4;++i)f.put(char(wrong>>(8*i)));
+      std::fstream f(root/"camera0.pr8-stream",std::ios::binary|std::ios::in|std::ios::out);
+      std::vector<uint8_t> h(80);f.read(reinterpret_cast<char*>(h.data()),80);
+      native8_fixture::put(h,20,wrong);native8_fixture::sealHeader(h);
+      f.seekp(0);f.write(reinterpret_cast<const char*>(h.data()),80);
     }
-    check(loadRaw12Dataset(root).cameras[0].size()==2,"decoded CRC fixture structure");
-    check(!validateRaw12Dataset(root,{},{}).valid,"decoded pixel corruption accepted");
-    info=raw_fixture::create(root,true,true);data=loadRaw12Dataset(root);
+    check(loadRaw8Dataset(root).cameras[0].size()==2,"decoded CRC fixture structure");
+    check(!validateRaw8Dataset(root,{},{}).valid,"decoded pixel corruption accepted");
+    info=raw_fixture::create(root,true,true);data=loadRaw8Dataset(root);
     check(data.dropped[0]==3&&data.dropped[1]==2&&data.cameras[1].empty(),"drop accounting");
     check(data.display.back()[2]==-1,"stale stream retained");
-    v=validateRaw12Dataset(root,{},{});check(v.valid&&v.checked_records==7&&v.total_warnings==3,"drop validation");
+    v=validateRaw8Dataset(root,{},{});check(v.valid&&v.checked_records==7&&v.total_warnings==3,"drop validation");
     auto bad=info;const auto pos=bad.find("camera0_dropped_tail=1");bad.replace(pos,22,"camera0_dropped_tail=2");
     raw_fixture::save(root/"dataset.info",bad);check(rejects(),"tail drop mismatch accepted");
     raw_fixture::save(root/"dataset.info",info);
     raw_fixture::save(root/"camera2.jsonl","{\"offset\":-1}\n");check(rejects(),"negative/missing index accepted");
     raw_fixture::create(root);
-    {std::ofstream f(root/"camera3.prg-stream",std::ios::app|std::ios::binary);f.put(0);}
+    {std::ofstream f(root/"camera3.pr8-stream",std::ios::app|std::ios::binary);f.put(0);}
     check(rejects(),"trailing data accepted");
-    raw_fixture::create(root,false,false,4);data=loadRaw12Dataset(root);
+    raw_fixture::create(root,false,false,4);data=loadRaw8Dataset(root);
     check(!data.ordinal_only&&data.timestamps.size()==3,"common trigger timeline not grouped by actual time");
     check(data.display[0]==std::array<int,4>{0,0,0,0},"equal trigger instants mismatch");
-    v=validateRaw12Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
+    v=validateRaw8Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
         v.time_domain=="common-external-trigger-device-clock","common metadata/CRC validation");
-    raw_fixture::create(root,false,false,4,true);data=loadRaw12Dataset(root);
+    raw_fixture::create(root,false,false,4,true);data=loadRaw8Dataset(root);
     check(data.ordinal_only&&data.display.size()==3&&data.cameras[2].size()==2&&
           data.cameras[2][0].timestamp_us==0,"unknown timing lost original image");
     for(unsigned c=0;c<4;++c)for(unsigned i=0;i<data.cameras[c].size();++i)
       check(data.display[i][c]==int(i),"ordinal browse omitted source frame");
-    v=validateRaw12Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
+    v=validateRaw8Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
         v.time_domain=="unknown-or-mixed-image-clocks","unknown preserved without fabricated sync");
-    std::cout<<"PASS RAW12 text/legacy, common-trigger and unknown timing, counts/timeline, grayscale, full CRC, drops, cancellation, corruption/bounds\n";
+    std::cout<<"PASS RAW8 text/legacy, common-trigger and unknown timing, counts/timeline, grayscale, full CRC, drops, cancellation, corruption/bounds\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

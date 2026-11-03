@@ -71,7 +71,7 @@ int main() {
       auto opened=readOpenedDeviceSnapshot(client,[&](auto&) {
         return parseCompatibleDeviceInfo(frame(5,model));
       });
-      const bool native=opened.device_info.device_model==prism::DeviceModel::Prism415M;
+      const bool native=opened.device_info.device_model==prism::DeviceModel::Prism415RSV0;
       check(!opened.maintenance_only&&client.configuration==1&&client.network==1,"known open changed");
       check(client.native==(native?1u:0u)&&client.legacy==(native?0u:2u),"product exposure changed");
       check(client.gnss==(model==1?1u:0u),"product GNSS changed");

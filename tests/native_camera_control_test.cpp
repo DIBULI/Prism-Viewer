@@ -34,12 +34,12 @@ int main(){
  n.begin(c,q,t);assert(c.sets==1&&c.expected.capture_epoch==91&&c.expected.config_revision==12);
  c.invalid=true;rejects([&](){n.accept(c,f,s);});assert(!n.waiting()&&c.pending);
  n.reset();rejects([&](){n.begin(c,q);});assert(c.sets==1);
- for(auto model:{prism::DeviceModel::Prism415M,prism::DeviceModel::Prism41M3,prism::DeviceModel::Prism1315}){
+ for(auto model:{prism::DeviceModel::Prism415RSV0,prism::DeviceModel::Prism41M3,prism::DeviceModel::Prism1315}){
   Fake client;prism_viewer::communication::OpenedDevice o;o.device_info.device_model=model;
   prism_viewer::readProductExposure(client,o);
-  assert(client.idles==(model==prism::DeviceModel::Prism415M?1:0));assert(client.old==(model==prism::DeviceModel::Prism415M?0:2));
+  assert(client.idles==(model==prism::DeviceModel::Prism415RSV0?1:0));assert(client.old==(model==prism::DeviceModel::Prism415RSV0?0:2));
  }
- Fake fail;fail.reject_idle=true;prism_viewer::communication::OpenedDevice o;o.device_info.device_model=prism::DeviceModel::Prism415M;
+ Fake fail;fail.reject_idle=true;prism_viewer::communication::OpenedDevice o;o.device_info.device_model=prism::DeviceModel::Prism415RSV0;
  rejects([&](){prism_viewer::readProductExposure(fail,o);});assert(!fail.old);
  assert(!prism::validCameraControlRuntimeApi(nullptr));
  prism::CameraControlRuntimeApi api{};assert(!prism::validCameraControlRuntimeApi(&api));

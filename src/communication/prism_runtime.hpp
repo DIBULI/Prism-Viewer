@@ -107,7 +107,7 @@ class Client {
   prism::RoverRtcmStatus startRoverRtcm();
   prism::RoverRtcmStatus stopRoverRtcm();
   prism::VideoStatus startVideo1280x1024(uint32_t fps = 0);
-  prism::VideoStatus startPrism415mVideo(uint32_t fps = 2);
+  prism::VideoStatus startPrism415rsv0Video(uint32_t fps = 2);
   prism::VideoStatus startProfileVideoGpu(uint32_t fps = 0);
   uint32_t beginLiveExposureRows(uint8_t mask, const std::array<uint16_t,4>& rows);
   bool finishLiveExposureRows(const prism::Frame&, prism::ExposureConfiguration& applied);

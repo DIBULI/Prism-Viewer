@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
     prism_viewer::ui::DeviceInfoPanel panel;
     panel.setDeviceOpen(true);
     prism::DeviceInfo info{};
-    const char* model_names[] = {"Unknown", "41M3", "415M", "1315"};
+    const char* model_names[] = {"Unknown", "41M3", "415RSV0", "1315"};
     for (unsigned model = 0; model <= 3; ++model) {
       info.device_model = static_cast<prism::DeviceModel>(model);
       panel.setInfo(info, TimeSyncProvider::Gps);

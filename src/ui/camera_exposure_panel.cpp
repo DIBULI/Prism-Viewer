@@ -421,7 +421,7 @@ void CameraExposurePanel::setControlsLocked(bool locked) {
 }
 
 void CameraExposurePanel::setDeviceModel(prism::DeviceModel model) {
-  const bool rows = model == prism::DeviceModel::Prism415M;
+  const bool rows = model == prism::DeviceModel::Prism415RSV0;
   if (rows == exposure_rows_) return;
   exposure_rows_ = rows;
   // Do not reinterpret pending edits or a previous device's readback.
@@ -441,7 +441,7 @@ void CameraExposurePanel::setDeviceModel(prism::DeviceModel model) {
 }
 
 uint32_t CameraExposurePanel::inputToUs(int value) const {
-  // Retain SDK wire units; 415M's qualified low-speed row is 62.5 us.
+  // Retain SDK wire units; 415RSV0's qualified low-speed row is 62.5 us.
   // These are integration rows, not the separate RB pre-readout delay.
   return exposure_rows_ ? (static_cast<uint32_t>(value) * 125u + 1u) / 2u
                         : static_cast<uint32_t>(value);

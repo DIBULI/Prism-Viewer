@@ -45,7 +45,7 @@ class NativeCameraControl {
 };
 template<class Client,class Opened> void readProductExposure(Client& client,Opened& opened) {
   (void)captureProduct(opened.device_info.device_model);
-  if(opened.device_info.device_model==prism::DeviceModel::Prism415M)
+  if(opened.device_info.device_model==prism::DeviceModel::Prism415RSV0)
     opened.native_control_idle=client.cameraControlIdle();
   else {
     opened.exposure=client.cameraExposure();

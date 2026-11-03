@@ -28,8 +28,8 @@ class CameraThumbnailLabel final : public QLabel {
   }
 
   void setImage(const QImage& image) {
-    raw12_preview_ = isRaw12Preview(image);
-    image_ = raw12ThumbnailSource(image);
+    raw8_preview_ = isRaw8Preview(image);
+    image_ = raw8ThumbnailSource(image);
     refreshPixmap();
   }
 
@@ -59,8 +59,8 @@ class CameraThumbnailLabel final : public QLabel {
  private:
   void refreshPixmap() {
     if (image_.isNull() || width() <= 0 || height() <= 0) return;
-    if (raw12_preview_) {
-      setPixmap(QPixmap::fromImage(raw12SrgbDisplay(image_.scaled(
+    if (raw8_preview_) {
+      setPixmap(QPixmap::fromImage(raw8SrgbDisplay(image_.scaled(
           size(), Qt::KeepAspectRatio, Qt::SmoothTransformation))));
       return;
     }
@@ -70,7 +70,7 @@ class CameraThumbnailLabel final : public QLabel {
   }
 
   QImage image_;
-  bool raw12_preview_ = false;
+  bool raw8_preview_ = false;
 };
 
 CameraZoomDialog::CameraZoomDialog(QWidget* parent) : QDialog(parent) {

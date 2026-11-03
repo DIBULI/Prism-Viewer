@@ -7,7 +7,7 @@ Web recording also stores its status counters in this file (`web.*` fields),
 and no longer produces a separate JSON manifest. Existing JSON sidecars remain
 read-only compatible for old Web downloads; they are not rewritten or removed.
 `device_model=41M3` identifies four-1.3-MP global-shutter recordings;
-`device_model=415M` identifies Prism-415M recordings. Historical `A4L` and
+`device_model=415RSV0` identifies Prism-415RSV0 recordings. Historical `A4L` and
 `Prism-A4L` values normalize to **41M3**, as do missing or empty model fields.
 Readers also accept `Prism-41M3`; existing datasets are never rewritten.
 Viewer displays the model in the dataset summary, metadata and validation report.
@@ -15,12 +15,12 @@ Unknown explicitly named models are preserved, not silently relabeled as A4L.
 Existing files are never rewritten when opened. Early experimental JSON manifests
 remain readable; new recordings use text.
 
-## Prism-415M RAW12 playback
+## Prism-415RSV0 RAW8 playback
 
 Open a completed recording directory using **Datasets → Open**. It contains
 `dataset.info` and `camera0` through `camera3`, each with a `.jsonl` index and a
-`.prg-stream` lossless RAW12 container. Both the current text manifest
-(`format=prism-raw12-dataset-v1`) and early schema-1 JSON manifest are readable.
+`.pr8-stream` lossless RAW8 container. Both the current text manifest
+(`format=prism-raw8-dataset-v1`) and early schema-1 JSON manifest are readable.
 Incomplete recordings must finish before playback; opening never rewrites files.
 
 Four images can be played, paused, sought by time step, and enlarged separately.
@@ -43,7 +43,7 @@ source continuity. Display checks both encoded and original-pixel CRCs.
 Truncation, corruption, unaccounted gaps and counter mismatches are errors.
 Accounted disk queue drops are warnings with per-camera counts; finalized does
 not mean gap-free recording. Diagnostic timing is also reported as a warning.
-The 415M writer evicts the oldest pending whole image at the 12-frame/192-MiB
+The 415RSV0 writer evicts the oldest pending whole image at the 12-frame/192-MiB
 limit, never a writer-owned frame. Gap counts transfer to the next retained
 same-camera index entry or its trailing-drop count. `cameraN_dropped` and
 `dropped_frames_total` persist per-camera and total discarded images;
@@ -51,7 +51,7 @@ same-camera index entry or its trailing-drop count. `cameraN_dropped` and
 frame is rejected without evicting otherwise useful queued data.
 
 Playback does not require a GPU or connected device. GPU-required capture and
-compression behavior is unchanged. ROS bag export is not provided for this RAW12
+compression behavior is unchanged. ROS bag export is not provided for this RAW8
 format; the A4L playback/export path is unchanged.
 
 Viewer 顶部的“录制...”菜单提供“完整数据集”和“仅录制 IMU”两种模式。
@@ -503,7 +503,7 @@ UINT8 `line_valid`（偏移 15），每点仍为 20 字节。
 `dropped_lidar_points`。未同步丢弃另由各个 `unsynced_*_dropped` 字段记录，
 并在停止录制后的 Viewer 状态和日志中显示。
 
-415M 和 41M3 录制期间如有写盘队列丢帧，窗口顶部显示橙色警告，实时更新
+415RSV0 和 41M3 录制期间如有写盘队列丢帧，窗口顶部显示橙色警告，实时更新
 丢弃图像总数和 cam0/1/2/3 各路数量；切换页签不会隐藏警告。首次丢帧写入日志，
 不重复弹窗。停止录制后保留警告与最终计数，开始新一段录制时清零。
 41M3 的无效帧集及输入缺路也会单独提醒，不混算为队列丢弃图像数。

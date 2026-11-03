@@ -65,12 +65,12 @@ void run(bool chinese) {
   images[0] = QImage(5120, 3072, QImage::Format_Grayscale8);
   images[0].fill(101);
   full[0] = true;
-  dialog.setImageSet(images, 0, QStringLiteral("RAW12"), full);
+  dialog.setImageSet(images, 0, QStringLiteral("RAW8"), full);
   require(displayedSize(*view) == QSize(5120, 3072), "RAW source pixels reduced");
   actual->click();
   require(view->zoomPercent() == 100, "100 percent is not native size");
   const auto unchanged_key = displayedKey(*view);
-  dialog.setImageSet(images, 0, QStringLiteral("RAW12 next frame"), full);
+  dialog.setImageSet(images, 0, QStringLiteral("RAW8 next frame"), full);
   require(view->zoomPercent() == 100, "live update changed zoom");
   require(displayedKey(*view) == unchanged_key,
           "unchanged selected image was converted/uploaded again");

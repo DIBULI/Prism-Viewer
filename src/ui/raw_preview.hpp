@@ -12,11 +12,11 @@ struct RawPreviewMetadata {
   uint32_t trigger_sequence=0;
 };
 // Linear preview cache only, without ISP/demosaicing. Widgets apply sRGB once
-// after CFA filtering/resizing. Lossless packed12 is never overwritten.
+// after CFA filtering/resizing. Original native sensor bytes are never overwritten.
 inline QImage decodeRawPreview(const std::vector<uint8_t>& bytes,const QSize& maximum,unsigned camera,uint8_t format=0,
                               RawPreviewMetadata* metadata=nullptr) {
-  auto raw=prism::capture::decodeRaw12(bytes,format);
-  if(raw.camera!=camera)throw std::runtime_error("RAW12 camera identity mismatch");
+  auto raw=prism::capture::decodeRawImage(bytes,format);
+  if(raw.camera!=camera)throw std::runtime_error("RAW8 camera identity mismatch");
   if(metadata)*metadata={raw.timing_mode,raw.source_timestamp_us,raw.frame_id,raw.exposure_us,raw.gain_x1024,raw.trigger_sequence};
   // USB always keeps/validates the complete lossless RAW. Only its display
   // allocation changes: normal tiles never allocate a full-resolution QImage.
@@ -36,21 +36,21 @@ inline QImage decodeRawPreview(const std::vector<uint8_t>& bytes,const QSize& ma
     auto* dst=result.scanLine(int(y));
     for(unsigned x=0;x<unsigned(result.width());x++) {
       if(native_view) {
-        dst[x]=uint8_t(prism::capture::raw12Pixel(raw,size_t(y)*raw.width+x)>>4);
+        dst[x]=prism::capture::rawPixel(raw,size_t(y)*raw.width+x);
       } else {
         const size_t at=size_t(y*2)*raw.width+x*2;
-        const unsigned sum=prism::capture::raw12Pixel(raw,at)+
-            prism::capture::raw12Pixel(raw,at+1)+
-            prism::capture::raw12Pixel(raw,at+raw.width)+
-            prism::capture::raw12Pixel(raw,at+raw.width+1);
-        dst[x]=uint8_t(sum/64); // Mean of all four 12-bit CFA phases, then 12->8.
+        const unsigned sum=prism::capture::rawPixel(raw,at)+
+            prism::capture::rawPixel(raw,at+1)+
+            prism::capture::rawPixel(raw,at+raw.width)+
+            prism::capture::rawPixel(raw,at+raw.width+1);
+        dst[x]=uint8_t(sum/4); // Mean of all four native eight-bit CFA phases.
       }
     }
   }
   if(!native_view && result.size()!=display)
     result=result.scaled(display,Qt::IgnoreAspectRatio,Qt::SmoothTransformation)
         .convertToFormat(QImage::Format_Grayscale8);
-  result.setText(kRaw12PreviewKey,native_view ? QStringLiteral("native-bayer")
+  result.setText(kRaw8PreviewKey,native_view ? QStringLiteral("native-bayer")
                                             : QStringLiteral("cell-average"));
   return result;
 }

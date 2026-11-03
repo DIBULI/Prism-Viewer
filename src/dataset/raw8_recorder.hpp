@@ -8,7 +8,7 @@
 #include <string>
 
 namespace prism_viewer::dataset {
-struct Raw12RecordingStatus {
+struct Raw8RecordingStatus {
   std::filesystem::path root;
   std::array<uint64_t,4> frames{}, received{}, dropped{};
   std::array<uint64_t,2> imu_received{}, imu_samples{};
@@ -17,7 +17,7 @@ struct Raw12RecordingStatus {
   bool closing=false, done=false, complete=false;
   std::string error;
 };
-struct Raw12RecordingOptions {
+struct Raw8RecordingOptions {
   unsigned fps=1; // Actual qualified input rate, never the product ceiling.
   size_t queue_frames=12;
   uint64_t queue_bytes=192ull*1024*1024;
@@ -34,18 +34,18 @@ struct Raw12RecordingOptions {
   std::function<void()> before_verify;
 };
 // Writes original GPU-compressed frames, independent of the replaceable preview
-// queue. Overflow evicts the oldest queued WHOLE frame, never the in-flight
-// write. Oversized incoming frames are rejected; all losses are accounted.
-class Raw12Recorder {
+// queue. Overflow or an oversized frame fails the recording without evicting
+// queued/in-flight data. The incomplete manifest records the rejected frame.
+class Raw8Recorder {
  public:
-  Raw12Recorder(const std::filesystem::path& parent, Raw12RecordingOptions options);
-  ~Raw12Recorder();
-  Raw12Recorder(const Raw12Recorder&)=delete;
-  Raw12Recorder& operator=(const Raw12Recorder&)=delete;
+  Raw8Recorder(const std::filesystem::path& parent, Raw8RecordingOptions options);
+  ~Raw8Recorder();
+  Raw8Recorder(const Raw8Recorder&)=delete;
+  Raw8Recorder& operator=(const Raw8Recorder&)=delete;
   void append(const prism::capture::ProfileImage& image) noexcept;
   void appendImu(const prism::ImuSample& sample) noexcept;
   void finish(const std::string& error={}); // Nonblocking; UI polls finalization.
-  Raw12RecordingStatus status() const;
+  Raw8RecordingStatus status() const;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

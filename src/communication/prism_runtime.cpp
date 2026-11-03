@@ -119,7 +119,7 @@ const prism::ProfileRuntimeApi* profileApi() {
       GetProcAddress(loadModule(), prism::kProfileRuntimeApiEntryPoint));
   const auto* api = get ? get(prism::kProfileRuntimeApiVersion) : nullptr;
   if (!api || api->abi_version != prism::kProfileRuntimeApiVersion ||
-      api->struct_size < sizeof(*api) || !api->start_415m || !api->start_mixed_gpu ||
+      api->struct_size < sizeof(*api) || !api->start_415rsv0 || !api->start_mixed_gpu ||
       !api->begin_live_rows || !api->finish_live_rows || !api->live_rows_pending)
     throw std::runtime_error("Matching profile SDK extension required; update the complete Viewer package");
   return api;
@@ -127,7 +127,7 @@ const prism::ProfileRuntimeApi* profileApi() {
 
 }  // namespace
 
-prism::VideoStatus Client::startPrism415mVideo(uint32_t fps) { return profileApi()->start_415m(handle_,fps); }
+prism::VideoStatus Client::startPrism415rsv0Video(uint32_t fps) { return profileApi()->start_415rsv0(handle_,fps); }
 prism::VideoStatus Client::startProfileVideoGpu(uint32_t fps) { return profileApi()->start_mixed_gpu(handle_,fps); }
 uint32_t Client::beginLiveExposureRows(uint8_t mask,const std::array<uint16_t,4>& rows) { return profileApi()->begin_live_rows(handle_,mask,rows); }
 bool Client::finishLiveExposureRows(const prism::Frame& frame,prism::ExposureConfiguration& applied) { return profileApi()->finish_live_rows(handle_,frame,applied); }

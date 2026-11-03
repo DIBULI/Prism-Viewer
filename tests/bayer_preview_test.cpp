@@ -43,22 +43,22 @@ int main(int argc,char** argv){
     if(i)require(lut[i]>=lut[i-1],"nonmonotonic transfer");
   }
   require(lut[0]==0&&lut[1]==13&&lut[128]==188&&lut[255]==255,"sRGB anchors");
-  require(raw12SrgbDisplay(ramp)==ramp,"unmarked grayscale/JPEG changed");
-  ramp.setText(kRaw12PreviewKey,QStringLiteral("cell-average"));
-  const auto displayRamp=raw12SrgbDisplay(ramp);
+  require(raw8SrgbDisplay(ramp)==ramp,"unmarked grayscale/JPEG changed");
+  ramp.setText(kRaw8PreviewKey,QStringLiteral("cell-average"));
+  const auto displayRamp=raw8SrgbDisplay(ramp);
   for(int i=0;i<256;++i){
     require(ramp.constScanLine(0)[i]==i,"linear cache mutated");
     require(displayRamp.constScanLine(0)[i]==lut[i],"display transfer missing");
   }
-  require(raw12SrgbDisplay(displayRamp)==displayRamp,"double sRGB encoding");
+  require(raw8SrgbDisplay(displayRamp)==displayRamp,"double sRGB encoding");
   // Qt5 smooth scaling returns RGB32. Cover this explicitly on Qt6 too.
   const auto linearRgb=ramp.convertToFormat(QImage::Format_RGB32);
-  const auto displayRgb=raw12SrgbDisplay(linearRgb);
+  const auto displayRgb=raw8SrgbDisplay(linearRgb);
   for(int i=0;i<256;++i){
     require(qGray(linearRgb.pixel(i,0))==i,"promoted linear cache mutated");
     require(displayRgb.constScanLine(0)[i]==lut[i],"RGB32 gray skipped sRGB");
   }
-  require(raw12SrgbDisplay(displayRgb)==displayRgb,"RGB32 gray double sRGB encoding");
+  require(raw8SrgbDisplay(displayRgb)==displayRgb,"RGB32 gray double sRGB encoding");
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
   require(displayRamp.colorSpace()==QColorSpace(QColorSpace::SRgb),"missing sRGB color space");
 #endif
@@ -66,12 +66,12 @@ int main(int argc,char** argv){
   const unsigned char phase[]={40,180,180,80};
   for(int y=0;y<native.height();++y)for(int x=0;x<native.width();++x)
     native.scanLine(y)[x]=phase[(y&1)*2+(x&1)];
-  native.setText(kRaw12PreviewKey,QStringLiteral("native-bayer"));
+  native.setText(kRaw8PreviewKey,QStringLiteral("native-bayer"));
   const QImage original=native.copy();
-  const QImage displayNative=raw12SrgbDisplay(original);
-  auto cells=raw12ThumbnailSource(native);
+  const QImage displayNative=raw8SrgbDisplay(original);
+  auto cells=raw8ThumbnailSource(native);
   require(cells.size()==QSize(2560,1536),"bounded cell cache");uniform(cells,120);
-  require(raw12ThumbnailSource(cells).size()==cells.size(),"filtered thumbnail binned twice");
+  require(raw8ThumbnailSource(cells).size()==cells.size(),"filtered thumbnail binned twice");
   ImageViewLabel tile;tile.setTransformationMode(Qt::FastTransformation);
   for(const QSize size:{QSize(233,140),QSize(226,136),QSize(317,191),QSize(640,512)}){
     tile.setFixedSize(size);tile.show();app.processEvents();tile.setImage(native);

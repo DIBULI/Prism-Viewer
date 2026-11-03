@@ -15,13 +15,13 @@ class LiveExposureRows {
     if (waiting_ || client.liveExposureRowsPending())
       throw std::runtime_error("Previous exposure result is unconfirmed; do not retry");
     if (config.automatic_camera_mask || config.unified_automatic)
-      throw std::invalid_argument("Live 415M exposure requires manual rows");
+      throw std::invalid_argument("Live 415RSV0 exposure requires manual rows");
     std::array<uint16_t, 4> rows{};
     for (size_t i = 0; i < rows.size(); ++i) {
       const uint64_t n = uint64_t(config.manual_exposure_time_us[i]) * 2 / 125;
       if (n < 3 || n > 4096 || (n * 125 + 1) / 2 != config.manual_exposure_time_us[i] ||
           config.gain_x1024[i] != 1024)
-        throw std::invalid_argument("Live 415M exposure requires integer rows 3..4096 and 1x gain");
+        throw std::invalid_argument("Live 415RSV0 exposure requires integer rows 3..4096 and 1x gain");
       rows[i] = static_cast<uint16_t>(n);
     }
     client.beginLiveExposureRows(0x0f, rows);

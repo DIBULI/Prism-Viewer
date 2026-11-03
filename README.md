@@ -6,23 +6,23 @@ come from the same current package; an older download with the same version
 number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 
 DeviceInfo selects the product automatically; no Linux-only environment switch
-is required. 41M3 keeps its existing MJPEG capture and exposure controls. 415M
-requests four-camera external-trigger 2 FPS RAW12/packed12 from matching firmware.
+is required. 41M3 keeps its existing MJPEG capture and exposure controls. 415RSV0
+requests four-camera external-trigger 2 FPS RAW8/packed12 from matching firmware.
 1315 uses its mixed-profile capture entry. Unknown models fail before START.
 A missing camera does not stop other camera previews or IMU callbacks.
 
-415M USB data is preserved as full RAW12 for recording and zoom. Ordinary live
+415RSV0 USB data is preserved as full RAW8 for recording and zoom. Ordinary live
 tiles are downsampled in Viewer; bounded per-camera preview replacement does not
-drop recorded data. RAW12 recording/playback validates lengths and CRC, keeps
-source identity, and reports missing data. RAW12 ROS export is not implemented.
+drop recorded data. RAW8 recording/playback validates lengths and CRC, keeps
+source identity, and reports missing data. RAW8 ROS export is not implemented.
 
-The current 415M panel uses native integer-row exposure and manual gain per
+The current 415RSV0 panel uses native integer-row exposure and manual gain per
 camera. AE/AGC switches, brightness target/deadband and exposure/gain bounds
 are global settings shared by all cameras.
 Accepted configuration is distinct from
 per-frame observations. Common-trigger timestamps are displayed only when the
 validated frame reports that timing mode. CFA-aware thumbnail generation fixes
-checkerboard sampling without altering original RAW12 pixels or recordings.
+checkerboard sampling without altering original RAW8 pixels or recordings.
 
 **Network connection** accepts Wi-Fi or Ethernet and the device's **Web admin
 login password**. The password is session-only; old TLS certificate pairing and
@@ -84,7 +84,7 @@ widgets and `gps_rtk.csv` recording/playback are removed; legacy result
 datasets are unsupported. Existing files are never migrated or deleted.
 This source requires matching SDK headers/libraries with Runtime ABI 19.
 41M3 retains four-camera unified automatic exposure with active-camera feedback
-and highlight protection. 415M uses the separate native control panel
+and highlight protection. 415RSV0 uses the separate native control panel
 described above (requires the current matching firmware).
 The current firmware publishes only internally aligned IMU samples; startup or
 re-alignment can briefly pause IMU output while other streams continue. Internal
@@ -176,23 +176,23 @@ git submodule update --init --recursive
 
 ## Local Datasets
 
-The automatically selected Prism-415M live mode can record
-the original four-camera GPU-compressed RAW12 stream over confirmed USB3.
-Select **Record → Four-camera original RAW12** after all four cameras have a
+The automatically selected Prism-415RSV0 live mode can record
+the original four-camera GPU-compressed RAW8 stream over confirmed USB3.
+Select **Record → Four-camera original RAW8** after all four cameras have a
 stable input rate. Each recording creates a timestamped subdirectory. The
 writer accepts1 or2FPS per camera; it does not change the device's frame rate
-or turn a1FPS source into2FPS. The matching 415M capture entry requests2FPS.
+or turn a1FPS source into2FPS. The matching 415RSV0 capture entry requests2FPS.
 The replaceable preview queue is never used as a
 recording source. Disk queue overflow drops queued whole frames and reports
 the counts. Stop drains the queue and performs full disk readback, decode and
 CRC validation before marking the text manifest complete. A write, source
 sequence or USB-link error is reported without stopping otherwise healthy
-preview streams. The original-RAW12 recording format records cameras only,
+preview streams. The original-RAW8 recording format records cameras only,
 not IMU or GNSS; the separate IMU recorder remains available.
 
-Prism-415M RAW12 recordings support four-camera grayscale playback, pause/seek,
+Prism-415RSV0 RAW8 recordings support four-camera grayscale playback, pause/seek,
 full-resolution zoom and full decode/CRC validation. Independent camera counts
-and accounted recording drops are preserved. RAW12 diagnostic timestamps are
+and accounted recording drops are preserved. RAW8 diagnostic timestamps are
 not exposure UTC. This format currently supports playback, not ROS bag export;
 see [dataset format](docs/dataset-format.md).
 
@@ -352,8 +352,8 @@ glibc and display drivers come from the host.
 ## Exposure controls
 
 41M3 retains its existing microsecond/gain controls and synchronous SDK setting
-interface. 415M displays integer integration rows, not microseconds or RB delay.
-During 415M capture, row changes (3–4096, within device-reported limits) use the
+interface. 415RSV0 displays integer integration rows, not microseconds or RB delay.
+During 415RSV0 capture, row changes (3–4096, within device-reported limits) use the
 asynchronous API at 1× gain: no STOP/restart, automatic retry, frame discard, or
 transition-state labels. Replies are checked while the capture loop continues
 to receive image and IMU frames. Unconfirmed changes are reported rather than

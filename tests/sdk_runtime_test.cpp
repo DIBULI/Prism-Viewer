@@ -103,7 +103,7 @@ int main() {
 #endif
     const auto* profile = get_profile ? get_profile(1) : nullptr;
     if (!profile || profile->abi_version != 1 || profile->struct_size != sizeof(*profile) ||
-        !profile->start_415m || !profile->start_mixed_gpu || !profile->begin_live_rows ||
+        !profile->start_415rsv0 || !profile->start_mixed_gpu || !profile->begin_live_rows ||
         !profile->finish_live_rows || !profile->live_rows_pending || get_profile(0) || get_profile(2))
       throw std::runtime_error("Matching profile capture/live-row extension is required");
     // No enumeration, connection, capture, or time/configuration mutation.

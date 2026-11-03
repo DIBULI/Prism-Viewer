@@ -274,7 +274,7 @@ target_include_directories(prism-viewer PRIVATE "${PRISM_ZSTD_INCLUDE}")
 target_link_libraries(prism-viewer PRIVATE "${PRISM_ZSTD_LIBRARY}")
 
 add_library(prism-viewer-raw-dataset STATIC
-  src/dataset/raw12_dataset.cpp src/dataset/raw12_recorder.cpp src/common/ui_text.cpp)
+  src/dataset/raw8_dataset.cpp src/dataset/raw8_recorder.cpp src/common/ui_text.cpp)
 target_include_directories(prism-viewer-raw-dataset PUBLIC src PRIVATE "${PRISM_ZSTD_INCLUDE}")
 target_compile_features(prism-viewer-raw-dataset PUBLIC cxx_std_17)
 target_link_libraries(prism-viewer-raw-dataset PUBLIC prism-viewer-sdk ${QT_PACKAGE}::Gui "${PRISM_ZSTD_LIBRARY}")

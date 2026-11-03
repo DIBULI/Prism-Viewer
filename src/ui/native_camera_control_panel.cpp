@@ -58,14 +58,14 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
     grid->addWidget(label,row,col,Qt::AlignBottom);grid->addWidget(input,row+1,col);
     input->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);
   };
-  field(shared,1,0,uiText("Target brightness (RAW12)","目标亮度（RAW12）"),target_);
+  field(shared,1,0,uiText("Target brightness (RAW8)","目标亮度（RAW8）"),target_);
   // Keep the same field order as CameraExposurePanel (41M3). Native units
-  // and the RAW12 deadband remain explicit rather than imitating microseconds.
+  // and the RAW8 deadband remain explicit rather than imitating microseconds.
   field(shared,1,1,uiText("Minimum exposure (rows)","最低曝光（行）"),min_rows_);
   field(shared,3,0,uiText("Maximum exposure (rows)","最高曝光（行）"),max_rows_);
   field(shared,3,1,uiText("Minimum gain","最低增益"),min_gain_);
   field(shared,5,0,uiText("Maximum gain","最高增益"),max_gain_);
-  field(shared,5,1,uiText("Brightness deadband (RAW12)","亮度容差（RAW12）"),deadband_);
+  field(shared,5,1,uiText("Brightness deadband (RAW8)","亮度容差（RAW8）"),deadband_);
   layout->addWidget(global);
   section(uiText("Per-camera settings","各相机设置"))->setObjectName("nativeCameraTitle");
   for(unsigned i=0;i<4;++i) {
@@ -96,7 +96,7 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
     try {
       NativeControlRequest r;r.apply=true;r.configuration=edited();
       for(const auto& c:r.configuration)if(!prism::validCameraRowGainConfig(c))
-        throw std::invalid_argument("Invalid rows/gain bounds or RAW12 target/deadband");
+        throw std::invalid_argument("Invalid rows/gain bounds or RAW8 target/deadband");
       if(active_) {if(!live_)throw std::logic_error("Refresh capture state first");r.live=live_;}
       else {if(!idle_)throw std::logic_error("Refresh idle state first");r.idle=idle_;}
       if(on_request)on_request(r);
@@ -108,6 +108,7 @@ void NativeCameraControlPanel::showConfiguration(const std::array<prism::CameraR
   const auto g=prism::cameraControlGlobals(v);
   min_rows_->setValue(g.min_rows);max_rows_->setValue(g.max_rows);
   min_gain_->setValue(g.min_gain_sixteenths/16.0);max_gain_->setValue(g.max_gain_sixteenths/16.0);
+  // Existing control units are normalized 0..4095, independent of pixel depth.
   target_->setValue(g.target_raw12);deadband_->setValue(g.deadband_raw12);
   ae_->setChecked(g.automatic_exposure);agc_->setChecked(g.automatic_gain);
   for(unsigned i=0;i<4;++i) {auto& w=cameras_[i];const auto& c=v[i];
@@ -152,7 +153,7 @@ void NativeCameraControlPanel::setLive(const prism::CameraControlStatus& s) {
   updateEnabled();
 }
 void NativeCameraControlPanel::setError(const QString& e){status_->setText(e);}
-void NativeCameraControlPanel::clear(){idle_.reset();live_.reset();connected_=active_=locked_=busy_=false;status_->setText(uiText("Open a matching 415M device","请连接匹配新版接口的 415M"));for(auto& c:cameras_)c.observed->clear();updateEnabled();}
+void NativeCameraControlPanel::clear(){idle_.reset();live_.reset();connected_=active_=locked_=busy_=false;status_->setText(uiText("Open a matching 415RSV0 device","请连接匹配新版接口的 415RSV0"));for(auto& c:cameras_)c.observed->clear();updateEnabled();}
 void NativeCameraControlPanel::updateEnabled(){
   const bool enabled=connected_&&!locked_&&!busy_;
   const bool valid=active_?(live_&&live_->running&&!live_->control_error&&!live_->command_in_flight):bool(idle_);

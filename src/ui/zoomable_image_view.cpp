@@ -52,10 +52,10 @@ void ZoomableImageView::setImage(const QImage& image) {
       ? pixmap_item_->pixmap().size() : native_bayer_image_.size();
   native_bayer_image_ = isNativeBayerPreview(image) ? image : QImage();
   averaged_bayer_image_ = native_bayer_image_.isNull()
-      ? QImage() : raw12ThumbnailSource(image);
+      ? QImage() : raw8ThumbnailSource(image);
   showing_bayer_average_ = false;
   pixmap_item_->setTransform(QTransform());
-  pixmap_item_->setPixmap(QPixmap::fromImage(raw12SrgbDisplay(image)));
+  pixmap_item_->setPixmap(QPixmap::fromImage(raw8SrgbDisplay(image)));
   pixmap_item_->setVisible(true);
   empty_text_item_->setVisible(false);
   scene()->setSceneRect(pixmap_item_->boundingRect());
@@ -176,7 +176,7 @@ void ZoomableImageView::updateBayerPixmap() {
   const bool average = transform().m11() < 1.0 - 1e-9;
   if (average == showing_bayer_average_) return;
   pixmap_item_->setPixmap(QPixmap::fromImage(
-      raw12SrgbDisplay(average ? averaged_bayer_image_ : native_bayer_image_)));
+      raw8SrgbDisplay(average ? averaged_bayer_image_ : native_bayer_image_)));
   pixmap_item_->setTransform(average ? QTransform::fromScale(2.0, 2.0)
                                    : QTransform());
   showing_bayer_average_ = average;

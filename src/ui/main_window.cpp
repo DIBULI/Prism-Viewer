@@ -138,8 +138,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include "dataset/raw12_dataset.hpp"
-#include "dataset/raw12_recorder.hpp"
+#include "dataset/raw8_dataset.hpp"
+#include "dataset/raw8_recorder.hpp"
 #include <numeric>
 #include "ui/raw_dataset_decoder.hpp"
 
@@ -472,7 +472,7 @@ class DatasetRecorder {
  public:
   struct ReceivedStreamsPolicy {
     bool enabled=false;
-    bool raw12_companion=false; // RAW and onboard IMU share this root via Raw12Recorder.
+    bool raw8_companion=false; // RAW and onboard IMU share this root via Raw8Recorder.
     std::string device_model="41M3";
   };
   // Optional limits/latency hook are used by the deterministic disk-pressure
@@ -492,7 +492,7 @@ class DatasetRecorder {
         return false;
       }
       received_policy_=received_policy?*received_policy:ReceivedStreamsPolicy{};
-      if(received_policy_.raw12_companion&&(!received_policy_.enabled||overwrite)){
+      if(received_policy_.raw8_companion&&(!received_policy_.enabled||overwrite)){
         if(error)*error="RAW companion must use a new, non-overwriting received-streams session";return false;
       }
       if(received_policy_.device_model.find_first_of("\r\n=")!=std::string::npos){
@@ -522,7 +522,7 @@ class DatasetRecorder {
           root_ / "cors_rtcm.bin", root_ / "cors_rtcm.csv", root_ / "gnss_raw_status.csv"};
       bool existing_dataset = false;
       for (const auto& path : known_outputs) {
-        if(received_policy_.raw12_companion&&(path.filename()=="dataset.info"||
+        if(received_policy_.raw8_companion&&(path.filename()=="dataset.info"||
              path.filename()=="imu_metadata.csv"||path.filename()=="imu0.tum"||path.filename()=="imu1.tum"))continue;
         const bool exists = std::filesystem::exists(path, filesystem_error);
         if (filesystem_error) {
@@ -533,7 +533,7 @@ class DatasetRecorder {
         }
         existing_dataset = existing_dataset || exists;
       }
-      if(received_policy_.raw12_companion&&std::filesystem::exists(root_/"streams.info")){
+      if(received_policy_.raw8_companion&&std::filesystem::exists(root_/"streams.info")){
         if(error)*error="Companion dataset already exists";return false;
       }
       for (size_t camera = 0; camera < 4; ++camera) {
@@ -662,7 +662,7 @@ class DatasetRecorder {
       lidar_buffer_.resize(4u * 1024u * 1024u);
       camera_chunk_file_.rdbuf()->pubsetbuf(camera_buffer_.data(), camera_buffer_.size());
       lidar_chunk_file_.rdbuf()->pubsetbuf(lidar_buffer_.data(), lidar_buffer_.size());
-      if(!received_policy_.raw12_companion){
+      if(!received_policy_.raw8_companion){
       imu_metadata_file_.open(root_ / "imu_metadata.csv", std::ios::out | std::ios::trunc);
       imu_metadata_file_.imbue(std::locale::classic());
       if (!imu_metadata_file_.is_open()) {
@@ -851,7 +851,7 @@ class DatasetRecorder {
           write_failed_) {
         return;
       }
-      if(received_policy_.raw12_companion)return;
+      if(received_policy_.raw8_companion)return;
       bool input_fault=false;
       if(received_policy_.enabled){
         const auto id=sample.sensor_id;
@@ -1700,7 +1700,7 @@ class DatasetRecorder {
     manifest << "format=prism-dataset-v6\n"
              << "device_model="<<received_policy_.device_model<<"\n"
              << "recording_stream_policy="<<(received_policy_.enabled?"all-received":"legacy-aligned")<<"\n"
-             << "onboard_imu_writer="<<(received_policy_.raw12_companion?"raw12-companion":"dataset")<<"\n"
+             << "onboard_imu_writer="<<(received_policy_.raw8_companion?"raw8-companion":"dataset")<<"\n"
              << "complete=" << (complete ? 1 : 0) << "\n"
              << "recording_mode="
              << (imu_only ? "imu-only" : "full")
@@ -1818,7 +1818,7 @@ class DatasetRecorder {
       return;
     }
     const std::string contents = manifest.str();
-    QSaveFile output(fromFilesystemPath(root_ / (received_policy_.raw12_companion?"streams.info":"dataset.info")));
+    QSaveFile output(fromFilesystemPath(root_ / (received_policy_.raw8_companion?"streams.info":"dataset.info")));
     output.setDirectWriteFallback(false);
     if (!output.open(QIODevice::WriteOnly)) {
       write_failed_ = true;
@@ -2530,8 +2530,8 @@ class MainWindow : public QMainWindow {
         "font-size: 21pt; font-weight: 750; color: #101828;"));
     auto* subtitle = new QLabel(
         profilePreviewEnabled()?
-        uiText("Independent camera preview and original lossless RAW12 recording",
-               "独立相机预览与原始无损 RAW12 录制"):
+        uiText("Independent camera preview and original lossless RAW8 recording",
+               "独立相机预览与原始无损 RAW8 录制"):
         uiText("USB / Wi-Fi / Ethernet camera preview, metadata, and IMU monitor",
                "USB / Wi-Fi / 有线网口相机预览、元数据和 IMU 监视器"),
         header_card);
@@ -3048,8 +3048,8 @@ class MainWindow : public QMainWindow {
         "border-radius: 6px; padding: 7px 9px;"));
     raw_group_layout->addWidget(raw_hint);
     raw_record_status_label_ = new QLabel(uiText(
-        "Record saves original RAW12 over USB3. Select a parent directory; a timestamped subdirectory is created automatically.",
-        "通过 USB3 录制原始 RAW12。点击录制并选择父目录，将自动创建时间子目录。"), raw_group);
+        "Record saves original RAW8 over USB3. Select a parent directory; a timestamped subdirectory is created automatically.",
+        "通过 USB3 录制原始 RAW8。点击录制并选择父目录，将自动创建时间子目录。"), raw_group);
     raw_record_status_label_->setWordWrap(true);
     raw_group_layout->addWidget(raw_record_status_label_);
     raw_layout->addWidget(raw_group);
@@ -4011,11 +4011,11 @@ class MainWindow : public QMainWindow {
     if(!temp.isValid())return false;
     for(bool explicitly_stopped:{false,true}){
       std::atomic<bool> entered{false},release{false};
-      prism_viewer::dataset::Raw12RecordingOptions opt;
+      prism_viewer::dataset::Raw8RecordingOptions opt;
       opt.require_all_cameras=false;
       opt.before_verify=[&]{entered=true;const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(5);
         while(!release&&std::chrono::steady_clock::now()<end)std::this_thread::sleep_for(std::chrono::milliseconds(1));};
-      auto raw=std::make_shared<prism_viewer::dataset::Raw12Recorder>(prism_viewer::common::toFilesystemPath(temp.path()),opt);
+      auto raw=std::make_shared<prism_viewer::dataset::Raw8Recorder>(prism_viewer::common::toFilesystemPath(temp.path()),opt);
       std::atomic_store(&raw_recorder_,raw);
       raw_aux_finalized_=true;
       if(explicitly_stopped){
@@ -4028,7 +4028,7 @@ class MainWindow : public QMainWindow {
       const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(5);
       while(!raw->status().done&&std::chrono::steady_clock::now()<end)std::this_thread::sleep_for(std::chrono::milliseconds(1));
       const auto status=raw->status();
-      std::atomic_store(&raw_recorder_,std::shared_ptr<prism_viewer::dataset::Raw12Recorder>{});
+      std::atomic_store(&raw_recorder_,std::shared_ptr<prism_viewer::dataset::Raw8Recorder>{});
       if(!status.done||status.complete!=explicitly_stopped||error.empty()!=explicitly_stopped)return false;
     }
     refreshControls();
@@ -4038,7 +4038,7 @@ class MainWindow : public QMainWindow {
   bool runDatasetPlaybackSelfTest(const QString& directory,
                                   QString* report) {
     loadRecordedDataset(directory, false);
-    if (dataset_raw12_) {
+    if (dataset_raw8_) {
       bool ok = !dataset_metadata_only_ && dataset_frame_count_ != 0 &&
           dataset_playback_button_->isEnabled() && !dataset_export_rosbag_button_->isEnabled();
       if (!ok) { if (report) *report = dataset_summary_label_->text(); return false; }
@@ -4072,7 +4072,7 @@ class MainWindow : public QMainWindow {
       }
       const QString screenshot = qEnvironmentVariable("PRISM_RAW_DATASET_SCREENSHOT");
       if (!screenshot.isEmpty()) { QApplication::processEvents(); ok = grab().save(screenshot) && ok; }
-      if (report) *report = QStringLiteral("RAW12 seek/play/pause/tail/CRC/async PASS=%1 steps=%2 frames=%3/%4/%5/%6")
+      if (report) *report = QStringLiteral("RAW8 seek/play/pause/tail/CRC/async PASS=%1 steps=%2 frames=%3/%4/%5/%6")
           .arg(ok).arg(dataset_frame_count_).arg(raw_dataset_.cameras[0].size()).arg(raw_dataset_.cameras[1].size())
           .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size());
       setDatasetPlaybackActive(false); return ok;
@@ -4174,11 +4174,11 @@ class MainWindow : public QMainWindow {
       const auto model_root = toFilesystemPath(directory) / "model-only-fixture";
       std::filesystem::create_directories(model_root);
       { std::ofstream info(model_root / "dataset.info");
-        info << "format=prism-raw12-dataset-v1\ndevice_model=415M\ncodec=raw12-rice-lossless\n"; }
+        info << "format=prism-raw8-dataset-v1\ndevice_model=415RSV0\ncodec=raw8-rice-lossless\n"; }
       loadRecordedDataset(fromFilesystemPath(model_root), false);
       models_ok = models_ok && dataset_metadata_only_ && dataset_frame_count_ == 0 &&
           dataset_playback_data_.timeline.empty() &&
-          dataset_summary_label_->text().contains(QStringLiteral("415M")) &&
+          dataset_summary_label_->text().contains(QStringLiteral("415RSV0")) &&
           !dataset_playback_button_->isEnabled() && !dataset_export_rosbag_button_->isEnabled();
       loadRecordedDataset(directory, false);
       models_ok = models_ok && !dataset_metadata_only_ &&
@@ -4309,15 +4309,15 @@ class MainWindow : public QMainWindow {
 
   void configureCameraTools(prism::DeviceModel model) {
     const bool profile = prism_viewer::usesProfileCapture(model);
-    const bool native = model == prism::DeviceModel::Prism415M;
+    const bool native = model == prism::DeviceModel::Prism415RSV0;
     camera_stream_pages_->setCurrentIndex(profile ? 1 : 0);
     camera_encoding_panel_->setEnabled(!profile);
     camera_exposure_panel_->setDeviceModel(model);
     camera_exposure_panel_->setVisible(!native);
     native_camera_control_panel_->setVisible(native);
     raw_stream_description_->setText(native ? uiText(
-        "Format: original RAW12\nTrigger: external\nCapture request: 2 FPS\nMeasured rate is shown with each image.",
-        "格式：原始 RAW12\n触发：外触发\n采集请求：2 FPS\n实测帧率显示在各路图像旁。") : uiText(
+        "Format: original RAW8\nTrigger: external\nCapture request: 2 FPS\nMeasured rate is shown with each image.",
+        "格式：原始 RAW8\n触发：外触发\n采集请求：2 FPS\n实测帧率显示在各路图像旁。") : uiText(
         "Profile camera stream. Native format and measured rate are shown with each image.",
         "产品相机流。原生格式与实测帧率显示在各路图像旁。"));
     // The same three tabs and default page apply to every product. Never
@@ -4333,10 +4333,10 @@ class MainWindow : public QMainWindow {
       ok = ok && camera_tools_->tabText(i) == titles[i] && camera_tools_->isTabEnabled(i);
     // Exercise repeated product switches using the real setup path, without
     // enumerating hardware or opening a transport.
-    for (auto model : {prism::DeviceModel::Prism415M, prism::DeviceModel::Prism41M3,
-                       prism::DeviceModel::Prism1315, prism::DeviceModel::Prism415M}) {
+    for (auto model : {prism::DeviceModel::Prism415RSV0, prism::DeviceModel::Prism41M3,
+                       prism::DeviceModel::Prism1315, prism::DeviceModel::Prism415RSV0}) {
       configureCameraTools(model);
-      const bool native = model == prism::DeviceModel::Prism415M;
+      const bool native = model == prism::DeviceModel::Prism415RSV0;
       const bool profile = prism_viewer::usesProfileCapture(model);
       QApplication::processEvents();
       ok = ok && camera_tools_->currentIndex() == 0 && camera_stream_pages_->currentIndex() == (profile ? 1 : 0)
@@ -4364,7 +4364,7 @@ class MainWindow : public QMainWindow {
                 << " ok=" << ok << '\n';
       if (!screenshot_prefix.isEmpty() && model != prism::DeviceModel::Prism1315) {
         QApplication::processEvents();
-        const auto name = native ? QStringLiteral("415M") : QStringLiteral("41M3");
+        const auto name = native ? QStringLiteral("415RSV0") : QStringLiteral("41M3");
         ok = camera_tools_->grab().save(screenshot_prefix + name + QStringLiteral("-exposure.png")) && ok;
         camera_tools_->setCurrentIndex(0);
         QApplication::processEvents();
@@ -5255,7 +5255,7 @@ class MainWindow : public QMainWindow {
     post([this,status]() {
       camera_exposure_operation_running_=false;
       native_camera_control_panel_->setBusy(false);
-      if(client_.isOpen() && capture_model_.load()==prism::DeviceModel::Prism415M && !worker_running_) {
+      if(client_.isOpen() && capture_model_.load()==prism::DeviceModel::Prism415RSV0 && !worker_running_) {
         native_camera_control_panel_->setAvailability(true,false,false);
         native_camera_control_panel_->setIdle(status);
       }
@@ -5267,7 +5267,7 @@ class MainWindow : public QMainWindow {
     post([this,status]() {
       camera_exposure_operation_running_=false;
       native_camera_control_panel_->setBusy(false);
-      if(client_.isOpen() && capture_model_.load()==prism::DeviceModel::Prism415M && worker_running_) {
+      if(client_.isOpen() && capture_model_.load()==prism::DeviceModel::Prism415RSV0 && worker_running_) {
         native_camera_control_panel_->setAvailability(true,true,false);
         native_camera_control_panel_->setLive(status);
       }
@@ -5276,7 +5276,7 @@ class MainWindow : public QMainWindow {
   }
 
   void startNativeCameraControlOperation(const prism_viewer::NativeControlRequest& native) {
-    if(!client_.isOpen() || capture_model_.load()!=prism::DeviceModel::Prism415M ||
+    if(!client_.isOpen() || capture_model_.load()!=prism::DeviceModel::Prism415RSV0 ||
        camera_exposure_operation_running_ || time_sync_running_ || wifi_operation_running_ ||
        camera_encoding_operation_running_ || upgrade_running_) return;
     CameraExposureOperationRequest request;request.native=native;request.apply=native.apply;
@@ -5359,7 +5359,7 @@ class MainWindow : public QMainWindow {
     try {
       if(request.native) {
         const auto& r=*request.native;
-        if(capture_model_.load()!=prism::DeviceModel::Prism415M || worker_running_)
+        if(capture_model_.load()!=prism::DeviceModel::Prism415RSV0 || worker_running_)
           throw std::runtime_error("Capture state changed; refresh row/gain controls");
         const auto staged=withClientIo([&]() {
           if(!r.apply)return client_.cameraControlIdle();
@@ -5368,8 +5368,8 @@ class MainWindow : public QMainWindow {
         });
         publishNativeIdle(staged);return;
       }
-      if(capture_model_.load()==prism::DeviceModel::Prism415M)
-        throw std::runtime_error("415M requires the native row/gain interface; legacy exposure disabled");
+      if(capture_model_.load()==prism::DeviceModel::Prism415RSV0)
+        throw std::runtime_error("415RSV0 requires the native row/gain interface; legacy exposure disabled");
       prism::ExposureLimits limits;
       prism::ExposureConfiguration configuration;
       withClientIo([&]() {
@@ -5396,9 +5396,9 @@ class MainWindow : public QMainWindow {
       request = std::move(pending_camera_exposure_request_);
       pending_camera_exposure_request_.reset();
     }
-    if (capture_active && capture_model_.load() == prism::DeviceModel::Prism415M) {
+    if (capture_active && capture_model_.load() == prism::DeviceModel::Prism415RSV0) {
       try {
-        if(!request->native)throw std::runtime_error("415M requires the native row/gain interface");
+        if(!request->native)throw std::runtime_error("415RSV0 requires the native row/gain interface");
         withClientIo([&]() { native_camera_control_.begin(client_,*request->native); });
       } catch (const std::exception& ex) {
         publishCameraExposureError(toQString(ex.what()));
@@ -5788,7 +5788,7 @@ class MainWindow : public QMainWindow {
       cors_panel_->setDeviceConfiguration(configuration);
       camera_exposure_panel_->setCameraFps(configuration.camera_fps);
       configureCameraTools(device_info.device_model);
-      const bool native_control=device_info.device_model==prism::DeviceModel::Prism415M;
+      const bool native_control=device_info.device_model==prism::DeviceModel::Prism415RSV0;
       native_camera_control_panel_->clear();
       if(native_control) {
         if(!opened.native_control_idle)throw std::runtime_error("Missing native idle row/gain status");
@@ -6213,7 +6213,7 @@ class MainWindow : public QMainWindow {
     if (auto raw=rawRecording()) raw->finish();
   }
 
-  std::shared_ptr<prism_viewer::dataset::Raw12Recorder> rawRecording() const {
+  std::shared_ptr<prism_viewer::dataset::Raw8Recorder> rawRecording() const {
     return std::atomic_load(&raw_recorder_);
   }
   bool rawRecordingActive() const {
@@ -6230,11 +6230,11 @@ class MainWindow : public QMainWindow {
     auto status=raw->status();
     if(!raw_aux_error_.empty()&&status.error.empty())status.error="Auxiliary streams: "+raw_aux_error_;
     const uint64_t dropped=std::accumulate(status.dropped.begin(),status.dropped.end(),uint64_t(0));
-    const auto title=!status.error.empty()?uiText("RAW12 recording failed", "RAW12 录制失败"):
+    const auto title=!status.error.empty()?uiText("RAW8 recording failed", "RAW8 录制失败"):
       status.done&&raw_aux_finalized_?(dropped?uiText("Recording saved with dropped images", "录制已保存，但存在丢帧"):
-        uiText("Recording saved; RAW12 and IMU verified", "录制已保存；RAW12 与 IMU 已校验")):
-      status.closing?uiText("RAW12 draining and verifying", "RAW12 正在写完缓存并校验"):
-      uiText("Recording original RAW12", "正在录制原始 RAW12");
+        uiText("Recording saved; RAW8 and IMU verified", "录制已保存；RAW8 与 IMU 已校验")):
+      status.closing?uiText("RAW8 draining and verifying", "RAW8 正在写完缓存并校验"):
+      uiText("Recording original RAW8", "正在录制原始 RAW8");
     imu_record_status_label_->setText(title+QStringLiteral(" · %1/%2/%3/%4 · %5 MiB\n%6")
       .arg(status.frames[0]).arg(status.frames[1]).arg(status.frames[2]).arg(status.frames[3])
       .arg(double(status.bytes)/1048576.0,0,'f',1)
@@ -6257,20 +6257,20 @@ class MainWindow : public QMainWindow {
     imu_record_stop_button_->setEnabled(!status.closing&&!status.done);
   }
   void startRawRecording(const QString& parent) {
-    if(!worker_running_||rawRecordingActive())throw std::runtime_error("RAW12 capture not ready or recorder busy");
+    if(!worker_running_||rawRecordingActive())throw std::runtime_error("RAW8 capture not ready or recorder busy");
     const auto info=runCorsUsbCommand([this]{return client_.deviceInfo();});
     recording_usb_gate_.observe(info.usb_speed,std::chrono::steady_clock::now());
     if(!worker_running_||!recordingLinkAllowed(client_.isOpen()))
       throw std::runtime_error(recordingUsbRequirement().toStdString());
     // This is configuration, not a fabricated measurement. Individual source
     // timestamps remain authoritative; absent lanes/IMUs are not prerequisites.
-    prism_viewer::dataset::Raw12RecordingOptions options;options.fps=info.camera_fps;
+    prism_viewer::dataset::Raw8RecordingOptions options;options.fps=info.camera_fps;
     options.record_any_imu=true;options.require_all_cameras=false;
     options.companion_streams=true;
     options.reserve_bytes=8ull*1024*1024*1024;
     options.imu_timestamp_domain="source-preserved-see-per-sample-flags";
-    auto raw=std::make_shared<prism_viewer::dataset::Raw12Recorder>(toFilesystemPath(parent),options);
-    DatasetRecorder::ReceivedStreamsPolicy policy{true,true,"415M"};
+    auto raw=std::make_shared<prism_viewer::dataset::Raw8Recorder>(toFilesystemPath(parent),options);
+    DatasetRecorder::ReceivedStreamsPolicy policy{true,true,"415RSV0"};
     std::string error;
     if(!dataset_recorder_.start(raw->status().root,false,DatasetRecordingMode::Full,true,
           datasetTimestampDomainForProvider(latest_time_sync_provider_),&error,0,true,&policy)){
@@ -6283,7 +6283,7 @@ class MainWindow : public QMainWindow {
     recording_drop_banner_->clear();recording_drop_banner_->hide();
     std::atomic_store(&raw_recorder_,std::move(raw));
     imu_record_status_label_->setProperty("ready_text",QString{});
-    appendLog(QStringLiteral("All-received recording started: RAW12 + onboard IMU + LiDAR + GNSS/RTK; configured camera FPS=%1, no missing-stream requirement, no resampling; root=%2").arg(info.camera_fps).arg(recorded_dataset_root_));
+    appendLog(QStringLiteral("All-received recording started: RAW8 + onboard IMU + LiDAR + GNSS/RTK; configured camera FPS=%1, no missing-stream requirement, no resampling; root=%2").arg(info.camera_fps).arg(recorded_dataset_root_));
     pollRawRecording();refreshControls();
   }
 
@@ -6459,7 +6459,7 @@ class MainWindow : public QMainWindow {
     dataset_recorder_.appendTimeSync(
         latest_device_info_, latest_time_sync_provider_,
         latest_rk_heartbeat_time_us_);
-    std::atomic_store(&raw_recorder_,std::shared_ptr<prism_viewer::dataset::Raw12Recorder>{});
+    std::atomic_store(&raw_recorder_,std::shared_ptr<prism_viewer::dataset::Raw8Recorder>{});
     recording_drop_notified_=false;
     recording_drop_banner_->clear();recording_drop_banner_->hide();
     recorded_dataset_root_ = selected_directory;
@@ -6540,7 +6540,7 @@ class MainWindow : public QMainWindow {
 
   void enforceRecordingUsbLink() {
     const auto raw=rawRecording();
-    const auto raw_status=raw?raw->status():prism_viewer::dataset::Raw12RecordingStatus{};
+    const auto raw_status=raw?raw->status():prism_viewer::dataset::Raw8RecordingStatus{};
     // Link freshness gates incoming data, not local fsync/CRC readback after
     // Stop. Capture may be closed while that bounded finalization continues.
     const bool raw_receiving=raw&&!raw_status.closing&&!raw_status.done;
@@ -7058,7 +7058,7 @@ class MainWindow : public QMainWindow {
     }
     if (dataset_export_rosbag_button_ != nullptr) {
       dataset_export_rosbag_button_->setEnabled(
-          !loaded_dataset_root_.isEmpty() && !dataset_metadata_only_ && !dataset_raw12_ && !imu_recording &&
+          !loaded_dataset_root_.isEmpty() && !dataset_metadata_only_ && !dataset_raw8_ && !imu_recording &&
           !worker_running_ && !rosbag_export_running_);
     }
     if (dataset_validate_button_ != nullptr) {
@@ -7607,7 +7607,7 @@ class MainWindow : public QMainWindow {
   }
 
   QString describeDatasetTimestamp(uint64_t timestamp_us,int timing_mode=-1) const {
-    if (dataset_raw12_) {
+    if (dataset_raw8_) {
       if(timing_mode>=0)return prism_viewer::ui::rawTimingDescription(unsigned(timing_mode),timestamp_us,
           uiText("en","zh")==QStringLiteral("zh"));
       return uiText("%1 s (device clock; see per-frame timing)",
@@ -7639,7 +7639,7 @@ class MainWindow : public QMainWindow {
 
   void updateDatasetPlaybackControls() {
     const bool has_frames = dataset_frame_count_ != 0u;
-    const bool can_play = !(dataset_raw12_ && raw_dataset_.ordinal_only) && !dataset_playback_data_.timeline.empty() &&
+    const bool can_play = !(dataset_raw8_ && raw_dataset_.ordinal_only) && !dataset_playback_data_.timeline.empty() &&
                           !worker_running_ && !rosbag_export_running_;
     if (!can_play && dataset_playback_active_) {
       dataset_playback_active_ = false;
@@ -8313,7 +8313,7 @@ class MainWindow : public QMainWindow {
   }
 
   void exportLoadedDatasetRosbag(RosbagFormat format) {
-    if (loaded_dataset_root_.isEmpty() || dataset_metadata_only_ || dataset_raw12_ || worker_running_ ||
+    if (loaded_dataset_root_.isEmpty() || dataset_metadata_only_ || dataset_raw8_ || worker_running_ ||
         rosbag_export_running_ ||
         dataset_recorder_.isActive()) {
       return;
@@ -8463,10 +8463,10 @@ class MainWindow : public QMainWindow {
           uiText("Invalid dataset metadata", "数据集元数据无效"), toQString(error.what()));
       return;
     }
-    if (identity.raw12_recording) {
+    if (identity.raw8_recording) {
       // Clear old data even if the new recording fails validation.
       ++raw_dataset_generation_;
-      dataset_raw12_ = true;
+      dataset_raw8_ = true;
       if (auto* group = findChild<QGroupBox*>(QStringLiteral("datasetCameraTab")))
         group->setTitle(uiText("Recorded camera samples (independent timing)", "相机录制样本（独立时间）"));
       raw_dataset_ = {};
@@ -8480,8 +8480,8 @@ class MainWindow : public QMainWindow {
       dataset_path_label_->setText(directory);
       dataset_path_label_->setToolTip(directory);
       const auto message = uiText(
-          "Model: %1 | Loading RAW12 indexes. ROS bag export is unavailable for this format.",
-          "机型：%1 | 正在读取 RAW12 索引。此格式暂不支持 ROS Bag 导出。")
+          "Model: %1 | Loading RAW8 indexes. ROS bag export is unavailable for this format.",
+          "机型：%1 | 正在读取 RAW8 索引。此格式暂不支持 ROS Bag 导出。")
           .arg(toQString(identity.model));
       dataset_summary_label_->setText(message);
       dataset_summary_label_->setStyleSheet(QStringLiteral(
@@ -8503,8 +8503,8 @@ class MainWindow : public QMainWindow {
       updateDatasetPlaybackPositionLabel();
       refreshControls();
       try {
-        raw_dataset_ = prism_viewer::dataset::loadRaw12Dataset(root);
-        if (raw_dataset_.timestamps.empty()) throw std::runtime_error("No recorded RAW12 images");
+        raw_dataset_ = prism_viewer::dataset::loadRaw8Dataset(root);
+        if (raw_dataset_.timestamps.empty()) throw std::runtime_error("No recorded RAW8 images");
         dataset_camera_entries_ = raw_dataset_.cameras;
         dataset_frame_count_ = raw_dataset_.timestamps.size();
         if(!raw_dataset_.ordinal_only)for (size_t i = 0; i < dataset_frame_count_; ++i)
@@ -8512,11 +8512,11 @@ class MainWindow : public QMainWindow {
         dataset_metadata_only_ = false;
         const auto drops = raw_dataset_.dropped[0] + raw_dataset_.dropped[1] + raw_dataset_.dropped[2] + raw_dataset_.dropped[3];
         dataset_summary_label_->setText(uiText(
-            "Model: %1 | RAW12 lossless · grayscale display | Frames %2 / %3 / %4 / %5 | Recorded drops: %6 | Original per-frame timing retained",
-            "机型：%1 | RAW12 无损 · 灰度显示 | 帧数 %2 / %3 / %4 / %5 | 录制丢帧：%6 | 保留各帧原始时标")
+            "Model: %1 | RAW8 lossless · grayscale display | Frames %2 / %3 / %4 / %5 | Recorded drops: %6 | Original per-frame timing retained",
+            "机型：%1 | RAW8 无损 · 灰度显示 | 帧数 %2 / %3 / %4 / %5 | 录制丢帧：%6 | 保留各帧原始时标")
             .arg(toQString(identity.model)).arg(raw_dataset_.cameras[0].size()).arg(raw_dataset_.cameras[1].size())
             .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size()).arg(drops));
-        QString details = QStringLiteral("device_model=%1\nformat=prism-raw12-dataset-v1\nwidth=5120\nheight=3072\nsource_bits=12\n").arg(toQString(identity.model));
+        QString details = QStringLiteral("device_model=%1\nformat=prism-raw8-dataset-v1\nwidth=5120\nheight=3072\nsource_bits=8\n").arg(toQString(identity.model));
         for (size_t c = 0; c < 4; ++c)
           details += QStringLiteral("camera%1_images=%2\ncamera%1_dropped=%3\n").arg(c).arg(raw_dataset_.cameras[c].size()).arg(raw_dataset_.dropped[c]);
         details += uiText("\nIndexes and headers checked. Each displayed frame is CRC checked; use Validate for a full scan.\nDisplay uses a fixed 12-to-8-bit mapping, without ISP. Source files are unchanged.\nROS bag export is not supported for this format.",
@@ -8533,7 +8533,7 @@ class MainWindow : public QMainWindow {
         updateDatasetPlaybackControls(); refreshControls();
       } catch (const std::exception& error) {
         raw_dataset_ = {};
-        dataset_summary_label_->setText(uiText("Model: %1 | RAW12 dataset could not be opened: %2", "机型：%1 | 无法打开 RAW12 数据集：%2").arg(toQString(identity.model), toQString(error.what())));
+        dataset_summary_label_->setText(uiText("Model: %1 | RAW8 dataset could not be opened: %2", "机型：%1 | 无法打开 RAW8 数据集：%2").arg(toQString(identity.model), toQString(error.what())));
         if (show_errors) QMessageBox::warning(this, uiText("Unable to open dataset", "无法打开数据集"), toQString(error.what()));
       }
       return;
@@ -8626,7 +8626,7 @@ class MainWindow : public QMainWindow {
     }
 
     dataset_metadata_only_ = false;
-    dataset_raw12_ = false;
+    dataset_raw8_ = false;
     if (auto* group = findChild<QGroupBox*>(QStringLiteral("datasetCameraTab")))
       group->setTitle(uiText("Recorded camera frame set", "已记录的四路相机帧集"));
     raw_dataset_ = {};
@@ -8741,7 +8741,7 @@ class MainWindow : public QMainWindow {
       const QSignalBlocker blocker(dataset_frame_jump_spin_);
       dataset_frame_jump_spin_->setValue(frame + 1);
     }
-    if (dataset_raw12_) { showRawDatasetFrame(size_t(frame)); return; }
+    if (dataset_raw8_) { showRawDatasetFrame(size_t(frame)); return; }
     for (size_t camera = 0; camera < dataset_images_.size(); ++camera) {
       const auto& entry = dataset_camera_entries_[camera][frame];
       QImage image = loadDatasetImage(entry);
@@ -8783,7 +8783,7 @@ class MainWindow : public QMainWindow {
   }
 
   uint64_t datasetFrameTimestamp(size_t frame) const {
-    return dataset_raw12_ ? raw_dataset_.timestamps.at(frame) : dataset_camera_entries_[0].at(frame).timestamp_us;
+    return dataset_raw8_ ? raw_dataset_.timestamps.at(frame) : dataset_camera_entries_[0].at(frame).timestamp_us;
   }
 
   void showRawDatasetFrame(size_t frame) {
@@ -8813,7 +8813,7 @@ class MainWindow : public QMainWindow {
           previous.raw_crc32 == entries[c].raw_crc32;
       if (!unchanged) {
         dataset_images_[c] = {};
-        dataset_image_labels_[c]->clearImage(index >= 0 ? uiText("Decoding RAW12…", "正在解码 RAW12……") : uiText("No current sample / recording gap", "当前无帧／录制缺帧"));
+        dataset_image_labels_[c]->clearImage(index >= 0 ? uiText("Decoding RAW8…", "正在解码 RAW8……") : uiText("No current sample / recording gap", "当前无帧／录制缺帧"));
       }
     }
     dataset_frame_label_->setText(uiText("Time step %1/%2 | %3\n%4", "时间步 %1/%2 | %3\n%4")
@@ -8821,20 +8821,20 @@ class MainWindow : public QMainWindow {
             uiText("Ordinal browsing: missing/mixed timing; no synchronized grouping or timed playback",
                    "按帧序号浏览：存在未知或混合时标，不作为同步帧组，不按时间自动播放"):
             describeDatasetTimestamp(time), samples.join(" · ")));
-    if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Decoding RAW12…", "正在解码 RAW12……"), {true, true, true, true});
+    if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Decoding RAW8…", "正在解码 RAW8……"), {true, true, true, true});
     if (!raw_dataset_decoder_) raw_dataset_decoder_ = std::make_unique<prism_viewer::ui::RawDatasetDecoder>(
         [this](prism_viewer::ui::RawDatasetDecoder::Result result) {
           post([this, result = std::move(result)] {
-            if (!dataset_raw12_ || result.generation != raw_dataset_generation_) return;
+            if (!dataset_raw8_ || result.generation != raw_dataset_generation_) return;
             raw_dataset_ready_generation_ = result.generation;
             dataset_images_ = result.images;
             for (size_t c = 0; c < 4; ++c) {
               if (!result.errors[c].isEmpty()) {
-                dataset_image_labels_[c]->clearImage(uiText("RAW12 read/CRC error: %1", "RAW12 读取／CRC 错误：%1").arg(result.errors[c]));
+                dataset_image_labels_[c]->clearImage(uiText("RAW8 read/CRC error: %1", "RAW8 读取／CRC 错误：%1").arg(result.errors[c]));
                 appendLog(QStringLiteral("Dataset camera%1: %2").arg(c).arg(result.errors[c]));
               } else if (!result.images[c].isNull()) dataset_image_labels_[c]->setImage(result.images[c]);
             }
-            if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("RAW12 grayscale", "RAW12 灰度图"), {true, true, true, true});
+            if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("RAW8 grayscale", "RAW8 灰度图"), {true, true, true, true});
           });
         });
     raw_dataset_requested_entries_ = entries;
@@ -9234,7 +9234,7 @@ class MainWindow : public QMainWindow {
         const QSize maximum_size = full_resolution ? QSize() : job.maximum_preview_size;
         const auto decode_start=std::chrono::steady_clock::now();
         try {
-        if(job.formats[camera]==prism::capture::kRaw12Zstd||job.formats[camera]==prism::capture::kRaw12Rice) {
+        if(job.formats[camera]==prism::capture::kRaw8Rice) {
           decoded.images[camera]=prism_viewer::ui::decodeRawPreview(job.jpeg[camera],
               maximum_size,camera,job.formats[camera],&decoded.raw_metadata[camera]);
           decoded.is_raw[camera]=true;
@@ -9656,13 +9656,13 @@ class MainWindow : public QMainWindow {
        * Start the acquisition session once. A fixed-model board may report
        * zero active cameras while still acquiring IMU. Transport/start errors
        * still abort; an absent physical camera is not such an error.
-       * Legacy/mixed capture uses the saved FPS. Strict 415M uses the
+       * Legacy/mixed capture uses the saved FPS. Strict 415RSV0 uses the
        * development 2 FPS path without changing persistent settings.
        */
       appendLog(QStringLiteral("Capture START options=%1 (%2)")
                     .arg(prism_viewer::captureOptions(capture_product))
-                    .arg(capture_product == prism_viewer::CaptureProduct::Strict415M
-                             ? QStringLiteral("415M, 2 FPS")
+                    .arg(capture_product == prism_viewer::CaptureProduct::Strict415RSV0
+                             ? QStringLiteral("415RSV0, 2 FPS")
                              : capture_product == prism_viewer::CaptureProduct::Mixed1315
                                    ? QStringLiteral("1315, saved FPS")
                                    : QStringLiteral("41M3, saved FPS")));
@@ -9947,7 +9947,7 @@ class MainWindow : public QMainWindow {
       prism_runtime::ImuStream imu_stream(client_, imu_handler);
       prism_runtime::AggregateImuObserver aggregate_imu(imu_handler);
       const auto handle_imu = [&](const prism::Frame& frame) {
-        return capture_product == prism_viewer::CaptureProduct::Strict415M
+        return capture_product == prism_viewer::CaptureProduct::Strict415RSV0
             ? aggregate_imu.handleFrame(frame) : imu_stream.handleFrame(frame);
       };
       prism_runtime::LidarStream lidar_stream(
@@ -10008,7 +10008,7 @@ class MainWindow : public QMainWindow {
         }
         throw;
       }
-      appendLog(profile_preview?QStringLiteral("Profile camera preview; original RAW12 recording available over USB3; timing semantics come from each validated image"):
+      appendLog(profile_preview?QStringLiteral("Profile camera preview; original RAW8 recording available over USB3; timing semantics come from each validated image"):
           QStringLiteral("IMU started through agent SDK ImuStream"));
       if (requested_lidar_model != prism::LidarModel::None) {
         try {
@@ -10138,7 +10138,7 @@ class MainWindow : public QMainWindow {
       unsigned consecutive_usb_read_errors = 0;
       std::exception_ptr capture_error;
       try {
-        if(capture_product==prism_viewer::CaptureProduct::Strict415M) {
+        if(capture_product==prism_viewer::CaptureProduct::Strict415RSV0) {
           try {
             camera_exposure_operation_running_=true;
             post([this](){native_camera_control_panel_->setBusy(true);refreshControls();});
@@ -10207,7 +10207,7 @@ class MainWindow : public QMainWindow {
                 "Exposure response not confirmed; capture continues, no automatic retry",
                 "曝光响应尚未确认；采集继续，不自动重试"));
           if (loop_now >= next_device_info_query &&
-              (capture_product!=prism_viewer::CaptureProduct::Strict415M || !client_.cameraControlPending())) {
+              (capture_product!=prism_viewer::CaptureProduct::Strict415RSV0 || !client_.cameraControlPending())) {
             const auto query_started_at = std::chrono::steady_clock::now();
             try {
               const auto status =
@@ -10291,7 +10291,7 @@ class MainWindow : public QMainWindow {
           if(profile_preview){
             auto fault=prism::capture::parseProfileGpuFault(frame);
             if(fault){
-              if(auto raw=rawRecording())raw->finish("GPU compression fault during RAW12 recording");
+              if(auto raw=rawRecording())raw->finish("GPU compression fault during RAW8 recording");
               const auto camera=fault->camera;
               const QString message=fault->unavailable?
                   uiText("GPU unavailable — RAW preview stopped; no CPU fallback","GPU 不可用：RAW 预览已停止，不回退 CPU"):
@@ -10334,11 +10334,11 @@ class MainWindow : public QMainWindow {
                 if(count==1)profile_first[camera]=last_completed_camera_frame_set_at;
                 double elapsed=std::chrono::duration<double>(last_completed_camera_frame_set_at-profile_first[camera]).count();
                 double fps=elapsed>0?double(count-1)/elapsed:0;
-                if(count>=4&&image->format==4)profile_measured_millifps_[camera].store(unsigned(fps*1000));
+                if(count>=4&&image->format==prism::capture::kRaw8Rice)profile_measured_millifps_[camera].store(unsigned(fps*1000));
                 if(auto raw=rawRecording())raw->append(*image);
                 const QString detail=QStringLiteral("%1 · %2×%3 · frame %4 · %5 FPS · %6 MiB")
-                    .arg(image->format==4?QStringLiteral("002 RAW12 GPU lossless / mono preview"):
-                         image->format==3?QStringLiteral("002 RAW12 Zstd / mono preview"):QStringLiteral("001 ISP JPEG"))
+                    .arg(image->format==prism::capture::kRaw8Rice?QStringLiteral("002 RAW8 GPU lossless / mono preview"):
+                         QStringLiteral("001 ISP JPEG"))
                     .arg(image->width).arg(image->height).arg(count).arg(fps,0,'f',2)
                     .arg(double(image->encoded.size())/1048576.0,0,'f',2);
                 CameraPreviewJob job;job.frame_id=image->frame_id;job.independent_image=true;
@@ -10348,14 +10348,14 @@ class MainWindow : public QMainWindow {
                     job.received_frame_sets, cameraMonotonicMs());
                 job.generation=camera_preview_generation_.load(std::memory_order_acquire);
                 traceProfilePreview("rx",job.generation,camera,job.frame_id,job.received_frame_sets,0,
-                    image->format==4&&image->encoded.size()>=64?
+                    image->format==prism::capture::kRaw8Rice&&image->encoded.size()>=prism::capture::kRaw8HeaderBytes?
                     prism::capture::rawLe32(image->encoded.data()+24):0);
                 job.formats[camera]=image->format;job.jpeg[camera]=std::move(image->encoded);
                 job.group_key=prism_viewer::ui::rawPreviewGroupHint(job.jpeg[camera],camera,image->format);
                 job.maximum_preview_size=QSize(camera_preview_width_.load(),camera_preview_height_.load());
                 enqueueCameraPreview(std::move(job));
               } catch(const std::exception& e) {
-                if(auto raw=rawRecording())raw->finish(std::string("RAW12 USB assembly failure: ")+e.what());
+                if(auto raw=rawRecording())raw->finish(std::string("RAW8 USB assembly failure: ")+e.what());
                 appendLog(QStringLiteral("Independent camera frame rejected: %1").arg(QString::fromUtf8(e.what())));
                 withClientIo([&](){client_.sendVideoAck(chunk.frame_id);});
               }
@@ -10427,7 +10427,7 @@ class MainWindow : public QMainWindow {
       std::exception_ptr stop_error;
       aggregate_stream_stop_attempted = true;
       try {
-        if(capture_product==prism_viewer::CaptureProduct::Strict415M)profile_credits.stopping();
+        if(capture_product==prism_viewer::CaptureProduct::Strict415RSV0)profile_credits.stopping();
         if(profile_preview)withClientIo([this]() { client_.stopVideo(); });
         else withClientIo([&imu_stream]() { imu_stream.stop(); });
         // IMU_STOP is the aggregate Camera + IMU stop transaction.
@@ -10635,8 +10635,8 @@ class MainWindow : public QMainWindow {
   bool dataset_playback_active_ = false;
   QString loaded_dataset_root_;
   bool dataset_metadata_only_ = false;
-  bool dataset_raw12_ = false;
-  prism_viewer::dataset::Raw12Dataset raw_dataset_;
+  bool dataset_raw8_ = false;
+  prism_viewer::dataset::Raw8Dataset raw_dataset_;
   std::unique_ptr<prism_viewer::ui::RawDatasetDecoder> raw_dataset_decoder_;
   uint64_t raw_dataset_generation_ = 0;
   uint64_t raw_dataset_ready_generation_ = 0;
@@ -10673,7 +10673,7 @@ class MainWindow : public QMainWindow {
   prism_runtime::Client& client_ = device_session_.client();
   const std::vector<prism::DeviceInfo>& devices_ = device_session_.devices();
   DatasetRecorder dataset_recorder_;
-  std::shared_ptr<prism_viewer::dataset::Raw12Recorder> raw_recorder_;
+  std::shared_ptr<prism_viewer::dataset::Raw8Recorder> raw_recorder_;
   bool raw_aux_finalized_=true;
   std::string raw_aux_error_;
   bool recording_drop_notified_=false;
@@ -11009,12 +11009,12 @@ int runViewerApplication(int argc, char** argv) {
     const DatasetRecordingSummary summary = recorder.stop();
     // Exercise the production, product-independent policy using actual writers.
     // No attached hardware is required; legacy aligned tests below still run.
-    for(const auto* model:{"415M","41M3","1315"})for(unsigned combination=0;combination<4;combination++){
+    for(const auto* model:{"415RSV0","41M3","1315"})for(unsigned combination=0;combination<4;combination++){
       QTemporaryDir temporary;
       const auto root=toFilesystemPath(temporary.path());
       DatasetRecorder received;
       DatasetRecorder::ReceivedStreamsPolicy policy{true,combination==3,model};
-      if(policy.raw12_companion){
+      if(policy.raw8_companion){
         for(const auto* name:{"dataset.info","imu_metadata.csv","imu0.tum","imu1.tum"}){
           // Match the production RAW writer's exact LF bytes on Windows too;
           // text-mode ofstream would translate LF to CRLF before comparison.
@@ -11049,11 +11049,11 @@ int runViewerApplication(int argc, char** argv) {
           got.sample_count[0]||got.sample_count[1]!=(combination==2?2u:0u)||got.unsyncedDropCount()){
         std::cerr<<"all-received policy failed model="<<model<<" case="<<combination<<" error="<<got.error<<'\n';return 10;
       }
-      QFile metadata_file(fromFilesystemPath(root/(policy.raw12_companion?"streams.info":"dataset.info")));
+      QFile metadata_file(fromFilesystemPath(root/(policy.raw8_companion?"streams.info":"dataset.info")));
       if(!metadata_file.open(QIODevice::ReadOnly)||!metadata_file.readAll().contains("recording_stream_policy=all-received\n")){
         std::cerr<<"received policy not persisted\n";return 10;
       }
-      if(policy.raw12_companion){
+      if(policy.raw8_companion){
         QFile owned(fromFilesystemPath(root/"imu_metadata.csv"));
         if(!owned.open(QIODevice::ReadOnly)||owned.readAll()!=QByteArray("RAW writer owned\n")){
           std::cerr<<"companion overwrote RAW IMU\n";return 10;

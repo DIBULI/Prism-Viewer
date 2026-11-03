@@ -1,4 +1,4 @@
-#include "dataset/raw12_dataset.hpp"
+#include "dataset/raw8_dataset.hpp"
 #include "common/ui_text.hpp"
 #include "ui/bayer_preview.hpp"
 #include "prism/usb/profile_video.hpp"
@@ -60,7 +60,7 @@ Fields manifest(const std::filesystem::path& root) {
     // Read the early on-device JSON manifest; new recordings use text only.
     QJsonParseError error;
     const auto doc = QJsonDocument::fromJson(bytes, &error);
-    require(error.error == QJsonParseError::NoError && doc.isObject(), "Invalid legacy RAW12 manifest");
+    require(error.error == QJsonParseError::NoError && doc.isObject(), "Invalid legacy RAW8 manifest");
     const auto o = doc.object();
     for (auto it = o.begin(); it != o.end(); ++it) {
       if (it.value().isArray()) {
@@ -76,8 +76,8 @@ Fields manifest(const std::filesystem::path& root) {
       else if (it.value().isDouble()) fields[it.key().toStdString()] =
           std::to_string(jsonNumber(o, it.key().toUtf8().constData(), 9007199254740991ULL));
     }
-    require(number(fields, "schema") == 1, "Unsupported RAW12 schema");
-    fields["format"] = "prism-raw12-dataset-v1";
+    require(number(fields, "schema") == 1, "Unsupported RAW8 schema");
+    fields["format"] = "prism-raw8-dataset-v1";
   } else {
     for (const auto& raw : bytes.split('\n')) {
       const auto line = raw.trimmed();
@@ -88,46 +88,46 @@ Fields manifest(const std::filesystem::path& root) {
               "Duplicate manifest field");
     }
   }
-  require(fields["format"] == "prism-raw12-dataset-v1" && fields["codec"] == "raw12-rice-lossless",
-          "Unsupported RAW12 dataset format");
+  require(fields["format"] == "prism-raw8-dataset-v1" && fields["codec"] == "raw8-rice-lossless",
+          "Unsupported RAW8 dataset format");
   require(number(fields, "width") == 5120 && number(fields, "height") == 3072 &&
-          number(fields, "source_bits") == 12 && number(fields, "camera_count") == 4,
-          "Unsupported RAW12 geometry");
+          number(fields, "source_bits") == 8 && number(fields, "camera_count") == 4,
+          "Unsupported RAW8 geometry");
   return fields;
 }
 std::vector<uint8_t> readFrame(const DatasetImageEntry& entry) {
   const auto path = common::toFilesystemPath(entry.absolute_path);
   regularLocal(path);
-  require(entry.byte_size >= 65 && entry.byte_size <= prism::capture::kProfileImageLimit,
-          "Invalid RAW12 frame size");
+  require(entry.byte_size > prism::capture::kRaw8HeaderBytes && entry.byte_size <= prism::capture::kProfileImageLimit,
+          "Invalid RAW8 frame size");
   std::ifstream file(path, std::ios::binary);
   file.seekg(std::streamoff(entry.byte_offset));
   std::vector<uint8_t> bytes(entry.byte_size);
   file.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(bytes.size()));
-  require(size_t(file.gcount()) == bytes.size(), "Truncated RAW12 frame");
+  require(size_t(file.gcount()) == bytes.size(), "Truncated RAW8 frame");
   return bytes;
 }
-prism::capture::Raw12Image decode(const DatasetImageEntry& entry) {
+prism::capture::RawImage decode(const DatasetImageEntry& entry) {
   const auto bytes = readFrame(entry);
-  auto raw = prism::capture::decodeRaw12Rice(bytes); // Both encoded and decoded CRCs.
+  auto raw = prism::capture::decodeRawImage(bytes); // Both encoded and decoded CRCs.
   require(raw.camera == entry.camera && raw.frame_id == entry.frame_id &&
           raw.trigger_sequence == entry.trigger_sequence &&
           raw.source_timestamp_us == entry.timestamp_us && raw.timing_mode == entry.timing_mode &&
           raw.exposure_us == entry.exposure_us && raw.gain_x1024 == entry.gain_x1024 &&
           prism::capture::rawLe32(bytes.data()+20) == entry.raw_crc32 &&
           prism::capture::rawLe32(bytes.data()+48) == entry.encoded_crc32,
-          "RAW12 payload/index mismatch");
+          "RAW8 payload/index mismatch");
   return raw;
 }
 }
 
-static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
+static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
                              const DatasetValidationCancelCallback& cancelled, bool unpublished) {
   const auto fields = manifest(root);
-  Raw12Dataset result;
+  Raw8Dataset result;
   unsigned dataset_timing=0;
   const auto complete = number(fields, "complete");
-  require(complete == (unpublished ? 0u : 1u), "RAW12 recording completion state mismatch");
+  require(complete == (unpublished ? 0u : 1u), "RAW8 recording completion state mismatch");
   if(!unpublished&&fields.count("companion_streams")&&number(fields,"companion_streams")){
     const auto auxiliary=readBounded(root/"streams.info",1024*1024);
     require(auxiliary.split('\n').count("complete=1")==1&&
@@ -142,12 +142,21 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
             field.first.find("_dropped") == std::string::npos &&
             field.first.find("received") == std::string::npos, "Missing drop accounting version");
   uint64_t totalDrops = 0;
+  const bool transfer_accounted=fields.count("transfer_accounting")!=0;
+  std::vector<uint32_t> transfer_offsets;
+  uint32_t first_transfer=0;
+  if(transfer_accounted){
+    require(number(fields,"transfer_accounting")==1&&number(fields,"first_transfer")<=UINT32_MAX&&
+            number(fields,"last_transfer")<=UINT32_MAX&&number(fields,"transfer_received")<=1000000,
+            "Invalid transfer accounting");
+    first_transfer=uint32_t(number(fields,"first_transfer"));
+  }
   const auto fps = number(fields, "fps_per_camera");
   require(fps > 0 && fps <= 120, "Invalid recording rate");
   for (unsigned c = 0; c < 4; ++c) {
     checkCancelled(cancelled);
     const auto prefix = "camera" + std::to_string(c);
-    const auto file = root / (prefix + ".prg-stream");
+    const auto file = root / (prefix + ".pr8-stream");
     regularLocal(file); regularLocal(root / (prefix + ".jsonl"));
     const uint64_t size = std::filesystem::file_size(file);
     QFile index(common::fromFilesystemPath(root / (prefix + ".jsonl")));
@@ -172,11 +181,15 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
       require(error.error == QJsonParseError::NoError && doc.isObject(), "Invalid index JSON");
       const auto row = doc.object();
       DatasetImageEntry entry;
-      entry.raw12 = true; entry.camera = uint8_t(c);
+      entry.raw8 = true; entry.camera = uint8_t(c);
       entry.absolute_path = common::fromFilesystemPath(file);
       entry.byte_offset = jsonNumber(row, "offset", 9007199254740991ULL);
       entry.byte_size = uint32_t(jsonNumber(row, "bytes"));
       entry.frame_id = uint32_t(jsonNumber(row, "frame_id"));
+      if(transfer_accounted){
+        require(transfer_offsets.size()<1000000,"Transfer index exceeds playback limit");
+        transfer_offsets.push_back(uint32_t(uint32_t(jsonNumber(row,"transfer_id"))-first_transfer));
+      }
       entry.timestamp_us = jsonNumber(row, "timestamp_us", 9007199254740991ULL);
       entry.timing_mode = uint8_t(jsonNumber(row, "timing_mode", 4));
       require((entry.timing_mode==0||entry.timing_mode==3||entry.timing_mode==4)&&
@@ -189,7 +202,7 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
       entry.dropped_before = accounted || row.contains("dropped_before") ? jsonNumber(row, "dropped_before") : 0;
       require(!entry.dropped_before || (accounted && row.value("drop_reason").toString() == "disk_queue_full"),
               "Unaccounted recording gap");
-      require(entry.byte_offset == offset && entry.byte_size >= 65 && entry.byte_size <= prism::capture::kProfileImageLimit &&
+      require(entry.byte_offset == offset && entry.byte_size > prism::capture::kRaw8HeaderBytes && entry.byte_size <= prism::capture::kProfileImageLimit &&
               offset <= size && entry.byte_size <= size - offset, "Invalid frame range for " + prefix);
       require(entries.empty() ? (!accounted || entry.frame_id == uint32_t(first + entry.dropped_before)) :
               (entry.frame_id == uint32_t(uint64_t(entries.back().frame_id)+1+entry.dropped_before) &&
@@ -198,26 +211,15 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
       // Opening reads only fixed-size headers; payload CRCs are checked on display
       // and all payloads are checked by the cancellable Validate action.
       uint8_t h[80]{};
-      data.seekg(std::streamoff(offset)); data.read(reinterpret_cast<char*>(h), 64);
-      require(data.gcount()==64,"Truncated RAW12 header");
-      size_t header_available=64;
-      if(h[4]==2) {
-        data.read(reinterpret_cast<char*>(h+64),16);
-        require(data.gcount()==16,"Truncated RAW12 group header");
-        header_available=80;
-      }
-      const auto header=prism::capture::parseRaw12Header(h,header_available,entry.byte_size,prism::capture::kRaw12Rice);
-      require(!std::memcmp(h, "PRG1", 4) &&
-              h[6] == 12 && h[7] <= 3 && h[36] == 2 && h[37] == c && h[38] == entry.timing_mode && h[39] == 0 &&
-              prism::capture::rawLe32(h+8) == 5120 && prism::capture::rawLe32(h+12) == 3072 &&
-              prism::capture::rawLe32(h+16) == 23592960 && prism::capture::rawLe32(h+20) == entry.raw_crc32 &&
-              prism::capture::rawLe32(h+24) == entry.frame_id &&
-              (prism::capture::rawLe32(h+40) | (uint64_t(prism::capture::rawLe32(h+44)) << 32)) == entry.timestamp_us &&
-              prism::capture::rawLe32(h+48) == entry.encoded_crc32 && prism::capture::rawLe32(h+52) == 256 &&
-              prism::capture::rawLe32(h+56) == entry.byte_size - header.bytes && prism::capture::rawLe32(h+60) == 0,
-              "RAW12 header/index mismatch for " + prefix);
+      data.seekg(std::streamoff(offset)); data.read(reinterpret_cast<char*>(h), sizeof(h));
+      require(data.gcount()==sizeof(h),"Truncated RAW8 header");
+      const auto header=prism::capture::parseRaw8Header(h,sizeof(h),entry.byte_size,prism::capture::kRaw8Rice);
+      require(header.camera==c && header.timing_mode==entry.timing_mode &&
+              header.raw_crc==entry.raw_crc32 && header.frame_id==entry.frame_id &&
+              header.timestamp_us==entry.timestamp_us && header.encoded_crc==entry.encoded_crc32,
+              "RAW8 header/index mismatch for " + prefix);
       require((row.contains("trigger_sequence") ? uint32_t(jsonNumber(row,"trigger_sequence")) : 0u)==header.trigger_sequence,
-              "RAW12 trigger-group/index mismatch for "+prefix);
+              "RAW8 trigger-group/index mismatch for "+prefix);
       entry.trigger_sequence=header.trigger_sequence;
       entry.exposure_us = prism::capture::rawLe32(h+28); entry.gain_x1024 = prism::capture::rawLe32(h+32);
       require(result.timestamps.size() < 1000000, "Dataset index exceeds playback limit (one million images)");
@@ -233,6 +235,18 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
     result.bytes += size; result.dropped[c] = dropped; totalDrops += dropped;
   }
   require(number(fields, "bytes") == result.bytes, "Manifest byte count mismatch");
+  if(transfer_accounted){
+    // Merge per-camera index files by transport order, without confusing this
+    // order with source IDs or claiming synchronization between different lanes.
+    std::sort(transfer_offsets.begin(),transfer_offsets.end());
+    require(!totalDrops&&transfer_offsets.size()==number(fields,"transfer_received"),
+            "Incomplete transport accounting");
+    for(size_t i=0;i<transfer_offsets.size();++i)
+      require(transfer_offsets[i]==i,"Transport gap/duplicate in index");
+    require(transfer_offsets.empty()?(first_transfer==0&&number(fields,"last_transfer")==0):
+      uint32_t(first_transfer+uint32_t(transfer_offsets.size()-1))==number(fields,"last_transfer"),
+      "Transport manifest/index mismatch");
+  }
   if (accounted) require(number(fields, "has_drops") == (totalDrops != 0) &&
       number(fields, "frames_complete") == (totalDrops == 0), "Manifest drop status mismatch");
   if(fields.count("dropped_frames_total"))require(number(fields,"dropped_frames_total")==totalDrops,
@@ -266,34 +280,34 @@ static Raw12Dataset loadRaw12DatasetImpl(const std::filesystem::path& root,
   return result;
 }
 
-Raw12Dataset loadRaw12Dataset(const std::filesystem::path& root,
+Raw8Dataset loadRaw8Dataset(const std::filesystem::path& root,
                              const DatasetValidationCancelCallback& cancelled) {
-  return loadRaw12DatasetImpl(root, cancelled, false);
+  return loadRaw8DatasetImpl(root, cancelled, false);
 }
 
-QImage loadRaw12DatasetImage(const DatasetImageEntry& entry) {
+QImage loadRaw8DatasetImage(const DatasetImageEntry& entry) {
   const auto raw = decode(entry);
   QImage image(int(raw.width), int(raw.height), QImage::Format_Grayscale8);
-  require(!image.isNull(), "Cannot allocate RAW12 display image");
+  require(!image.isNull(), "Cannot allocate RAW8 display image");
   for (unsigned y = 0; y < raw.height; ++y) {
     auto* out = image.scanLine(int(y));
     for (unsigned x = 0; x < raw.width; ++x)
-      out[x] = uint8_t(prism::capture::raw12Pixel(raw, size_t(y)*raw.width+x) >> 4);
+      out[x] = prism::capture::rawPixel(raw, size_t(y)*raw.width+x);
   }
   // Same display-only provenance as live USB preview. Files and full decoded
   // samples remain untouched; UI controls may filter only their scaled view.
-  image.setText(ui::kRaw12PreviewKey, QStringLiteral("native-bayer"));
+  image.setText(ui::kRaw8PreviewKey, QStringLiteral("native-bayer"));
   return image;
 }
 
-static DatasetValidationResult validateRaw12DatasetImpl(const std::filesystem::path& root,
+static DatasetValidationResult validateRaw8DatasetImpl(const std::filesystem::path& root,
     const DatasetValidationProgressCallback& progress, const DatasetValidationCancelCallback& cancelled,
     bool unpublished) {
-  DatasetValidationResult result; result.format_name = "prism-raw12-dataset-v1";
-  result.recording_mode = "RAW12 lossless"; result.time_domain = "diagnostic-not-synchronized-exposure";
+  DatasetValidationResult result; result.format_name = "prism-raw8-dataset-v1";
+  result.recording_mode = "RAW8 lossless"; result.time_domain = "diagnostic-not-synchronized-exposure";
   try {
     result.device_model = readDatasetIdentity(root).model;
-    const auto data = loadRaw12DatasetImpl(root, cancelled, unpublished);
+    const auto data = loadRaw8DatasetImpl(root, cancelled, unpublished);
     bool common=false;for(const auto& lane:data.cameras)if(!lane.empty()){common=lane.front().timing_mode==4;break;}
     result.time_domain=data.ordinal_only?"unknown-or-mixed-image-clocks":common?
         "common-external-trigger-device-clock":"diagnostic-not-synchronized-exposure";
@@ -330,16 +344,16 @@ static DatasetValidationResult validateRaw12DatasetImpl(const std::filesystem::p
     result.cancelled = cancelled && cancelled();
     if (!result.cancelled) {
       ++result.total_errors;
-      result.issues.push_back({DatasetValidationSeverity::Error, "RAW12", 0, e.what()});
+      result.issues.push_back({DatasetValidationSeverity::Error, "RAW8", 0, e.what()});
     }
   }
   return result;
 }
-DatasetValidationResult validateRaw12Dataset(const std::filesystem::path& root,
+DatasetValidationResult validateRaw8Dataset(const std::filesystem::path& root,
     const DatasetValidationProgressCallback& progress, const DatasetValidationCancelCallback& cancelled) {
-  return validateRaw12DatasetImpl(root, progress, cancelled, false);
+  return validateRaw8DatasetImpl(root, progress, cancelled, false);
 }
-DatasetValidationResult verifyUnpublishedRaw12Dataset(const std::filesystem::path& root) {
-  return validateRaw12DatasetImpl(root, {}, {}, true);
+DatasetValidationResult verifyUnpublishedRaw8Dataset(const std::filesystem::path& root) {
+  return validateRaw8DatasetImpl(root, {}, {}, true);
 }
 }  // namespace prism_viewer::dataset

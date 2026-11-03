@@ -1,5 +1,5 @@
-#include "dataset/raw12_recorder.hpp"
-#include "dataset/raw12_dataset.hpp"
+#include "dataset/raw8_recorder.hpp"
+#include "dataset/raw8_dataset.hpp"
 #include "common/ui_text.hpp"
 #include <QDateTime>
 #include <QDir>
@@ -29,15 +29,15 @@ namespace prism_viewer::dataset {
 namespace {
 void require(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
 void syncFile(QFileDevice& file){
-  require(file.flush(),"RAW12 disk flush failed");
+  require(file.flush(),"RAW8 disk flush failed");
 #ifdef _WIN32
-  require(_commit(file.handle())==0,"RAW12 disk sync failed");
+  require(_commit(file.handle())==0,"RAW8 disk sync failed");
 #else
-  require(fsync(file.handle())==0,"RAW12 disk sync failed");
+  require(fsync(file.handle())==0,"RAW8 disk sync failed");
 #endif
 }
 void writeAll(QFileDevice& file,const char* p,qint64 size){
-  while(size){const auto n=file.write(p,size);require(n>0,"RAW12 disk write failed");p+=n;size-=n;}
+  while(size){const auto n=file.write(p,size);require(n>0,"RAW8 disk write failed");p+=n;size-=n;}
 }
 constexpr const char* imuHeader="sensor_id,format,flags,sample_id,timestamp_us,timestamp_synced,fsync_event,fsync_delay_valid,sample_gap,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,temp_milli_c,host_elapsed_us\n";
 constexpr const char* tumHeader="# Source timestamp[s] ax[m/s^2] ay[m/s^2] az[m/s^2] gx[rad/s] gy[rad/s] gz[rad/s]\n";
@@ -70,10 +70,10 @@ void verifyFileHash(const std::filesystem::path& path,const QByteArray& expected
   require(h.result()==expected,"IMU disk readback does not match received samples");
 }
 }
-struct Raw12Recorder::Impl {
+struct Raw8Recorder::Impl {
   using Image=prism::capture::ProfileImage;
-  struct Item{std::vector<uint8_t> bytes;unsigned camera;uint32_t id;uint64_t stamp,before;};
-  Raw12RecordingOptions options;
+  struct Item{std::vector<uint8_t> bytes;unsigned camera;uint32_t id;uint64_t stamp,before;uint32_t transfer;};
+  Raw8RecordingOptions options;
   mutable std::mutex mutex;
   std::condition_variable wake;
   std::deque<Item> queue;
@@ -84,15 +84,17 @@ struct Raw12Recorder::Impl {
   std::array<uint64_t,2> imu_stamp{};
   std::array<uint16_t,2> imu_sequence{};
   const std::chrono::steady_clock::time_point started=std::chrono::steady_clock::now();
-  Raw12RecordingStatus state;
+  Raw8RecordingStatus state;
   std::array<uint64_t,4> pending{},offset{},stamp{};
   std::array<uint32_t,4> first{},last{};
+  uint32_t first_transfer=0,last_transfer=0;
+  uint64_t transfers=0;
   std::array<uint8_t,4> timing{};
   std::thread worker;
-  explicit Impl(const std::filesystem::path& parent,Raw12RecordingOptions o):options(std::move(o)){
-    require(options.fps==1||options.fps==2,"RAW12 recording supports only1 or2FPS");
+  explicit Impl(const std::filesystem::path& parent,Raw8RecordingOptions o):options(std::move(o)){
+    require(options.fps==1||options.fps==2,"RAW8 recording supports only1 or2FPS");
     require(options.queue_frames&&options.queue_bytes&&options.reserve_bytes>=64*1024*1024ull,
-            "Invalid RAW12 recording queue or storage reserve");
+            "Invalid RAW8 recording queue or storage reserve");
     require(!(options.required_imu_mask&~3u)&&options.imu_queue_samples,"Invalid IMU recording limits");
     hashText(imu_hash,imuHeader);for(auto& h:tum_hash)hashText(h,tumHeader);
     const auto path=common::fromFilesystemPath(parent);
@@ -100,7 +102,7 @@ struct Raw12Recorder::Impl {
     checkSpace(path,128*1024*1024);
     const auto id=QStringLiteral("capture-%1-%2").arg(QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss"),
         QUuid::createUuid().toString(QUuid::Id128).left(12));
-    require(QDir(path).mkdir(id),"Cannot create unique RAW12 dataset");
+    require(QDir(path).mkdir(id),"Cannot create unique RAW8 dataset");
     state.root=common::toFilesystemPath(QDir(path).filePath(id));
     publish(false);
     worker=std::thread([this]{run();});
@@ -110,9 +112,9 @@ struct Raw12Recorder::Impl {
     const QStorageInfo disk(path);
     require(disk.isValid()&&disk.isReady()&&disk.bytesAvailable()>=0,"Cannot query recording storage");
     require(uint64_t(disk.bytesAvailable())>options.reserve_bytes&&
-            bytes<uint64_t(disk.bytesAvailable())-options.reserve_bytes,"RAW12 storage reserve reached");
+            bytes<uint64_t(disk.bytesAvailable())-options.reserve_bytes,"RAW8 storage reserve reached");
   }
-  Raw12RecordingStatus status()const{std::lock_guard<std::mutex> lock(mutex);return state;}
+  Raw8RecordingStatus status()const{std::lock_guard<std::mutex> lock(mutex);return state;}
   void finish(const std::string& error){
     std::lock_guard<std::mutex> lock(mutex);
     if(state.done)return;
@@ -130,12 +132,14 @@ struct Raw12Recorder::Impl {
     std::lock_guard<std::mutex> lock(mutex);
     complete=complete&&state.error.empty();
       const auto drops=std::accumulate(state.dropped.begin(),state.dropped.end(),uint64_t(0));
-      text<<"format=prism-raw12-dataset-v1\ndevice_model=415M\ncodec=raw12-rice-lossless\n"
-          <<"width=5120\nheight=3072\nsource_bits=12\ncamera_count=4\n"
+      text<<"format=prism-raw8-dataset-v1\ndevice_model=415RSV0\ncodec=raw8-rice-lossless\n"
+          <<"width=5120\nheight=3072\nsource_bits=8\ncamera_count=4\n"
           <<"fps_per_camera="<<options.fps<<"\ncomplete="<<complete<<"\nbytes="<<state.bytes
           <<"\ndrop_accounting=1\nhas_drops="<<bool(drops)<<"\nframes_complete="<<(!drops&&state.error.empty())
-          <<"\nqueue_policy=drop_oldest_queued\ndropped_frames_total="<<drops
+          <<"\nqueue_policy=fail_without_eviction\ndropped_frames_total="<<drops
           <<"\ntiming=per-image-discriminator-device-clock\nrecording_host=viewer\n";
+      text<<"transfer_accounting=1\ntransfer_received="<<transfers
+          <<"\nfirst_transfer="<<first_transfer<<"\nlast_transfer="<<last_transfer<<'\n';
       text<<"allow_absent_cameras="<<!options.require_all_cameras<<'\n';
       text<<"fps_reference=configured-not-measured\ncompanion_streams="<<options.companion_streams<<'\n';
       text<<"imu_required_mask="<<options.required_imu_mask<<"\nimu_timestamp_domain="<<options.imu_timestamp_domain
@@ -152,9 +156,9 @@ struct Raw12Recorder::Impl {
             <<key<<"first_received_frame="<<first[c]<<'\n'<<key<<"last_received_frame="<<last[c]<<'\n';
       }
     QSaveFile file(common::fromFilesystemPath(state.root/"dataset.info"));
-    require(file.open(QIODevice::WriteOnly),"Cannot publish RAW12 manifest");
+    require(file.open(QIODevice::WriteOnly),"Cannot publish RAW8 manifest");
     const auto bytes=text.str();writeAll(file,bytes.data(),qint64(bytes.size()));syncFile(file);
-    require(file.commit(),"Cannot commit RAW12 manifest");
+    require(file.commit(),"Cannot commit RAW8 manifest");
     if(finalizing){state.complete=complete;state.done=true;state.closing=true;}
   }
   void append(const Image& image) noexcept {
@@ -163,39 +167,35 @@ struct Raw12Recorder::Impl {
       if(state.closing||state.done)return;
       using namespace prism::capture;
       const auto& b=image.encoded;const auto* p=b.data();
-      const auto header=parseRaw12Header(p,b.size(),b.size(),kRaw12Rice);
-      require(image.format==kRaw12Rice&&image.camera<4&&b.size()>64&&b.size()<=kProfileImageLimit&&
-        !std::memcmp(p,"PRG1",4)&&p[6]==12&&p[36]==2&&p[37]==image.camera&&
-        rawLe32(p+8)==5120&&rawLe32(p+12)==3072&&rawLe32(p+56)==b.size()-header.bytes,
-        "Invalid RAW12 recording frame");
+      const auto header=parseRaw8Header(p,b.size(),b.size(),kRaw8Rice);
+      require(image.format==kRaw8Rice&&image.camera<4&&image.width==5120&&image.height==3072&&
+        header.camera==image.camera&&header.timestamp_us==image.timestamp_us&&
+        rawCrc32(p+header.bytes,b.size()-header.bytes)==header.encoded_crc,
+        "Invalid RAW8 recording frame");
       const auto c=image.camera;const auto id=rawLe32(p+24);
       const auto time=rawLe32(p+40)|(uint64_t(rawLe32(p+44))<<32);
-      require((p[38]==0||p[38]==3||p[38]==4)&&validProfileTiming(p[38],time),"Invalid RAW12 image timing");
+      // Agent assigns one global delivery ID per independent image. It is NOT
+      // the native per-camera source ID, nor the common trigger group ID.
+      require(transfers<UINT32_MAX&&(!transfers||image.frame_id==uint32_t(last_transfer+1u)),
+              "RAW8 transport sequence gap/replay");
+      require((p[38]==0||p[38]==3||p[38]==4)&&validProfileTiming(p[38],time),"Invalid RAW8 image timing");
       require(state.received[c]<UINT32_MAX&&(!state.received[c]||
-        (id==last[c]+1u&&(!p[38]||p[38]!=timing[c]||time>stamp[c]))),"RAW12 source sequence/timestamp gap");
+        (id==last[c]+1u&&(!p[38]||p[38]!=timing[c]||time>stamp[c]))),"RAW8 source sequence/timestamp gap");
       if(!state.received[c])first[c]=id;
+      if(!transfers)first_transfer=image.frame_id;
+      ++transfers;last_transfer=image.frame_id;
       ++state.received[c];last[c]=id;stamp[c]=time;timing[c]=p[38];
-      // Reject an oversized incoming frame without destroying useful queued
-      // work. The writer's already-popped item is never eligible for eviction.
-      if(b.size()<=options.queue_bytes){
-        while(!queue.empty()&&(queue.size()>=options.queue_frames||
-              state.queued_bytes>options.queue_bytes-b.size())){
-          const auto camera=queue.front().camera;
-          const auto carry=queue.front().before+1;
-          state.queued_bytes-=queue.front().bytes.size();queue.pop_front();
-          ++state.dropped[camera];
-          auto next=std::find_if(queue.begin(),queue.end(),[&](const Item& i){return i.camera==camera;});
-          if(next!=queue.end())next->before+=carry;
-          else pending[camera]+=carry;
-        }
-      }
+      // Preserve queued and in-flight frames. Overflow is terminal and visible,
+      // never a complete recording with an implicit frame-rate reduction.
       if(queue.size()>=options.queue_frames||b.size()>options.queue_bytes||
           state.queued_bytes>options.queue_bytes-b.size()){
-        ++state.dropped[c];++pending[c];return;
+        ++state.dropped[c];++pending[c];
+        state.closing=true;state.error="RAW8 recording queue full; recording stopped without eviction";
+        wake.notify_all();return;
       }
-      queue.push_back({b,c,id,time,pending[c]});pending[c]=0;state.queued_bytes+=b.size();wake.notify_all();
+      queue.push_back({b,c,id,time,pending[c],image.frame_id});pending[c]=0;state.queued_bytes+=b.size();wake.notify_all();
     }catch(const std::exception& e){fail(e.what());}
-    catch(...){fail("RAW12 recording allocation failure");}
+    catch(...){fail("RAW8 recording allocation failure");}
   }
   void appendImu(const prism::ImuSample& sample) noexcept {
     try{
@@ -237,10 +237,10 @@ struct Raw12Recorder::Impl {
       }
       for(unsigned c=0;c<4;c++){
         const auto base=state.root/("camera"+std::to_string(c));
-        files[c].setFileName(common::fromFilesystemPath(base)+".prg-stream");
+        files[c].setFileName(common::fromFilesystemPath(base)+".pr8-stream");
         indexes[c].setFileName(common::fromFilesystemPath(base)+".jsonl");
         require(files[c].open(QIODevice::WriteOnly|QIODevice::NewOnly)&&
-                indexes[c].open(QIODevice::WriteOnly|QIODevice::NewOnly),"Cannot create RAW12 streams");
+                indexes[c].open(QIODevice::WriteOnly|QIODevice::NewOnly),"Cannot create RAW8 streams");
       }
       for(;;){
         Item item;std::vector<ImuItem> imu_batch;
@@ -260,13 +260,13 @@ struct Raw12Recorder::Impl {
         }
         checkSpace(common::fromFilesystemPath(state.root),item.bytes.size()+65536);
         require(state.bytes<=options.limit_bytes&&item.bytes.size()<=options.limit_bytes-state.bytes,
-                "RAW12 recording size limit reached");
+                "RAW8 recording size limit reached");
         const auto c=item.camera;const auto* p=item.bytes.data();
-        const auto header=prism::capture::parseRaw12Header(p,item.bytes.size(),item.bytes.size(),prism::capture::kRaw12Rice);
+        const auto header=prism::capture::parseRaw8Header(p,item.bytes.size(),item.bytes.size(),prism::capture::kRaw8Rice);
         require(prism::capture::rawCrc32(p+header.bytes,item.bytes.size()-header.bytes)==prism::capture::rawLe32(p+48),
-                "RAW12 encoded CRC mismatch");
+                "RAW8 encoded CRC mismatch");
         writeAll(files[c],reinterpret_cast<const char*>(p),qint64(item.bytes.size()));
-        QJsonObject row{{"frame_id",double(item.id)},{"timestamp_us",double(item.stamp)},
+        QJsonObject row{{"frame_id",double(item.id)},{"transfer_id",double(item.transfer)},{"timestamp_us",double(item.stamp)},
           {"offset",double(offset[c])},{"bytes",double(item.bytes.size())},{"timing_mode",int(p[38])},
           {"raw_crc32",double(prism::capture::rawLe32(p+20))},{"encoded_crc32",double(prism::capture::rawLe32(p+48))},
           {"dropped_before",double(item.before)}};
@@ -287,24 +287,24 @@ struct Raw12Recorder::Impl {
         }
       }
       {std::lock_guard<std::mutex> lock(mutex);for(auto count:state.received)
-        if(options.require_all_cameras&&!count&&state.error.empty())state.error="A camera supplied no RAW12 recording frame";}
+        if(options.require_all_cameras&&!count&&state.error.empty())state.error="A camera supplied no RAW8 recording frame";}
       publish(false);
       if(status().error.empty()){
         if(options.before_verify)options.before_verify();
-        const auto result=verifyUnpublishedRaw12Dataset(state.root);
-        require(result.valid,"RAW12 full disk readback/decoded CRC validation failed");
+        const auto result=verifyUnpublishedRaw8Dataset(state.root);
+        require(result.valid,"RAW8 full disk readback/decoded CRC validation failed");
         publish(true);
       }
     }catch(const std::exception& e){fail(e.what());try{publish(false);}catch(...){} }
-    catch(...){fail("RAW12 writer failure");}
+    catch(...){fail("RAW8 writer failure");}
     {std::lock_guard<std::mutex> lock(mutex);queue.clear();imu_queue.clear();state.queued_bytes=0;state.done=true;state.closing=true;}
   }
 };
-Raw12Recorder::Raw12Recorder(const std::filesystem::path& parent,Raw12RecordingOptions options)
+Raw8Recorder::Raw8Recorder(const std::filesystem::path& parent,Raw8RecordingOptions options)
   :impl_(std::make_unique<Impl>(parent,std::move(options))){}
-Raw12Recorder::~Raw12Recorder()=default;
-void Raw12Recorder::append(const prism::capture::ProfileImage& image)noexcept{impl_->append(image);}
-void Raw12Recorder::appendImu(const prism::ImuSample& sample)noexcept{impl_->appendImu(sample);}
-void Raw12Recorder::finish(const std::string& error){impl_->finish(error);}
-Raw12RecordingStatus Raw12Recorder::status()const{return impl_->status();}
+Raw8Recorder::~Raw8Recorder()=default;
+void Raw8Recorder::append(const prism::capture::ProfileImage& image)noexcept{impl_->append(image);}
+void Raw8Recorder::appendImu(const prism::ImuSample& sample)noexcept{impl_->appendImu(sample);}
+void Raw8Recorder::finish(const std::string& error){impl_->finish(error);}
+Raw8RecordingStatus Raw8Recorder::status()const{return impl_->status();}
 }

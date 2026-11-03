@@ -2,7 +2,7 @@
 #include "dataset/dataset_browser.hpp"
 
 namespace prism_viewer::dataset {
-struct Raw12Dataset {
+struct Raw8Dataset {
   std::array<std::vector<DatasetImageEntry>, 4> cameras;
   std::array<uint64_t, 4> dropped{};
   std::vector<uint64_t> timestamps;
@@ -16,13 +16,13 @@ struct Raw12Dataset {
   // every image for ordinal/manual browsing instead of inventing timestamps.
   bool ordinal_only = false;
 };
-Raw12Dataset loadRaw12Dataset(const std::filesystem::path& root,
+Raw8Dataset loadRaw8Dataset(const std::filesystem::path& root,
                              const DatasetValidationCancelCallback& cancelled = {});
-QImage loadRaw12DatasetImage(const DatasetImageEntry& entry);
-DatasetValidationResult validateRaw12Dataset(
+QImage loadRaw8DatasetImage(const DatasetImageEntry& entry);
+DatasetValidationResult validateRaw8Dataset(
     const std::filesystem::path& root,
     const DatasetValidationProgressCallback& progress,
     const DatasetValidationCancelCallback& cancelled);
 // Recorder-only finalization gate. Playback still requires complete=1.
-DatasetValidationResult verifyUnpublishedRaw12Dataset(const std::filesystem::path& root);
+DatasetValidationResult verifyUnpublishedRaw8Dataset(const std::filesystem::path& root);
 }  // namespace prism_viewer::dataset
