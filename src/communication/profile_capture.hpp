@@ -7,32 +7,32 @@
 
 namespace prism_viewer {
 
-enum class CaptureProduct { Legacy41M3, Strict415RSV0, Mixed1315 };
+enum class CaptureProduct { Legacy413GSV0, Strict415RSV0, Mixed21315V0 };
 
 inline bool supportsCapture(prism::DeviceModel model) {
-  return model == prism::DeviceModel::Prism41M3 ||
+  return model == prism::DeviceModel::Prism413GSV0 ||
          model == prism::DeviceModel::Prism415RSV0 ||
-         model == prism::DeviceModel::Prism1315;
+         model == prism::DeviceModel::Prism21315V0;
 }
 
 inline CaptureProduct captureProduct(prism::DeviceModel model) {
   switch (model) {
-    case prism::DeviceModel::Prism41M3: return CaptureProduct::Legacy41M3;
+    case prism::DeviceModel::Prism413GSV0: return CaptureProduct::Legacy413GSV0;
     case prism::DeviceModel::Prism415RSV0: return CaptureProduct::Strict415RSV0;
-    case prism::DeviceModel::Prism1315: return CaptureProduct::Mixed1315;
+    case prism::DeviceModel::Prism21315V0: return CaptureProduct::Mixed21315V0;
     default: throw std::invalid_argument("DeviceInfo must report a supported device model before capture");
   }
 }
 
 inline bool usesProfileCapture(prism::DeviceModel model) {
-  return model == prism::DeviceModel::Prism415RSV0 || model == prism::DeviceModel::Prism1315;
+  return model == prism::DeviceModel::Prism415RSV0 || model == prism::DeviceModel::Prism21315V0;
 }
 
 inline unsigned captureOptions(CaptureProduct product) {
   switch (product) {
-    case CaptureProduct::Legacy41M3: return 0;
+    case CaptureProduct::Legacy413GSV0: return 0;
     case CaptureProduct::Strict415RSV0: return 7;
-    case CaptureProduct::Mixed1315: return 3;
+    case CaptureProduct::Mixed21315V0: return 3;
   }
   throw std::invalid_argument("unsupported capture product");
 }
@@ -40,9 +40,9 @@ inline unsigned captureOptions(CaptureProduct product) {
 template <typename Client>
 auto startProductCapture(Client& client, CaptureProduct product) {
   switch (product) {
-    case CaptureProduct::Legacy41M3: return client.startVideo1280x1024();
+    case CaptureProduct::Legacy413GSV0: return client.startVideo1280x1024();
     case CaptureProduct::Strict415RSV0: return client.startPrism415rsv0Video(2);
-    case CaptureProduct::Mixed1315: return client.startProfileVideoGpu();
+    case CaptureProduct::Mixed21315V0: return client.startProfileVideoGpu();
   }
   throw std::invalid_argument("unsupported capture product");
 }

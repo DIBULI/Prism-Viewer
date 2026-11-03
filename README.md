@@ -6,9 +6,9 @@ come from the same current package; an older download with the same version
 number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 
 DeviceInfo selects the product automatically; no Linux-only environment switch
-is required. 41M3 keeps its existing MJPEG capture and exposure controls. 415RSV0
+is required. 413GSV0 keeps its existing MJPEG capture and exposure controls. 415RSV0
 requests four-camera external-trigger 2 FPS RAW8/packed12 from matching firmware.
-1315 uses its mixed-profile capture entry. Unknown models fail before START.
+21315V0 uses its mixed-profile capture entry. Unknown models fail before START.
 A missing camera does not stop other camera previews or IMU callbacks.
 
 415RSV0 USB data is preserved as full RAW8 for recording and zoom. Ordinary live
@@ -83,7 +83,7 @@ graphics tab. The retired Agent software RTK raw/smoothed queries, result
 widgets and `gps_rtk.csv` recording/playback are removed; legacy result
 datasets are unsupported. Existing files are never migrated or deleted.
 This source requires matching SDK headers/libraries with Runtime ABI 19.
-41M3 retains four-camera unified automatic exposure with active-camera feedback
+413GSV0 retains four-camera unified automatic exposure with active-camera feedback
 and highlight protection. 415RSV0 uses the separate native control panel
 described above (requires the current matching firmware).
 The current firmware publishes only internally aligned IMU samples; startup or
@@ -351,7 +351,7 @@ glibc and display drivers come from the host.
 
 ## Exposure controls
 
-41M3 retains its existing microsecond/gain controls and synchronous SDK setting
+413GSV0 retains its existing microsecond/gain controls and synchronous SDK setting
 interface. 415RSV0 displays integer integration rows, not microseconds or RB delay.
 During 415RSV0 capture, row changes (3–4096, within device-reported limits) use the
 asynchronous API at 1× gain: no STOP/restart, automatic retry, frame discard, or
@@ -360,7 +360,7 @@ to receive image and IMU frames. Unconfirmed changes are reported rather than
 assumed successful. Gain, automatic mode, limit editing and explicit refresh
 are available only while idle on this path.
 The internal adapter preserves each row exactly as ceil(rows × 62.5 us);
-41M3 behavior is unchanged. See [API changes](docs/update/v1.3.0.md).
+413GSV0 behavior is unchanged. See [API changes](docs/update/v1.3.0.md).
 
 ## Recorded dataset playback
 

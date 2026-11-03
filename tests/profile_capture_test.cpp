@@ -26,9 +26,9 @@ struct Client {
 
 int main() {
   try {
-    for (auto model : {prism::DeviceModel::Prism41M3, prism::DeviceModel::Prism415RSV0, prism::DeviceModel::Prism1315}) {
+    for (auto model : {prism::DeviceModel::Prism413GSV0, prism::DeviceModel::Prism415RSV0, prism::DeviceModel::Prism21315V0}) {
       const auto product = prism_viewer::captureProduct(model);
-      const unsigned expected = model == prism::DeviceModel::Prism41M3 ? 0 : model == prism::DeviceModel::Prism1315 ? 3 : 7;
+      const unsigned expected = model == prism::DeviceModel::Prism413GSV0 ? 0 : model == prism::DeviceModel::Prism21315V0 ? 3 : 7;
       require(prism_viewer::captureOptions(product) == expected, "wrong options");
       Client client;
       require(prism_viewer::startProductCapture(client, product) == int(expected),
@@ -53,7 +53,7 @@ int main() {
       } catch (const std::invalid_argument&) { threw = true; }
       require(threw && client.calls == 0, "invalid selection sent START");
     }
-    std::cout << "41M3=0, 415RSV0=7, 1315=3; invalid/rejected START never retried\n";
+    std::cout << "413GSV0=0, 415RSV0=7, 21315V0=3; invalid/rejected START never retried\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << e.what() << '\n';

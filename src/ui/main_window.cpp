@@ -473,7 +473,7 @@ class DatasetRecorder {
   struct ReceivedStreamsPolicy {
     bool enabled=false;
     bool raw8_companion=false; // RAW and onboard IMU share this root via Raw8Recorder.
-    std::string device_model="41M3";
+    std::string device_model="413GSV0";
   };
   // Optional limits/latency hook are used by the deterministic disk-pressure
   // self-test. Production retains the 256-job / 128 MiB bounds.
@@ -4168,7 +4168,7 @@ class MainWindow : public QMainWindow {
           dataset_imu_plot_->sampleCount(1) == 1u &&
           dataset_lidar_point_cloud_widget_->pointCount() == 2u;
     }
-    bool models_ok = dataset_summary_label_->text().contains(QStringLiteral("41M3"));
+    bool models_ok = dataset_summary_label_->text().contains(QStringLiteral("413GSV0"));
     {
       // Test-owned fixture: model-only loading must clear any previous timeline.
       const auto model_root = toFilesystemPath(directory) / "model-only-fixture";
@@ -4182,7 +4182,7 @@ class MainWindow : public QMainWindow {
           !dataset_playback_button_->isEnabled() && !dataset_export_rosbag_button_->isEnabled();
       loadRecordedDataset(directory, false);
       models_ok = models_ok && !dataset_metadata_only_ &&
-          dataset_summary_label_->text().contains(QStringLiteral("41M3"));
+          dataset_summary_label_->text().contains(QStringLiteral("413GSV0"));
     }
     const bool success = models_ok && streams_loaded && events_dispatched && imu_rendered &&
                          lidar_rendered && overview_rendered && retired_rtk_absent &&
@@ -4333,8 +4333,8 @@ class MainWindow : public QMainWindow {
       ok = ok && camera_tools_->tabText(i) == titles[i] && camera_tools_->isTabEnabled(i);
     // Exercise repeated product switches using the real setup path, without
     // enumerating hardware or opening a transport.
-    for (auto model : {prism::DeviceModel::Prism415RSV0, prism::DeviceModel::Prism41M3,
-                       prism::DeviceModel::Prism1315, prism::DeviceModel::Prism415RSV0}) {
+    for (auto model : {prism::DeviceModel::Prism415RSV0, prism::DeviceModel::Prism413GSV0,
+                       prism::DeviceModel::Prism21315V0, prism::DeviceModel::Prism415RSV0}) {
       configureCameraTools(model);
       const bool native = model == prism::DeviceModel::Prism415RSV0;
       const bool profile = prism_viewer::usesProfileCapture(model);
@@ -4362,9 +4362,9 @@ class MainWindow : public QMainWindow {
                 << " viewport=" << (exposure_scroll ? exposure_scroll->viewport()->width() : -1)
                 << " horizontal-overflow=" << (exposure_scroll ? exposure_scroll->horizontalScrollBar()->maximum() : -1)
                 << " ok=" << ok << '\n';
-      if (!screenshot_prefix.isEmpty() && model != prism::DeviceModel::Prism1315) {
+      if (!screenshot_prefix.isEmpty() && model != prism::DeviceModel::Prism21315V0) {
         QApplication::processEvents();
-        const auto name = native ? QStringLiteral("415RSV0") : QStringLiteral("41M3");
+        const auto name = native ? QStringLiteral("415RSV0") : QStringLiteral("413GSV0");
         ok = camera_tools_->grab().save(screenshot_prefix + name + QStringLiteral("-exposure.png")) && ok;
         camera_tools_->setCurrentIndex(0);
         QApplication::processEvents();
@@ -9663,9 +9663,9 @@ class MainWindow : public QMainWindow {
                     .arg(prism_viewer::captureOptions(capture_product))
                     .arg(capture_product == prism_viewer::CaptureProduct::Strict415RSV0
                              ? QStringLiteral("415RSV0, 2 FPS")
-                             : capture_product == prism_viewer::CaptureProduct::Mixed1315
-                                   ? QStringLiteral("1315, saved FPS")
-                                   : QStringLiteral("41M3, saved FPS")));
+                             : capture_product == prism_viewer::CaptureProduct::Mixed21315V0
+                                   ? QStringLiteral("21315V0, saved FPS")
+                                   : QStringLiteral("413GSV0, saved FPS")));
       aggregate_stream_start_attempted = true;
       const auto status = withClientIo(
           [this, capture_product]() {
@@ -11009,7 +11009,7 @@ int runViewerApplication(int argc, char** argv) {
     const DatasetRecordingSummary summary = recorder.stop();
     // Exercise the production, product-independent policy using actual writers.
     // No attached hardware is required; legacy aligned tests below still run.
-    for(const auto* model:{"415RSV0","41M3","1315"})for(unsigned combination=0;combination<4;combination++){
+    for(const auto* model:{"415RSV0","413GSV0","21315V0"})for(unsigned combination=0;combination<4;combination++){
       QTemporaryDir temporary;
       const auto root=toFilesystemPath(temporary.path());
       DatasetRecorder received;
@@ -11062,7 +11062,7 @@ int runViewerApplication(int argc, char** argv) {
     }
     std::cout<<"all-received recording policy: PASS (3 models x4 stream combinations)\n";
     const auto recorded_identity = prism_viewer::dataset::readDatasetIdentity(test_root);
-    if (recorded_identity.defaulted || recorded_identity.model != "41M3") {
+    if (recorded_identity.defaulted || recorded_identity.model != "413GSV0") {
       std::cerr << "Recorder did not write its model\n";
       return 10;
     }

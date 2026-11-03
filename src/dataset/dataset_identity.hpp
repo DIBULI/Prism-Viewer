@@ -14,13 +14,13 @@
 namespace prism_viewer::dataset {
 
 struct DatasetIdentity {
-  std::string model = "41M3";
+  std::string model = "413GSV0";
   bool defaulted = true;
   bool raw8_recording = false;
 };
 
 // Additive metadata: never infer a model from directory names or image sizes.
-// Missing/empty declarations retain the legacy product interpretation (41M3).
+// Missing/empty declarations retain the legacy product interpretation (413GSV0).
 // A4L is a read-compatible historical alias; never rewrite an existing dataset.
 inline DatasetIdentity readDatasetIdentity(const std::filesystem::path& root) {
   DatasetIdentity result;
@@ -77,11 +77,18 @@ inline DatasetIdentity readDatasetIdentity(const std::filesystem::path& root) {
     if (model.compare(QStringLiteral("Prism-A4L"), Qt::CaseInsensitive) == 0 ||
         model.compare(QStringLiteral("A4L"), Qt::CaseInsensitive) == 0 ||
         model.compare(QStringLiteral("Prism-41M3"), Qt::CaseInsensitive) == 0 ||
-        model.compare(QStringLiteral("41M3"), Qt::CaseInsensitive) == 0)
-      return QStringLiteral("41M3");
+        model.compare(QStringLiteral("41M3"), Qt::CaseInsensitive) == 0 ||
+        model.compare(QStringLiteral("Prism-413GSV0"), Qt::CaseInsensitive) == 0 ||
+        model.compare(QStringLiteral("413GSV0"), Qt::CaseInsensitive) == 0)
+      return QStringLiteral("413GSV0");
     if (model.compare(QStringLiteral("Prism-415RSV0"), Qt::CaseInsensitive) == 0 ||
         model.compare(QStringLiteral("415RSV0"), Qt::CaseInsensitive) == 0)
       return QStringLiteral("415RSV0");
+    if (model.compare(QStringLiteral("Prism-1315"), Qt::CaseInsensitive) == 0 ||
+        model.compare(QStringLiteral("1315"), Qt::CaseInsensitive) == 0 ||
+        model.compare(QStringLiteral("Prism-21315V0"), Qt::CaseInsensitive) == 0 ||
+        model.compare(QStringLiteral("21315V0"), Qt::CaseInsensitive) == 0)
+      return QStringLiteral("21315V0");
     if (model.size() > 64) throw std::runtime_error("Dataset model is too long");
     for (const auto c : model)
       if (!(c.isLetterOrNumber() || c == '-' || c == '_' || c == '.'))

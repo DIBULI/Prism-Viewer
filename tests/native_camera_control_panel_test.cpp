@@ -66,7 +66,7 @@ int main(int argc,char** argv){
  auto* minGain=p.findChild<QDoubleSpinBox*>("nativeMinGain");
  auto* maxGain=p.findChild<QDoubleSpinBox*>("nativeMaxGain");
  auto* deadband=p.findChild<QSpinBox*>("nativeDeadband");
- // Match 41M3's two-column field order, but retain integer rows and global AE/AGC.
+ // Match 413GSV0's two-column field order, but retain integer rows and global AE/AGC.
  assert(globalTarget->geometry().y()==minRows->geometry().y());
  assert(maxRows->geometry().y()==minGain->geometry().y());
  assert(maxGain->geometry().y()==deadband->geometry().y());

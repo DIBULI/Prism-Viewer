@@ -266,13 +266,13 @@ int main(int argc, char** argv) {
             "all representable row values round-trip exactly");
   }
   panel.setDeviceOpen(false);
-  panel.setDeviceModel(prism::DeviceModel::Prism41M3);
+  panel.setDeviceModel(prism::DeviceModel::Prism413GSV0);
   panel.setDeviceOpen(true);
   panel.setCameraFps(30u);
   panel.setConfiguration(loaded, loaded_limits);
   require(exposure0->suffix() == QStringLiteral(" us") &&
               exposure0->singleStep() == 10 && min_exposure->value() == 500,
-          "disconnect and 41M3 reopen restore original microsecond controls");
+          "disconnect and 413GSV0 reopen restore original microsecond controls");
   prism_viewer::common::setChineseUi(true);
   panel.setCameraFps(2u);
   panel.setDeviceModel(prism::DeviceModel::Prism415RSV0);

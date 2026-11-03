@@ -79,7 +79,7 @@ int main(int argc,char** argv){
     tile.setImage(cells.scaled(640,384,Qt::IgnoreAspectRatio,Qt::SmoothTransformation));
     uniform(labelPixmap(tile).toImage(),lut[120]);
   }
-  // Legacy JPEG/41M3/default images are unmarked; retain previous sampling.
+  // Legacy JPEG/413GSV0/default images are unmarked; retain previous sampling.
   QImage jpeg(1280,1024,QImage::Format_RGB32);
   for(int y=0;y<jpeg.height();++y)for(int x=0;x<jpeg.width();++x)
     jpeg.setPixel(x,y,qRgb(x%256,y%256,(x+y)%256));

@@ -6,10 +6,10 @@ New datasets use a UTF-8 `key=value` text manifest named `dataset.info`.
 Web recording also stores its status counters in this file (`web.*` fields),
 and no longer produces a separate JSON manifest. Existing JSON sidecars remain
 read-only compatible for old Web downloads; they are not rewritten or removed.
-`device_model=41M3` identifies four-1.3-MP global-shutter recordings;
+`device_model=413GSV0` identifies four-1.3-MP global-shutter recordings;
 `device_model=415RSV0` identifies Prism-415RSV0 recordings. Historical `A4L` and
-`Prism-A4L` values normalize to **41M3**, as do missing or empty model fields.
-Readers also accept `Prism-41M3`; existing datasets are never rewritten.
+`Prism-A4L` values normalize to **413GSV0**, as do missing or empty model fields.
+Readers also accept `Prism-413GSV0`; existing datasets are never rewritten.
 Viewer displays the model in the dataset summary, metadata and validation report.
 Unknown explicitly named models are preserved, not silently relabeled as A4L.
 Existing files are never rewritten when opened. Early experimental JSON manifests
@@ -492,7 +492,7 @@ UINT8 `line_valid`（偏移 15），每点仍为 20 字节。
 图像与 LiDAR 由独立写盘线程按公共传感器时间排序处理，避免阻塞 USB 接收线程。待写
 图像队列最多保存 256 个完整帧集，LiDAR 队列最多保存 512 批，二者共用
 128 MiB 的内存上限；图像与点云各使用 4 MiB 顺序写缓存、1 GiB 分卷。
-停止录制会等待写线程排空队列并刷新文件。41M3 图像队列满时淘汰最老的待写完整帧集，
+停止录制会等待写线程排空队列并刷新文件。413GSV0 图像队列满时淘汰最老的待写完整帧集，
 不动正在写入的帧，也不淘汰 IMU、GNSS 或 LiDAR 来腾空间。
 超出整个队列上限的单个新帧集会被拒绝，不清空原有待写图像。
 `camera_queue_dropped_frame_sets` 记录队列丢弃帧集数；`cameraN_dropped` 记录每路
@@ -503,10 +503,10 @@ UINT8 `line_valid`（偏移 15），每点仍为 20 字节。
 `dropped_lidar_points`。未同步丢弃另由各个 `unsynced_*_dropped` 字段记录，
 并在停止录制后的 Viewer 状态和日志中显示。
 
-415RSV0 和 41M3 录制期间如有写盘队列丢帧，窗口顶部显示橙色警告，实时更新
+415RSV0 和 413GSV0 录制期间如有写盘队列丢帧，窗口顶部显示橙色警告，实时更新
 丢弃图像总数和 cam0/1/2/3 各路数量；切换页签不会隐藏警告。首次丢帧写入日志，
 不重复弹窗。停止录制后保留警告与最终计数，开始新一段录制时清零。
-41M3 的无效帧集及输入缺路也会单独提醒，不混算为队列丢弃图像数。
+413GSV0 的无效帧集及输入缺路也会单独提醒，不混算为队列丢弃图像数。
 
 `dataset.info` 中 `format=prism-dataset-v6`、`image_storage=chunk-v1`、
 `camera_index=chunk-v2-with-actual-exposure`、

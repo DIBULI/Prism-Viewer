@@ -61,7 +61,7 @@ struct DatasetTimestampSummary {
 
 struct DatasetValidationResult {
   std::string format_name;
-  std::string device_model = "41M3";
+  std::string device_model = "413GSV0";
   bool valid = false;
   bool cancelled = false;
   uint32_t format_version = 0;

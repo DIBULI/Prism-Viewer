@@ -113,23 +113,27 @@ int main() {
       if (info.model != model || info.defaulted != defaulted || info.raw8_recording != raw)
         throw std::runtime_error("dataset identity mismatch");
     };
-    if (prism_viewer::dataset::readDatasetIdentity(models).model != "41M3")
-      throw std::runtime_error("missing manifest must default to 41M3");
-    identity("format=prism-dataset-v6\n", "41M3", true);
-    identity("device_model=\n", "41M3", true);
-    identity("device_model=A4L\n", "41M3", false);
-    identity("device_model=41M3\n", "41M3", false);
-    identity("device_model=Prism-41m3\n", "41M3", false);
-    identity("device_model=41M3\nmodel=Prism-A4L\n", "41M3", false);
-    identity(R"({"model":"Prism-A4L"})", "41M3", false);
+    if (prism_viewer::dataset::readDatasetIdentity(models).model != "413GSV0")
+      throw std::runtime_error("missing manifest must default to 413GSV0");
+    identity("format=prism-dataset-v6\n", "413GSV0", true);
+    identity("device_model=\n", "413GSV0", true);
+    identity("device_model=A4L\n", "413GSV0", false);
+    identity("device_model=413GSV0\n", "413GSV0", false);
+    identity("device_model=41M3\n", "413GSV0", false);
+    identity("device_model=Prism-41m3\nmodel=413GSV0\n", "413GSV0", false);
+    identity("device_model=1315\nmodel=21315V0\n", "21315V0", false);
+    identity(R"({"device_model":"Prism-1315","model":"21315V0"})", "21315V0", false);
+    identity("device_model=Prism-413gsv0\n", "413GSV0", false);
+    identity("device_model=413GSV0\nmodel=Prism-A4L\n", "413GSV0", false);
+    identity(R"({"model":"Prism-A4L"})", "413GSV0", false);
     identity("\xef\xbb\xbf" "device_model=415RSV0\n", "415RSV0", false);
     identity("device_model=415RSV0\n", "415RSV0", false);
     identity(" # comment\r\n device_model = Prism-415RSV0 \r\n", "415RSV0", false);
     identity("device_model=NEXT-1\n", "NEXT-1", false);
     identity("device_model=415RSV0\nmodel=Prism-415RSV0\ncodec=raw8-rice-lossless\n", "415RSV0", false, true);
-    identity("codec=raw8-rice-lossless\n", "41M3", true, true);
+    identity("codec=raw8-rice-lossless\n", "413GSV0", true, true);
     identity(R"({"model":"Prism-415RSV0","codec":"raw8-rice-lossless"})", "415RSV0", false, true);
-    identity(R"({"schema":1})", "41M3", true);
+    identity(R"({"schema":1})", "413GSV0", true);
     for (const auto& bad : {"device_model=A4L\ndevice_model=415RSV0\n",
                            "device_model=A4L\nmodel=415RSV0\n", "device_model=<script>\n",
                            "{\"device_model\":42}", "{invalid}"}) {
@@ -175,7 +179,7 @@ int main() {
     const auto valid_root = root / "valid";
     createImuOnlyDataset(valid_root, normal_imu, normal_imu);
     const auto valid = prism_viewer::dataset::validatePrismDataset(valid_root);
-    if (!valid.valid || valid.warningCount() != 0u || valid.device_model != "41M3" ||
+    if (!valid.valid || valid.warningCount() != 0u || valid.device_model != "413GSV0" ||
         valid.onboard_imus[0].median_interval_us != 1000u) {
       throw std::runtime_error("valid IMU-only dataset was rejected");
     }

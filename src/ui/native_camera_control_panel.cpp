@@ -16,7 +16,7 @@ namespace prism_viewer::ui {
 using prism_viewer::common::uiText;
 NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(parent) {
   auto* root=new QVBoxLayout(this);root->setContentsMargins(0,0,0,0);root->setSpacing(8);
-  // Match the 41M3 exposure panel's hierarchy, two-column fields, camera
+  // Match the 413GSV0 exposure panel's hierarchy, two-column fields, camera
   // cards and shared action row. Sensor-specific units/protocol stay native.
   auto* group=new QGroupBox(uiText("Runtime Exposure and Gain","运行时曝光与增益"),this);
   group->setObjectName("nativeExposureGroup");root->addWidget(group);
@@ -59,7 +59,7 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
     input->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);
   };
   field(shared,1,0,uiText("Target brightness (RAW8)","目标亮度（RAW8）"),target_);
-  // Keep the same field order as CameraExposurePanel (41M3). Native units
+  // Keep the same field order as CameraExposurePanel (413GSV0). Native units
   // and the RAW8 deadband remain explicit rather than imitating microseconds.
   field(shared,1,1,uiText("Minimum exposure (rows)","最低曝光（行）"),min_rows_);
   field(shared,3,0,uiText("Maximum exposure (rows)","最高曝光（行）"),max_rows_);

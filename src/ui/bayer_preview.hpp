@@ -49,7 +49,7 @@ inline QImage raw8ThumbnailSource(const QImage& image) {
 }
 
 // Display-only copy: caches, decoded samples and recording/AE stay linear.
-// Unmarked JPEG/41M3 images are already display-ready and must not be encoded.
+// Unmarked JPEG/413GSV0 images are already display-ready and must not be encoded.
 inline QImage raw8SrgbDisplay(const QImage& image) {
   if (!isRaw8Preview(image) ||
       image.text(kRaw8TransferKey) == QStringLiteral("srgb")) return image;
