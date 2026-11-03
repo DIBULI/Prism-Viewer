@@ -43,6 +43,13 @@ int main(int argc,char**argv){QCoreApplication app(argc,argv);try{
   check(m.trigger_sequence==456&&m.source_frame==19&&m.timestamp_us==2345678&&m.exposure_us==64000&&m.gain_x1024==2048,"same-frame metadata");
   auto bad=wire;bad[52]^=1;check(!rawPreviewGroupHint(bad,2,format)&&rejects(bad,2,format),"header CRC guard");
   bad=wire;bad[81]^=1;check(rejects(bad,2,format),"encoded CRC guard");
+  {
+    auto current=wire;metadataOnly(current);current[81]^=1;
+    const auto decoded=decodeRawPreview(current,{},2,format);
+    check(decoded.constScanLine(0)[0]==uint8_t(pixels[0]^1),"current-format pixel changed or rejected");
+    auto broken=current;broken[24]^=1;check(rejects(broken,2,format),"current-format header guard");
+    broken=current;broken[80]=255;check(rejects(broken,2,format),"current-format codec guard");
+  }
   bad=wire;put(bad,20,prism::capture::rawLe32(bad.data()+20)^1);sealHeader(bad);
   check(rejects(bad,2,format),"full decoded CRC even for thumbnail");
   for(unsigned depth:{10,12,16}){bad=wire;bad[6]=uint8_t(depth);sealHeader(bad);check(rejects(bad,2,format),"native depth guard");}

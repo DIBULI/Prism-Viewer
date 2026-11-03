@@ -5,6 +5,7 @@
 namespace native8_fixture {
 inline void put(std::vector<uint8_t>& b,size_t at,uint32_t n){for(unsigned k=0;k<4;++k)b[at+k]=uint8_t(n>>(8*k));}
 inline void sealHeader(std::vector<uint8_t>& b){put(b,76,0);put(b,76,prism::capture::rawHeaderCrc32(b.data(),80));}
+inline void metadataOnly(std::vector<uint8_t>& b){b[4]=2;put(b,20,0);put(b,48,0);sealHeader(b);}
 inline void seal(std::vector<uint8_t>& b){put(b,56,uint32_t(b.size()-80));put(b,48,prism::capture::rawCrc32(b.data()+80,b.size()-80));sealHeader(b);}
 inline std::vector<uint8_t> header(unsigned camera,uint32_t id,uint64_t stamp,uint32_t crc){
   std::vector<uint8_t>b(80);std::memcpy(b.data(),"PRG8",4);

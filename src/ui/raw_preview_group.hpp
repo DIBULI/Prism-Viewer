@@ -5,7 +5,7 @@
 
 namespace prism_viewer::ui {
 // Scheduling hint only. Never display this metadata or pixels before the
-// existing full RAW decoder has validated BOTH CRCs and camera identity.
+// existing full RAW decoder has decoded the envelope and checked camera identity.
 inline std::optional<PreviewGroupKey> rawPreviewGroupHint(
     const std::vector<uint8_t>& bytes, unsigned camera, uint8_t format) {
   const bool rice = format == prism::capture::kRaw8Rice;

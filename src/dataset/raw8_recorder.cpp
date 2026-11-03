@@ -170,7 +170,7 @@ struct Raw8Recorder::Impl {
       const auto header=parseRaw8Header(p,b.size(),b.size(),kRaw8Rice);
       require(image.format==kRaw8Rice&&image.camera<4&&image.width==5120&&image.height==3072&&
         header.camera==image.camera&&header.timestamp_us==image.timestamp_us&&
-        rawCrc32(p+header.bytes,b.size()-header.bytes)==header.encoded_crc,
+        (!header.payload_crc_checked||rawCrc32(p+header.bytes,b.size()-header.bytes)==header.encoded_crc),
         "Invalid RAW8 recording frame");
       const auto c=image.camera;const auto id=rawLe32(p+24);
       const auto time=rawLe32(p+40)|(uint64_t(rawLe32(p+44))<<32);
@@ -263,7 +263,7 @@ struct Raw8Recorder::Impl {
                 "RAW8 recording size limit reached");
         const auto c=item.camera;const auto* p=item.bytes.data();
         const auto header=prism::capture::parseRaw8Header(p,item.bytes.size(),item.bytes.size(),prism::capture::kRaw8Rice);
-        require(prism::capture::rawCrc32(p+header.bytes,item.bytes.size()-header.bytes)==prism::capture::rawLe32(p+48),
+        require(!header.payload_crc_checked||prism::capture::rawCrc32(p+header.bytes,item.bytes.size()-header.bytes)==prism::capture::rawLe32(p+48),
                 "RAW8 encoded CRC mismatch");
         writeAll(files[c],reinterpret_cast<const char*>(p),qint64(item.bytes.size()));
         QJsonObject row{{"frame_id",double(item.id)},{"transfer_id",double(item.transfer)},{"timestamp_us",double(item.stamp)},
@@ -292,7 +292,7 @@ struct Raw8Recorder::Impl {
       if(status().error.empty()){
         if(options.before_verify)options.before_verify();
         const auto result=verifyUnpublishedRaw8Dataset(state.root);
-        require(result.valid,"RAW8 full disk readback/decoded CRC validation failed");
+        require(result.valid,"RAW8 disk readback validation failed");
         publish(true);
       }
     }catch(const std::exception& e){fail(e.what());try{publish(false);}catch(...){} }

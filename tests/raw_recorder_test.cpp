@@ -29,6 +29,18 @@ int main(int argc,char**argv){
       auto put=[&](size_t at,uint32_t n){for(unsigned k=0;k<4;k++)i.encoded[at+k]=uint8_t(n>>(8*k));};
       i.encoded[37]=uint8_t(c);put(24,id+1);put(40,uint32_t(i.timestamp_us));native8_fixture::sealHeader(i.encoded);return i;};
     Raw8RecordingOptions options;options.fps=2;
+    // Current envelopes persist and replay unchanged without image CRC scans.
+    // Legacy envelope corruption tests below must continue to reject corruption.
+    {
+      Raw8Recorder r(parent,options);
+      for(unsigned c=0;c<4;++c){auto i=image(c,0);native8_fixture::metadataOnly(i.encoded);
+        i.encoded[81]^=1;r.append(i);}
+      const auto s=wait(r);check(s.complete&&s.frames==std::array<uint64_t,4>{1,1,1,1},"current-format recording");
+      check(validateRaw8Dataset(s.root,{},{}).valid,"current-format replay");
+      QFile f(prism_viewer::common::fromFilesystemPath(s.root/"dataset.info"));
+      check(f.open(QIODevice::ReadOnly)&&!f.readAll().contains("crc"),"public image CRC status leaked");
+    }
+    next_transfer=1001;
     // Actual v2 recording/replay retains shared group ID AND distinct native
     // counters. The preview barrier must not rewrite or drop recorded frames.
     {

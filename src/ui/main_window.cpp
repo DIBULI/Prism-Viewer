@@ -8519,8 +8519,8 @@ class MainWindow : public QMainWindow {
         QString details = QStringLiteral("device_model=%1\nformat=prism-raw8-dataset-v1\nwidth=5120\nheight=3072\nsource_bits=8\n").arg(toQString(identity.model));
         for (size_t c = 0; c < 4; ++c)
           details += QStringLiteral("camera%1_images=%2\ncamera%1_dropped=%3\n").arg(c).arg(raw_dataset_.cameras[c].size()).arg(raw_dataset_.dropped[c]);
-        details += uiText("\nIndexes and headers checked. Each displayed frame is CRC checked; use Validate for a full scan.\nDisplay uses a fixed 12-to-8-bit mapping, without ISP. Source files are unchanged.\nROS bag export is not supported for this format.",
-            "\n已检查索引和帧头。显示时逐帧检查 CRC；请使用“验证”扫描全部数据。\n显示使用固定 12→8 位灰度映射，不经过 ISP，不修改原始文件。\n此格式暂不支持 ROS Bag 导出。");
+        details += uiText("\nIndexes and headers checked. Use Validate for a full readback.\nDisplay uses native 8-bit pixels, without ISP. Source files are unchanged.\nROS bag export is not supported for this format.",
+            "\n已检查索引和帧头。可使用“验证”读取全部数据。\n使用原生 8 位像素显示，不经过 ISP，不修改原始文件。\n此格式暂不支持 ROS Bag 导出。");
         dataset_details_->setPlainText(details);
         { const QSignalBlocker blocker(dataset_frame_slider_);
           dataset_frame_slider_->setRange(0, int(dataset_frame_count_)-1); dataset_frame_slider_->setValue(0); }
@@ -8830,7 +8830,7 @@ class MainWindow : public QMainWindow {
             dataset_images_ = result.images;
             for (size_t c = 0; c < 4; ++c) {
               if (!result.errors[c].isEmpty()) {
-                dataset_image_labels_[c]->clearImage(uiText("RAW8 read/CRC error: %1", "RAW8 读取／CRC 错误：%1").arg(result.errors[c]));
+                dataset_image_labels_[c]->clearImage(uiText("RAW8 read/decode error: %1", "RAW8 读取／解码错误：%1").arg(result.errors[c]));
                 appendLog(QStringLiteral("Dataset camera%1: %2").arg(c).arg(result.errors[c]));
               } else if (!result.images[c].isNull()) dataset_image_labels_[c]->setImage(result.images[c]);
             }

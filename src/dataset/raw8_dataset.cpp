@@ -109,7 +109,7 @@ std::vector<uint8_t> readFrame(const DatasetImageEntry& entry) {
 }
 prism::capture::RawImage decode(const DatasetImageEntry& entry) {
   const auto bytes = readFrame(entry);
-  auto raw = prism::capture::decodeRawImage(bytes); // Both encoded and decoded CRCs.
+  auto raw = prism::capture::decodeRawImage(bytes); // Decode using the envelope's declared format.
   require(raw.camera == entry.camera && raw.frame_id == entry.frame_id &&
           raw.trigger_sequence == entry.trigger_sequence &&
           raw.source_timestamp_us == entry.timestamp_us && raw.timing_mode == entry.timing_mode &&
@@ -208,8 +208,8 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
               (entry.frame_id == uint32_t(uint64_t(entries.back().frame_id)+1+entry.dropped_before) &&
                (!entry.timing_mode || entry.timing_mode!=entries.back().timing_mode ||
                 entry.timestamp_us > entries.back().timestamp_us)), "Frame sequence/timestamp mismatch for " + prefix);
-      // Opening reads only fixed-size headers; payload CRCs are checked on display
-      // and all payloads are checked by the cancellable Validate action.
+      // Opening reads fixed-size headers; display and the cancellable Validate
+      // action decode using the envelope version without changing source data.
       uint8_t h[80]{};
       data.seekg(std::streamoff(offset)); data.read(reinterpret_cast<char*>(h), sizeof(h));
       require(data.gcount()==sizeof(h),"Truncated RAW8 header");

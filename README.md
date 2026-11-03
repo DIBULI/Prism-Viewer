@@ -1,19 +1,19 @@
 # Prism Viewer 1.3.0
 
 Matches the pinned public **Prism SDK 1.3.0** (core Runtime API 19, Network API 4,
-Profile API 1, CameraControl API 1), Agent 1.3.0 and Sensor Board 0.5.0. Headers and binaries must
+Profile API 1, CameraControl API 1), Agent 1.3.0 and 415RSV0 Sensor Board 0.5.2. Headers and binaries must
 come from the same current package; an older download with the same version
 number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 
 DeviceInfo selects the product automatically; no Linux-only environment switch
 is required. 413GSV0 keeps its existing MJPEG capture and exposure controls. 415RSV0
-requests four-camera external-trigger 2 FPS RAW8/packed12 from matching firmware.
+requests four-camera external-trigger 2 FPS native RAW8 from matching firmware.
 21315V0 uses its mixed-profile capture entry. Unknown models fail before START.
 A missing camera does not stop other camera previews or IMU callbacks.
 
 415RSV0 USB data is preserved as full RAW8 for recording and zoom. Ordinary live
 tiles are downsampled in Viewer; bounded per-camera preview replacement does not
-drop recorded data. RAW8 recording/playback validates lengths and CRC, keeps
+drop recorded data. RAW8 recording/playback validates lengths and frame structure, keeps
 source identity, and reports missing data. RAW8 ROS export is not implemented.
 
 The current 415RSV0 panel uses native integer-row exposure and manual gain per
