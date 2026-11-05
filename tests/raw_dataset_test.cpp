@@ -105,6 +105,21 @@ int main(int argc,char** argv){
       check(data.display[i][c]==int(i),"ordinal browse omitted source frame");
     v=validateRaw8Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
         v.time_domain=="unknown-or-mixed-image-clocks","unknown preserved without fabricated sync");
-    std::cout<<"PASS RAW8 text/legacy, common-trigger and unknown timing, counts/timeline, grayscale, full CRC, drops, cancellation, corruption/bounds\n";
+    for(unsigned stride:{2u,4u})for(bool drops:{false,true}){
+      info=raw_fixture::create(root,drops,drops,4,false,stride);data=loadRaw8Dataset(root);
+      check(data.cameras[3].size()==3&&data.cameras[3][1].frame_id-data.cameras[3][0].frame_id==stride,
+            "sampled source frame IDs lost");
+      check(data.cameras[3][1].timestamp_us-data.cameras[3][0].timestamp_us==500000ULL*stride,
+            "sampled source time changed");
+      check(data.dropped[0]==(drops?3u:0u),"intentional sampling reported as loss");
+      v=validateRaw8Dataset(root,{},{});check(v.valid,"sampled replay validation failed");
+      auto malformed=info;auto p=malformed.find("camera0_sampled_out=");
+      malformed.replace(p,malformed.find('\n',p)-p,"camera0_sampled_out=999");
+      raw_fixture::save(root/"dataset.info",malformed);check(rejects(),"bad sampling count accepted");
+      malformed=info;p=malformed.find("source_milli_fps=2000");
+      malformed.replace(p,21,"source_milli_fps=1000");
+      raw_fixture::save(root/"dataset.info",malformed);check(rejects(),"unqualified source cadence accepted");
+    }
+    std::cout<<"PASS RAW8 text/legacy, common-trigger and unknown timing, counts/timeline, grayscale, full CRC, drops, sampling, cancellation, corruption/bounds\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

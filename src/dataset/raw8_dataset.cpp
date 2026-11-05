@@ -151,8 +151,14 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
             "Invalid transfer accounting");
     first_transfer=uint32_t(number(fields,"first_transfer"));
   }
-  const auto fps = number(fields, "fps_per_camera");
+  const double fps = fields.at("fps_per_camera")=="0.5" ? 0.5 : double(number(fields, "fps_per_camera"));
   require(fps > 0 && fps <= 120, "Invalid recording rate");
+  const uint64_t stride=fields.count("frame_stride")?number(fields,"frame_stride"):1;
+  require(stride==1||stride==2||stride==4,"Invalid recording stride");
+  if(stride!=1||fps==0.5)require(accounted&&fields.at("sampling")=="source_cadence"&&
+      number(fields,"source_fps_per_camera")==2&&number(fields,"source_milli_fps")==2000&&
+      number(fields,"source_clock_hz")==25000000&&number(fields,"source_period_cycles")==12500000&&
+      fps==2.0/stride,"Invalid source sampling metadata");
   for (unsigned c = 0; c < 4; ++c) {
     checkCancelled(cancelled);
     const auto prefix = "camera" + std::to_string(c);
@@ -168,6 +174,9 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
     const auto tail = accounted ? number(fields, prefix + "_dropped_tail") : 0;
     const auto first = accounted ? number(fields, prefix + "_first_received_frame") : 0;
     const auto final = accounted ? number(fields, prefix + "_last_received_frame") : 0;
+    const uint64_t scheduled=received?1+(received-1)/stride:0;
+    if(stride!=1)require(number(fields,prefix+"_sampled_out")==received-scheduled&&dropped<=scheduled,
+        "Invalid sampling accounting for "+prefix);
     if (accounted) require((received > 0 || (allow_absent&&!size&&!dropped&&!tail&&!first&&!final)) && received <= UINT32_MAX && dropped <= received &&
         tail <= dropped && first <= UINT32_MAX && final <= UINT32_MAX &&
         (!received||uint32_t(first + received - 1) == final), "Invalid drop accounting for " + prefix);
@@ -204,8 +213,8 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
               "Unaccounted recording gap");
       require(entry.byte_offset == offset && entry.byte_size > prism::capture::kRaw8HeaderBytes && entry.byte_size <= prism::capture::kProfileImageLimit &&
               offset <= size && entry.byte_size <= size - offset, "Invalid frame range for " + prefix);
-      require(entries.empty() ? (!accounted || entry.frame_id == uint32_t(first + entry.dropped_before)) :
-              (entry.frame_id == uint32_t(uint64_t(entries.back().frame_id)+1+entry.dropped_before) &&
+      require(entries.empty() ? (!accounted || entry.frame_id == uint32_t(first + stride*entry.dropped_before)) :
+              (entry.frame_id == uint32_t(uint64_t(entries.back().frame_id)+stride*(1+entry.dropped_before)) &&
                (!entry.timing_mode || entry.timing_mode!=entries.back().timing_mode ||
                 entry.timestamp_us > entries.back().timestamp_us)), "Frame sequence/timestamp mismatch for " + prefix);
       // Opening reads fixed-size headers; display and the cancellable Validate
@@ -229,8 +238,9 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
     }
     require(index.error() == QFile::NoError && offset == size && number(fields, prefix + "_images") == entries.size(),
             "Camera file/count mismatch for " + prefix);
-    if (accounted) require(entries.size() == received - dropped && beforeTotal + tail == dropped &&
-        (entries.empty() || uint32_t(uint64_t(entries.back().frame_id) + tail) == final), "Manifest drop mismatch");
+    if (accounted) require(entries.size() == scheduled - dropped && beforeTotal + tail == dropped &&
+        (entries.empty() || uint32_t(uint64_t(entries.back().frame_id) + stride*tail) ==
+         uint32_t(first+stride*(scheduled-1))), "Manifest drop mismatch");
     else require(!entries.empty(), "Missing camera frames");
     result.bytes += size; result.dropped[c] = dropped; totalDrops += dropped;
   }
