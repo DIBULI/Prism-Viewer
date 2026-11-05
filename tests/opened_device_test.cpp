@@ -11,8 +11,10 @@ static void check(bool value, const char* message) {
 struct FakeClient {
   unsigned configuration=0, native=0, legacy=0, gnss=0, network=0;
   bool forbid_product=true, reject_native=false;
-  prism::HelloInfo hello() { prism::HelloInfo h; h.version="1.2.3"; return h; }
-  prism::DeviceVersions deviceVersions() { prism::DeviceVersions v; v.agent="1.2.3"; return v; }
+  bool unsupported_native=false,unsupported_optional=false;
+  bool cameraControlPending()const{return false;}
+  prism::HelloInfo hello() { prism::HelloInfo h; h.version="1.2.1"; return h; }
+  prism::DeviceVersions deviceVersions() { prism::DeviceVersions v; v.agent="1.2.1"; return v; }
   std::wstring serialNumber() { return L"legacy-test-serial"; }
   std::wstring path() { return L"test-path"; }
   void product() { check(!forbid_product,"maintenance open sent a product command"); }
@@ -20,12 +22,13 @@ struct FakeClient {
   prism::CameraControlIdleStatus cameraControlIdle() {
     product(); ++native;
     if(reject_native) throw std::runtime_error("unconfirmed native state");
+    if(unsupported_native)throw std::runtime_error("agent error: matched 415RSV0 control descriptor v4 required");
     return {};
   }
   prism::ExposureConfiguration cameraExposure() { product(); ++legacy; return {}; }
   prism::ExposureLimits cameraExposureLimits() { product(); ++legacy; return {}; }
-  prism::GnssTimingStatus gnssTimingStatus() { product(); ++gnss; return {}; }
-  prism::NetworkInfo networkInfo() { product(); ++network; return {}; }
+  prism::GnssTimingStatus gnssTimingStatus() { product(); ++gnss;if(unsupported_optional)throw std::runtime_error("agent error: unknown message type"); return {}; }
+  prism::NetworkInfo networkInfo() { product(); ++network;if(unsupported_optional)throw std::runtime_error("agent error: unknown message type"); return {}; }
 };
 static prism::Frame frame(unsigned version,unsigned model=0) {
   prism::Frame f; f.type=prism::FrameType::DeviceInfoResponse;
@@ -51,7 +54,7 @@ int main() {
         return parseCompatibleDeviceInfo(frame(version));
       });
       check(opened.maintenance_only,"legacy model was guessed");
-      check(opened.serial_number==L"legacy-test-serial" && opened.versions.agent=="1.2.3",
+      check(opened.serial_number==L"legacy-test-serial" && opened.versions.agent=="1.2.1",
             "upgrade identity/version lost");
       check(!client.configuration&&!client.native&&!client.legacy&&!client.gnss&&!client.network,
             "maintenance queried capture initialization");
@@ -66,6 +69,11 @@ int main() {
       catch(const std::invalid_argument&) { rejected=true; }
       check(rejected,"unknown exposure admitted");
     }
+    for(unsigned version:{3u,4u}){
+      FakeClient old;old.forbid_product=false;old.unsupported_optional=true;
+      const auto opened=readOpenedDeviceSnapshot(old,[&](auto&){return parseCompatibleDeviceInfo(frame(version));},prism::DeviceModel::Prism413GSV0);
+      check(!opened.maintenance_only&&opened.legacy_model_selected&&old.legacy==2&&!old.native,"SDK1.2.1 legacy model selection failed");
+    }
     for(unsigned model:{1u,2u,3u}) {
       FakeClient client; client.forbid_product=false;
       auto opened=readOpenedDeviceSnapshot(client,[&](auto&) {
@@ -75,6 +83,12 @@ int main() {
       check(!opened.maintenance_only&&client.configuration==1&&client.network==1,"known open changed");
       check(client.native==(native?1u:0u)&&client.legacy==(native?0u:2u),"product exposure changed");
       check(client.gnss==(model==1?1u:0u),"product GNSS changed");
+    }
+    for(unsigned model:{1u,2u}){
+      FakeClient old;old.forbid_product=false;old.unsupported_native=old.unsupported_optional=true;
+      const auto opened=readOpenedDeviceSnapshot(old,[&](auto&){return parseCompatibleDeviceInfo(frame(5,model));});
+      check(!opened.maintenance_only&&!opened.native_control_idle&&!opened.gnss_timing,"old optional feature rejected connection");
+      check(old.legacy==(model==1?2u:0u),"415 native failure invoked legacy control");
     }
     // Corrupt/future packets must still fail. This is not a blanket error bypass.
     for(unsigned fault=0;fault<3;++fault) {

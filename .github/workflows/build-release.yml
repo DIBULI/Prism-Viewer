@@ -170,6 +170,8 @@ jobs:
             "Qt6Gui.dll",
             "Qt6Widgets.dll",
             "Qt6Sql.dll",
+            "Qt6Network.dll",
+            "tls\qschannelbackend.dll",
             "platforms\qwindows.dll",
             "imageformats\qjpeg.dll",
             "sqldrivers\qsqlite.dll",
@@ -195,6 +197,9 @@ jobs:
 
           Compress-Archive -Path $package `
             -DestinationPath "Prism-Viewer-1.3.0-windows-x64.zip"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          & (Join-Path $package 'prism-viewer.exe') --tls-self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
@@ -355,6 +360,16 @@ jobs:
             mkdir -p "$package/plugins/$(dirname "$relative")"
             cp -L "$qt_plugin_source" "$package/plugins/$relative"
           done
+
+          # Qt5 loads its HTTPS backend through dlopen, outside the ELF link graph.
+          # Bundle the Ubuntu20.04 ABI so updates also work on newer distributions.
+          for name in libssl.so.1.1 libcrypto.so.1.1; do
+            source="$(ldconfig -p | awk -v name="$name" '$1==name && !found {print $NF;found=1}')"
+            test -f "$source"
+            cp -L "$source" "$package/lib/$name"
+          done
+          mkdir -p "$package/share/licenses/OpenSSL"
+          cp /usr/share/doc/libssl1.1/copyright "$package/share/licenses/OpenSSL/copyright"
 
           if [ "$LINUX_SDK_LINKAGE" = static ]; then
             # The ARM64 static SDK resolves OpenSSL in the Ubuntu 20.04 build
@@ -575,6 +590,7 @@ jobs:
             "ubuntu:$UBUNTU_VERSION" /bin/bash -euc '
             cd /opt/prism-viewer
             sha256sum --check SHA256SUMS.txt
+            ./bin/prism-viewer --tls-self-test
             while IFS= read -r relative; do
               output="$(ldd "/opt/prism-viewer/$relative" 2>&1)"
               printf "\n[%s]\n%s\n" "$relative" "$output"
@@ -788,6 +804,7 @@ jobs:
 
           codesign --force --deep --sign - "$app"
           scripts/verify_macos_bundle.sh "$app"
+          QT_QPA_PLATFORM=offscreen "$executable" --tls-self-test
           QT_QPA_PLATFORM=offscreen \
             "$executable" --imu-only-recorder-self-test \
             "$RUNNER_TEMP/macos-package-smoke"
@@ -834,6 +851,7 @@ jobs:
             test -s "release-assets/$package"
           done
           (cd release-assets && sha256sum *.zip *.tar.gz > SHA256SUMS.txt)
+          python3 scripts/make_update_manifest.py release-assets
           if gh release view "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* \

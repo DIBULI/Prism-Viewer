@@ -38,6 +38,11 @@ OpenedDevice DeviceSession::readOpenedDevice() {
   }
 }
 
+OpenedDevice DeviceSession::selectLegacyModel(prism::DeviceModel model) {
+  if(!client_.isOpen())throw std::logic_error("device is not open");
+  return readOpenedDeviceSnapshot(client_,[](auto& client){return readDeviceInfo(client);},model);
+}
+
 void DeviceSession::close() noexcept {
   try {
     client_.closeDevice();

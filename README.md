@@ -8,8 +8,23 @@ number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 DeviceInfo selects the product automatically; no Linux-only environment switch
 is required. 413GSV0 keeps its existing MJPEG capture and exposure controls. 415RSV0
 requests four-camera external-trigger 2 FPS native RAW8 from matching firmware.
-21315V0 uses its mixed-profile capture entry. Unknown models fail before START.
+21315V0 uses its mixed-profile capture entry. Legacy DeviceInfo v3/v4 devices,
+including the SDK 1.2.1 protocol generation, can use an explicitly selected
+hardware model for the current connection. Viewer never guesses it. Optional
+features explicitly rejected by old firmware are disabled; timeouts, malformed
+responses and incompatible capture formats remain errors. This is device-protocol
+compatibility: keep the bundled SDK 1.3.0 runtime, rather than replacing its DLLs
+with SDK 1.2.1 files. Old USB protocols do not imply PRISM-NET/4 network support.
 A missing camera does not stop other camera previews or IMU callbacks.
+
+**Viewer Update** checks the official GitHub stable release, including newer
+builds with the same 1.3.0 version. **Download and update** verifies the complete
+platform package, then exits, replaces and restarts Viewer. Stop capture/recording
+and close the device connection before installation. The previous package is
+retained beside the installation; failure to start the new application restores
+it. Writable portable-package/app locations and 9 GiB free space are required.
+This updates Viewer and its bundled SDK only, never device firmware. Older Viewer
+builds without this button need one manual package replacement to gain online updates.
 
 415RSV0 USB data is preserved as full RAW8 for recording and zoom. Ordinary live
 tiles are downsampled in Viewer; bounded per-camera preview replacement does not

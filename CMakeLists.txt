@@ -7,6 +7,16 @@ endif()
 
 project(prism_viewer VERSION 1.3.0 LANGUAGES CXX)
 
+# Same-version maintenance releases still need an ordered, reproducible identity.
+execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE PRISM_VIEWER_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+execute_process(COMMAND git show -s --format=%ct HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE PRISM_VIEWER_BUILD_EPOCH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT PRISM_VIEWER_BUILD_EPOCH MATCHES "^[0-9]+$")
+  set(PRISM_VIEWER_BUILD_EPOCH 0)
+  set(PRISM_VIEWER_REVISION "source-build")
+endif()
+
 # Viewer and its pinned binary SDK are versioned independently.
 set(PRISM_USB_SDK_VERSION "1.3.0")
 
@@ -228,6 +238,9 @@ add_executable(prism-viewer
   src/ui/lidar_point_cloud_widget.cpp
   src/ui/lidar_power_panel.cpp
   src/ui/main_window.cpp
+  src/ui/viewer_update_dialog.cpp
+  src/update/release.cpp
+  src/update/install.cpp
   src/ui/preview_image_decoder.cpp
   src/ui/rk_dataset_dialog.cpp
   src/ui/wifi_hotspot_panel.cpp
@@ -321,7 +334,9 @@ function(prism_copy_sdk_runtime target)
 endfunction()
 prism_copy_sdk_runtime(prism-viewer)
 target_compile_definitions(prism-viewer PRIVATE
-  PRISM_VIEWER_VERSION="${PROJECT_VERSION}")
+  PRISM_VIEWER_VERSION="${PROJECT_VERSION}"
+  PRISM_VIEWER_REVISION="${PRISM_VIEWER_REVISION}"
+  PRISM_VIEWER_BUILD_EPOCH=${PRISM_VIEWER_BUILD_EPOCH})
 
 if(APPLE)
   set_target_properties(prism-viewer PROPERTIES
@@ -446,6 +461,8 @@ if(BUILD_TESTING)
   set_tests_properties(imu-trace-view PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   add_test(NAME viewer-version COMMAND prism-viewer --version)
+  add_test(NAME viewer-https-runtime COMMAND prism-viewer --tls-self-test)
+  set_tests_properties(viewer-https-runtime PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   set_tests_properties(viewer-version PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     PASS_REGULAR_EXPRESSION "Prism Viewer ${PROJECT_VERSION}.*Prism SDK ${PRISM_USB_SDK_VERSION}")
@@ -594,6 +611,30 @@ if(BUILD_TESTING)
       rtk-corrections-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME rtk-corrections COMMAND rtk-corrections-test)
+
+  add_executable(viewer-update-test tests/viewer_update_test.cpp src/update/release.cpp)
+  target_include_directories(viewer-update-test PRIVATE src)
+  target_compile_features(viewer-update-test PRIVATE cxx_std_17)
+  target_link_libraries(viewer-update-test PRIVATE ${QT_PACKAGE}::Core)
+  add_test(NAME viewer-update COMMAND viewer-update-test)
+  add_executable(viewer-update-download-test tests/viewer_update_download_test.cpp
+    src/update/release.cpp src/update/install.cpp src/ui/viewer_update_dialog.cpp src/common/ui_text.cpp)
+  target_include_directories(viewer-update-download-test PRIVATE src)
+  target_compile_features(viewer-update-download-test PRIVATE cxx_std_17)
+  target_compile_definitions(viewer-update-download-test PRIVATE PRISM_VIEWER_VERSION="1.3.0"
+    PRISM_VIEWER_REVISION="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" PRISM_VIEWER_BUILD_EPOCH=100)
+  target_link_libraries(viewer-update-download-test PRIVATE ${QT_PACKAGE}::Widgets ${QT_PACKAGE}::Network)
+  add_test(NAME viewer-update-download COMMAND viewer-update-download-test)
+  set_tests_properties(viewer-update-download PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+  add_executable(update-process-fixture tests/update_process_fixture.cpp)
+  target_compile_features(update-process-fixture PRIVATE cxx_std_17)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME viewer-update-install COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_install_test.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/resources" $<TARGET_FILE:update-process-fixture>)
+    set_tests_properties(viewer-update-install PROPERTIES TIMEOUT 55)
+  endif()
 
   add_executable(device-info-compat-test
     src/communication/device_info_compat.cpp

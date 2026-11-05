@@ -214,7 +214,8 @@ DeviceInfoStatus parseCompatibleDeviceInfo(const prism::Frame& frame) {
 }
 
 DeviceInfoStatus readDeviceInfo(prism_runtime::Client& client) {
-#ifdef _WIN32
+  // The SDK negotiates v5 and retries a legacy request only on error 43.
+  // Use it on every platform; direct command(v5) skipped that negotiation.
   DeviceInfoStatus status;
   status.info = client.deviceInfo();
   status.time_sync_provider = status.info.info_version >=
@@ -226,13 +227,6 @@ DeviceInfoStatus readDeviceInfo(prism_runtime::Client& client) {
                                         ? TimeSyncProvider::LegacyUnknown
                                         : TimeSyncProvider::SensorBoardInternal;
   return status;
-#else
-  DeviceInfoStatus status = parseCompatibleDeviceInfo(
-      client.command(prism::FrameType::DeviceInfo, {5, 0}, 3000u));
-  status.info.path = client.path();
-  status.info.serial_number = client.serialNumber();
-  return status;
-#endif
 }
 
 const char* timeSyncProviderName(TimeSyncProvider provider) {

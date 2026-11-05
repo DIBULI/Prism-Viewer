@@ -1,4 +1,9 @@
 <RCC>
+  <qresource prefix="/update">
+    <file alias="install.sh">update-install.sh</file>
+    <file alias="install.ps1">update-install.ps1</file>
+    <file alias="extract.ps1">update-extract.ps1</file>
+  </qresource>
   <qresource prefix="/branding">
     <file alias="prism-mark.png">../branding/prism-mark-256.png</file>
   </qresource>

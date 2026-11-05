@@ -36,6 +36,7 @@
 #include "ui/lidar_point_cloud_widget.hpp"
 #include "ui/lidar_power_panel.hpp"
 #include "ui/main_window.hpp"
+#include "ui/viewer_update_dialog.hpp"
 #include "ui/preview_image_decoder.hpp"
 #include "ui/raw_preview.hpp"
 #include "communication/capture_credits.hpp"
@@ -58,6 +59,7 @@
 #include <QtCore/QStringList>
 #include <QtCore/QTimer>
 #include <QtCore/QTemporaryDir>
+#include <QtNetwork/QSslSocket>
 #include "ui/imu_trace_view.hpp"
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtGui/QAction>
@@ -77,6 +79,7 @@
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QInputDialog>
 #include <QtWidgets/QButtonGroup>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -2625,6 +2628,18 @@ class MainWindow : public QMainWindow {
     actions->addWidget(host_time_sync_button_);
     actions->addWidget(system_upgrade_button_);
     actions->addWidget(log_button_);
+    auto* viewer_update=new QPushButton(uiText("Viewer Update", "Viewer 更新"),header_card);
+    actions->addWidget(viewer_update);
+    connect(viewer_update,&QPushButton::clicked,this,[this]{
+      if(viewer_update_dialog_){viewer_update_dialog_->raise();viewer_update_dialog_->activateWindow();return;}
+      auto* dialog=new prism_viewer::ui::ViewerUpdateDialog(this,[this]{
+        return !client_.isOpen()&&!worker_running_&&!dataset_recorder_.isActive()&&!rawRecordingActive()&&
+          !upgrade_running_&&!wifi_operation_running_&&!time_sync_running_&&!camera_exposure_operation_running_&&
+          !camera_encoding_operation_running_&&!lidar_network_operation_running_;
+      });
+      viewer_update_dialog_=dialog;
+      dialog->setAttribute(Qt::WA_DeleteOnClose);dialog->show();
+    });
     actions->addWidget(language_selector_);
     header_layout->addLayout(actions);
     root->addWidget(header_card);
@@ -5276,7 +5291,7 @@ class MainWindow : public QMainWindow {
   }
 
   void startNativeCameraControlOperation(const prism_viewer::NativeControlRequest& native) {
-    if(!client_.isOpen() || capture_model_.load()!=prism::DeviceModel::Prism415RSV0 ||
+    if(!client_.isOpen() || !native_control_available_ || capture_model_.load()!=prism::DeviceModel::Prism415RSV0 ||
        camera_exposure_operation_running_ || time_sync_running_ || wifi_operation_running_ ||
        camera_encoding_operation_running_ || upgrade_running_) return;
     CameraExposureOperationRequest request;request.native=native;request.apply=native.apply;
@@ -5720,9 +5735,21 @@ class MainWindow : public QMainWindow {
     gnss_reception_query_supported_.store(true, std::memory_order_release);
     appendLog(network_options?QStringLiteral("Opening network device through Prism SDK (Web password authentication)"):QStringLiteral("Opening USB device through prism_usb_sdk"));
     try {
-      const auto opened =
+      auto opened =
           network_options ? device_session_.openNetwork(*network_options) :
           device_session_.open(static_cast<size_t>(selected));
+      if(opened.maintenance_only&&(opened.device_info.info_version==3||opened.device_info.info_version==4)){
+        const QStringList models{uiText("Keep device information only","仅查看设备信息"),"413GSV0 (41M3 / 1M3)","415RSV0","21315V0 (1315)"};
+        bool accepted=false;
+        const auto selected_model=QInputDialog::getItem(this,uiText("Legacy device","旧版设备"),
+            uiText("This firmware does not report its model. Select the actual hardware model for this connection. This does not flash firmware.",
+                   "此固件未上报型号。请按实际硬件选择本次连接使用的型号；不会刷写固件。"),models,0,false,&accepted);
+        const int index=models.indexOf(selected_model);
+        if(accepted&&index>0){
+          opened=device_session_.selectLegacyModel(static_cast<prism::DeviceModel>(index));
+          appendLog(QStringLiteral("Legacy model explicitly selected by user: %1 (not reported by firmware)").arg(selected_model));
+        }
+      }
       maintenance_only_ = opened.maintenance_only;
       capture_model_.store(opened.device_info.device_model);
       const auto& hello = opened.hello;
@@ -5753,8 +5780,8 @@ class MainWindow : public QMainWindow {
         native_camera_control_panel_->clear();
         setStatusAppearance(false);
         status_label_->setText(uiText(
-            "Device connected for upgrade: model not reported. Use Upgrade System, then reopen.",
-            "设备已连接（仅升级模式）：尚未上报型号。请使用“系统升级”，完成后重新打开设备。"));
+            "Device connected; model unconfirmed. Reopen to select a legacy model, or use device information and upgrade functions.",
+            "设备已连接，型号未确认。旧版设备可重新打开并选择型号，也可查看设备信息或使用升级功能。"));
         appendLog(QStringLiteral("Legacy/unknown model: upgrade-only connection; no capture, exposure, GNSS, Wi-Fi or clock initialization"));
         refreshControls();
         return;
@@ -5790,10 +5817,13 @@ class MainWindow : public QMainWindow {
       configureCameraTools(device_info.device_model);
       const bool native_control=device_info.device_model==prism::DeviceModel::Prism415RSV0;
       native_camera_control_panel_->clear();
+      native_control_available_=opened.native_control_idle.has_value();
       if(native_control) {
-        if(!opened.native_control_idle)throw std::runtime_error("Missing native idle row/gain status");
-        native_camera_control_panel_->setAvailability(true,false,false);
-        native_camera_control_panel_->setIdle(*opened.native_control_idle);
+        native_camera_control_panel_->setAvailability(native_control_available_,false,false);
+        if(opened.native_control_idle)native_camera_control_panel_->setIdle(*opened.native_control_idle);
+        else native_camera_control_panel_->setError(uiText(
+            "This firmware does not support live exposure/gain controls. Other supported functions remain available.",
+            "此固件不支持新版曝光/增益控制，其他已支持功能仍可使用。"));
       } else camera_exposure_panel_->setConfiguration(opened.exposure, opened.exposure_limits);
       try {
         updateLidarStatus(client_.lidarStatus());
@@ -7019,7 +7049,7 @@ class MainWindow : public QMainWindow {
           time_syncing || wifi_busy || encoding_busy || upgrading || lidar_network_busy);
     }
     if(native_camera_control_panel_ != nullptr) {
-      native_camera_control_panel_->setAvailability(device_open,running && !upgrading,
+      native_camera_control_panel_->setAvailability(device_open&&native_control_available_,running && !upgrading,
           time_syncing || wifi_busy || encoding_busy || upgrading || lidar_network_busy);
     }
     if (camera_encoding_panel_ != nullptr) {
@@ -10758,6 +10788,8 @@ class MainWindow : public QMainWindow {
   bool latest_device_info_valid_ = false;
   prism_viewer::dataset::RecordingUsbGate recording_usb_gate_;
   bool latest_device_versions_valid_ = false;
+  bool native_control_available_ = false;
+  QPointer<prism_viewer::ui::ViewerUpdateDialog> viewer_update_dialog_;
 };
 
 }  // namespace
@@ -10780,6 +10812,10 @@ int runViewerApplication(int argc, char** argv) {
   app.setOrganizationName(QStringLiteral("Prism"));
   app.setWindowIcon(QIcon(QStringLiteral(":/branding/prism-mark.png")));
   const QStringList command_line = QCoreApplication::arguments();
+  if(command_line.contains(QStringLiteral("--tls-self-test"))){
+    const bool ok=QSslSocket::supportsSsl();
+    std::cout<<"Viewer HTTPS runtime="<<(ok?"PASS":"FAIL")<<" "<<QSslSocket::sslLibraryVersionString().toStdString()<<'\n';return ok?0:42;
+  }
   if (command_line.contains(QStringLiteral("--version"))) {
     std::cout << "Prism Viewer " << PRISM_VIEWER_VERSION
               << " | Prism SDK " << PRISM_REQUIRED_USB_SDK_VERSION << '\n';
@@ -12172,6 +12208,12 @@ int runViewerApplication(int argc, char** argv) {
     return success ? 0 : 12;
   }
   window.show();
+  const int update_ack=command_line.indexOf(QStringLiteral("--viewer-update-ack"));
+  if(update_ack>=0&&update_ack+1<command_line.size()){
+    const auto path=command_line[update_ack+1];const QFileInfo info(path);
+    if(info.fileName()=="started"&&info.dir().dirName().startsWith(".prism-viewer-update-"))
+      QTimer::singleShot(2000,&app,[path]{QFile ack(path);if(ack.open(QIODevice::WriteOnly|QIODevice::NewOnly)){ack.write("started");ack.close();}});
+  }
   return app.exec();
 }
 

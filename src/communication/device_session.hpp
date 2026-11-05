@@ -11,6 +11,7 @@ namespace prism_viewer::communication {
 
 struct OpenedDevice {
   bool maintenance_only = false;
+  bool legacy_model_selected = false;
   prism::HelloInfo hello;
   prism::DeviceVersions versions;
   prism::DeviceInfo device_info;
@@ -33,6 +34,7 @@ class DeviceSession {
   const std::vector<prism::DeviceInfo>& refresh();
   OpenedDevice open(size_t device_index);
   OpenedDevice openNetwork(const prism::NetworkOptions& options);
+  OpenedDevice selectLegacyModel(prism::DeviceModel model);
   void close() noexcept;
 
   bool isOpen() const;

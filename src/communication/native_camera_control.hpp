@@ -1,6 +1,7 @@
 #pragma once
 #include "prism/usb/camera_control.hpp"
 #include "communication/profile_capture.hpp"
+#include "communication/optional_feature.hpp"
 #include <chrono>
 #include <optional>
 #include <stdexcept>
@@ -45,8 +46,13 @@ class NativeCameraControl {
 };
 template<class Client,class Opened> void readProductExposure(Client& client,Opened& opened) {
   (void)captureProduct(opened.device_info.device_model);
-  if(opened.device_info.device_model==prism::DeviceModel::Prism415RSV0)
-    opened.native_control_idle=client.cameraControlIdle();
+  if(opened.device_info.device_model==prism::DeviceModel::Prism415RSV0){
+    try{opened.native_control_idle=client.cameraControlIdle();}
+    catch(const std::exception& error){
+      if(!unsupportedNativeControl(error)||client.cameraControlPending())throw;
+      opened.native_control_idle.reset();
+    }
+  }
   else {
     opened.exposure=client.cameraExposure();
     opened.exposure_limits=client.cameraExposureLimits();
