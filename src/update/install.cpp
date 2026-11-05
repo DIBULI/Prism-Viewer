@@ -101,9 +101,9 @@ void Installer::extracted(){
   need(!QFileInfo::exists(backup),"Backup path already exists");
   QString program;QStringList arguments;
 #if defined(Q_OS_WIN)
-  program=powershell();arguments={"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",script(work_,"install.ps1")};
+  program=powershell();arguments=QStringList{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",script(work_,"install.ps1")};
 #else
-  program="/bin/sh";arguments={script(work_,"install.sh")};
+  program="/bin/sh";arguments=QStringList{script(work_,"install.sh")};
 #endif
   arguments<<QString::number(QCoreApplication::applicationPid())<<target_<<staged_<<backup<<relative_<<work_;
   need(QProcess::startDetached(program,arguments,work_),"Cannot start update helper");
