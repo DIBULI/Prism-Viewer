@@ -283,6 +283,10 @@ else()
   find_path(PRISM_ZSTD_INCLUDE zstd.h REQUIRED)
   find_library(PRISM_ZSTD_LIBRARY NAMES zstd zstd_static REQUIRED)
 endif()
+# Profile decoding is inline in the public SDK headers. Propagate its Zstd
+# dependency to every consumer, including tests and bundled Windows builds.
+target_include_directories(prism-viewer-sdk INTERFACE "${PRISM_ZSTD_INCLUDE}")
+target_link_libraries(prism-viewer-sdk INTERFACE "${PRISM_ZSTD_LIBRARY}")
 target_include_directories(prism-viewer PRIVATE "${PRISM_ZSTD_INCLUDE}")
 target_link_libraries(prism-viewer PRIVATE "${PRISM_ZSTD_LIBRARY}")
 

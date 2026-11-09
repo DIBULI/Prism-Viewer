@@ -5738,18 +5738,8 @@ class MainWindow : public QMainWindow {
       auto opened =
           network_options ? device_session_.openNetwork(*network_options) :
           device_session_.open(static_cast<size_t>(selected));
-      if(opened.maintenance_only&&(opened.device_info.info_version==3||opened.device_info.info_version==4)){
-        const QStringList models{uiText("Keep device information only","仅查看设备信息"),"413GSV0 (41M3 / 1M3)","415RSV0","21315V0 (1315)"};
-        bool accepted=false;
-        const auto selected_model=QInputDialog::getItem(this,uiText("Legacy device","旧版设备"),
-            uiText("This firmware does not report its model. Select the actual hardware model for this connection. This does not flash firmware.",
-                   "此固件未上报型号。请按实际硬件选择本次连接使用的型号；不会刷写固件。"),models,0,false,&accepted);
-        const int index=models.indexOf(selected_model);
-        if(accepted&&index>0){
-          opened=device_session_.selectLegacyModel(static_cast<prism::DeviceModel>(index));
-          appendLog(QStringLiteral("Legacy model explicitly selected by user: %1 (not reported by firmware)").arg(selected_model));
-        }
-      }
+      if(opened.legacy_model_selected)
+        appendLog(QStringLiteral("Device did not report a model; using the 413GSV0 default"));
       maintenance_only_ = opened.maintenance_only;
       capture_model_.store(opened.device_info.device_model);
       const auto& hello = opened.hello;
@@ -7507,7 +7497,10 @@ class MainWindow : public QMainWindow {
   void updateDeviceInfo(const prism::DeviceInfo& info,
                         TimeSyncProvider time_sync_provider) {
     const auto observed_at = std::chrono::steady_clock::now();
-    post([this, info, time_sync_provider, observed_at]() {
+    auto effective_info = info;
+    if (effective_info.device_model == prism::DeviceModel::Unknown)
+      effective_info.device_model = prism::DeviceModel::Prism413GSV0;
+    post([this, info = effective_info, time_sync_provider, observed_at]() {
       recording_usb_gate_.observe(info.usb_speed, observed_at);
       enforceRecordingUsbLink();
       latest_device_info_ = info;

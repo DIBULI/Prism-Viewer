@@ -46,28 +46,19 @@ static prism::Frame frame(unsigned version,unsigned model=0) {
 }
 int main() {
   try {
-    // Feed real legacy v3/v4 and unknown-model v5 packets through the real
-    // compatibility parser and the same open initializer used by DeviceSession.
+    // Valid absent identity defaults to 413, including v5 Unknown; malformed
+    // or unsupported identities are still rejected by the parser below.
     for(unsigned version:{3u,4u,5u}) {
-      FakeClient client;
+      FakeClient client; client.forbid_product=false;
       const auto opened=readOpenedDeviceSnapshot(client,[&](auto&) {
         return parseCompatibleDeviceInfo(frame(version));
       });
-      check(opened.maintenance_only,"legacy model was guessed");
-      check(opened.serial_number==L"legacy-test-serial" && opened.versions.agent=="1.2.1",
-            "upgrade identity/version lost");
-      check(!client.configuration&&!client.native&&!client.legacy&&!client.gnss&&!client.network,
-            "maintenance queried capture initialization");
-      check(!opened.native_control_idle&&!opened.gnss_timing,"invented optional status");
-      bool rejected=false;
-      try { (void)prism_viewer::captureProduct(opened.device_info.device_model); }
-      catch(const std::invalid_argument&) { rejected=true; }
-      check(rejected,"unknown capture admitted");
-      rejected=false;
-      auto copy=opened;
-      try { prism_viewer::readProductExposure(client,copy); }
-      catch(const std::invalid_argument&) { rejected=true; }
-      check(rejected,"unknown exposure admitted");
+      check(!opened.maintenance_only && opened.legacy_model_selected,
+            "missing model did not use product default");
+      check(opened.device_info.device_model==prism::DeviceModel::Prism413GSV0,
+            "missing model default is not 413");
+      check(client.configuration==1 && client.legacy==2 && client.native==0,
+            "default 413 initialization changed");
     }
     for(unsigned version:{3u,4u}){
       FakeClient old;old.forbid_product=false;old.unsupported_optional=true;
@@ -107,6 +98,6 @@ int main() {
     try { (void)readOpenedDeviceSnapshot(client,[&](auto&) {return parseCompatibleDeviceInfo(frame(5,2));}); }
     catch(const std::runtime_error&) {rejected=true;}
     check(rejected&&client.native==1&&!client.legacy,"native failure bypassed/retried");
-    std::cout<<"PASS legacy upgrade-only open; known routing and malformed/native-error protection\n";
+    std::cout<<"PASS legacy default-413 open; known routing and malformed/native-error protection\n";
   } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

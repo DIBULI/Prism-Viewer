@@ -4,9 +4,8 @@
 #include "communication/profile_capture.hpp"
 
 namespace prism_viewer::communication {
-// Opening a valid legacy DeviceInfo response is not admission to capture.
-// Old Agents may omit the model; leave the transport available to the existing
-// upgrade API without guessing a product or issuing product-specific commands.
+// Older firmware omits model identity. The product default for a valid response
+// without a model is 413GSV0; an explicitly reported model is never overridden.
 template<class Client, class ReadInfo>
 OpenedDevice readOpenedDeviceSnapshot(Client& client, ReadInfo read_info,
     prism::DeviceModel legacy_model=prism::DeviceModel::Unknown) {
@@ -24,6 +23,10 @@ OpenedDevice readOpenedDeviceSnapshot(Client& client, ReadInfo read_info,
         opened.device_info.device_model!=prism::DeviceModel::Unknown||!supportsCapture(legacy_model))
       throw std::runtime_error("Model selection is only available for legacy DeviceInfo v3/v4");
     opened.device_info.device_model=legacy_model;opened.legacy_model_selected=true;
+  }
+  if (opened.device_info.device_model == prism::DeviceModel::Unknown) {
+    opened.device_info.device_model = prism::DeviceModel::Prism413GSV0;
+    opened.legacy_model_selected = true;
   }
   opened.maintenance_only = !supportsCapture(opened.device_info.device_model);
   if (opened.maintenance_only) return opened;
