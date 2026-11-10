@@ -12,7 +12,7 @@ struct Release {
 };
 QString platform();
 bool trustedUrl(const QUrl& url);
-QUrl manifestUrl(const QByteArray& json);
+QUrl manifestUrl();
 Release parseManifest(const QByteArray& json, const QString& platform);
 bool newer(const Release&, const QString& version, qint64 epoch, const QString& revision);
 } // namespace prism_viewer::update

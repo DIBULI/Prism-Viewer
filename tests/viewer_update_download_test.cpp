@@ -27,9 +27,9 @@ void check(bool v){if(!v)throw std::runtime_error("download assertion failed");}
 class Reply:public QNetworkReply {
   QByteArray bytes_;qint64 pos_=0;
  public:
-  Reply(const QNetworkRequest& request,QByteArray bytes,bool hold,bool tls,QObject* parent):QNetworkReply(parent),bytes_(std::move(bytes)){
+  Reply(const QNetworkRequest& request,QByteArray bytes,bool hold,bool tls,bool redirect,QObject* parent):QNetworkReply(parent),bytes_(std::move(bytes)){
     setRequest(request);setUrl(request.url());setAttribute(QNetworkRequest::HttpStatusCodeAttribute,200);open(QIODevice::ReadOnly);
-    QTimer::singleShot(0,this,[this,hold,tls]{if(tls)setError(SslHandshakeFailedError,"TLS rejected");else emit readyRead();if(!hold){setFinished(true);emit finished();}});
+    QTimer::singleShot(0,this,[this,hold,tls,redirect]{if(redirect){emit redirected(QUrl("https://github.com/DIBULI/Prism-Viewer/releases/download/v1.3.0/package.zip"));return;}if(tls)setError(SslHandshakeFailedError,"TLS rejected");else emit readyRead();if(!hold){setFinished(true);emit finished();}});
   }
   void abort()override{setError(OperationCanceledError,"cancelled");setFinished(true);emit finished();}
   qint64 bytesAvailable()const override{return bytes_.size()-pos_+QIODevice::bytesAvailable();}
@@ -42,21 +42,20 @@ class Network:public QNetworkAccessManager {
  protected:
   QNetworkReply* createRequest(Operation,const QNetworkRequest& request,QIODevice*)override{
     const auto url=request.url();QByteArray bytes;bool hold=false;
-    if(url.host()=="api.github.com"){
-      QJsonObject a{{"name","viewer-update.json"},{"size",100},{"state","uploaded"},{"browser_download_url","https://github.com/DIBULI/Prism-Viewer/releases/download/v1.3.0/viewer-update.json"}};
-      bytes=QJsonDocument(QJsonObject{{"draft",false},{"prerelease",false},{"tag_name","v1.3.0"},{"assets",QJsonArray{a}}}).toJson();
-    }else if(url.path().endsWith("viewer-update.json")){
+    check(url.host()=="dibuli.com"&&prism_viewer::update::trustedUrl(url));
+    if(url==prism_viewer::update::manifestUrl()){
+      check(request.attribute(QNetworkRequest::CacheLoadControlAttribute)==QNetworkRequest::AlwaysNetwork);
       const auto target=prism_viewer::update::platform();
       QJsonObject asset{{"name","Prism-Viewer-1.3.0-"+target+(target.startsWith("linux-")?".tar.gz":".zip")},{"size",package.size()},
           {"sha256",QString::fromLatin1(QCryptographicHash::hash(package,QCryptographicHash::Sha256).toHex())}};
       bytes=QJsonDocument(QJsonObject{{"schema",1},{"version","1.3.0"},{"revision",QString(40,'b')},{"build_epoch",500},{"platforms",QJsonObject{{target,asset}}}}).toJson();
     }else{bytes=fault=="crc"?QByteArray(package.size(),'x'):package;if(fault=="short")bytes.chop(1);if(fault=="long")bytes+='x';hold=fault=="cancel"||fault=="timeout";}
-    return new Reply(request,bytes,hold,fault=="tls",this);
+    return new Reply(request,bytes,hold,fault=="tls",fault=="redirect",this);
   }
 };
 template<class F>void until(F f){QElapsedTimer t;t.start();while(!f()){check(t.elapsed()<2000);QCoreApplication::processEvents();}}
 int main(int argc,char** argv){QApplication app(argc,argv);try{
-  for(const auto& fault:QStringList{"","crc","short","long","cancel","timeout","tls"}){
+  for(const auto& fault:QStringList{"","crc","short","long","cancel","timeout","tls","redirect"}){
     QTemporaryDir temp;check(temp.isValid());const auto path=temp.path()+"/update.zip";
     {QFile old(path);check(old.open(QIODevice::WriteOnly));old.write("old file");}
     Network network;ViewerUpdateDialog dialog(nullptr,[]{return false;},&network);

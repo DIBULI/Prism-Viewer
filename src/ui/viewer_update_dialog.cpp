@@ -20,8 +20,8 @@ ViewerUpdateDialog::ViewerUpdateDialog(QWidget* parent,std::function<bool()> can
   auto* layout=new QVBoxLayout(this);
   layout->addWidget(new QLabel(uiText("Installed: %1 (%2)","当前版本：%1（%2）")
       .arg(QStringLiteral(PRISM_VIEWER_VERSION),QStringLiteral(PRISM_VIEWER_REVISION).left(8)),this));
-  status_=new QLabel(uiText("Checks the official GitHub release. Device firmware is not changed.",
-      "检查 GitHub 官方发布；不会更新设备固件。"),this);status_->setWordWrap(true);layout->addWidget(status_);
+  status_=new QLabel(uiText("Checks and downloads updates from dibuli.com.",
+      "通过官网 dibuli.com 检查和下载更新。"),this);status_->setWordWrap(true);layout->addWidget(status_);
   notes_=new QPlainTextEdit(this);notes_->setReadOnly(true);layout->addWidget(notes_);
   progress_=new QProgressBar(this);progress_->hide();layout->addWidget(progress_);
   auto* buttons=new QHBoxLayout;
@@ -47,7 +47,7 @@ void ViewerUpdateDialog::fail(const QString& message){stop();download_->setEnabl
 void ViewerUpdateDialog::check(){
   stop();download_->setEnabled(false);open_->setEnabled(false);notes_->clear();
   status_->setText(uiText("Checking official release…","正在检查官方发布…"));
-  request(QUrl("https://api.github.com/repos/DIBULI/Prism-Viewer/releases/latest"),Phase::Release);
+  request(update::manifestUrl(),Phase::Manifest);
 }
 void ViewerUpdateDialog::download(){
   if(reply_||release_.url.isEmpty())return;
@@ -81,7 +81,8 @@ void ViewerUpdateDialog::request(const QUrl& url,Phase phase){
   if(!update::trustedUrl(url)){fail(uiText("Unexpected update server.","更新服务器地址异常。"));return;}
   metadata_.clear();check_->setEnabled(false);cancel_->setEnabled(true);
   QNetworkRequest request(url);request.setRawHeader("User-Agent","Prism-Viewer/" PRISM_VIEWER_VERSION);
-  request.setRawHeader("Accept",phase==Phase::Release?"application/vnd.github+json":"application/octet-stream");
+  request.setRawHeader("Accept",phase==Phase::Manifest?"application/json":"application/octet-stream");
+  request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,QNetworkRequest::AlwaysNetwork);
   request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::UserVerifiedRedirectPolicy);
   auto* r=network_->get(request);reply_=r;r->setReadBufferSize(256*1024);timeout_.start(30000);
   connect(r,&QNetworkReply::redirected,this,[this,r](const QUrl& next){
@@ -109,7 +110,6 @@ void ViewerUpdateDialog::request(const QUrl& url,Phase phase){
     if(r->error()!=QNetworkReply::NoError||r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()!=200){
       fail(uiText("Update request failed: %1","更新请求失败：%1").arg(r->errorString()));return;}
     try{
-      if(phase==Phase::Release){this->request(update::manifestUrl(metadata_),Phase::Manifest);return;}
       if(phase==Phase::Manifest){
         release_=update::parseManifest(metadata_,update::platform());notes_->setPlainText(release_.notes);
         const bool available=update::newer(release_,QStringLiteral(PRISM_VIEWER_VERSION),PRISM_VIEWER_BUILD_EPOCH,QStringLiteral(PRISM_VIEWER_REVISION));

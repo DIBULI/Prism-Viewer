@@ -1,5 +1,4 @@
 #include "update/release.hpp"
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
@@ -18,8 +17,8 @@ bool version(const QString& s){return QRegularExpression("^[0-9]+\\.[0-9]+\\.[0-
 qint64 integer(const QJsonValue& v,qint64 limit){
   const auto n=v.toDouble(-1);need(n>=1&&n<=double(limit)&&double(qint64(n))==n,"Invalid update size or build number");return qint64(n);
 }
-QUrl assetUrl(const QString& tag,const QString& name){
-  return QUrl("https://github.com/DIBULI/Prism-Viewer/releases/download/"+tag+"/"+name);
+QUrl assetUrl(const QString& revision,const QString& name){
+  return QUrl("https://dibuli.com/updates/prism-viewer/"+revision+"/"+name);
 }
 }
 QString platform(){
@@ -34,26 +33,15 @@ QString platform(){
 #endif
 }
 bool trustedUrl(const QUrl& u){
-  if(!u.isValid()||u.scheme()!="https"||!u.userInfo().isEmpty()||u.port(443)!=443||u.hasFragment()||
+  if(!u.isValid()||u.scheme()!="https"||u.host()!="dibuli.com"||!u.userInfo().isEmpty()||u.port(443)!=443||u.hasFragment()||u.hasQuery()||
       u.path().split('/').contains("..")||u.path().contains('\\'))return false;
-  if(u.host()=="api.github.com")return u.path().startsWith("/repos/DIBULI/Prism-Viewer/releases/");
-  if(u.host()=="github.com")return u.path().startsWith("/DIBULI/Prism-Viewer/releases/download/");
-  return u.host()=="release-assets.githubusercontent.com"||u.host()=="objects.githubusercontent.com";
+  if(u.path()=="/updates/prism-viewer/viewer-update.json")return true;
+  return QRegularExpression(
+      "^/updates/prism-viewer/[0-9a-f]{40}/Prism-Viewer-[0-9]+\\.[0-9]+\\.[0-9]+-"
+      "(?:(?:windows-x64|macos-arm64)\\.zip|linux-(?:x64|arm64)\\.tar\\.gz)$").match(u.path()).hasMatch();
 }
-QUrl manifestUrl(const QByteArray& bytes){
-  const auto o=object(bytes);need(o.value("draft").isBool()&&!o.value("draft").toBool()&&
-    o.value("prerelease").isBool()&&!o.value("prerelease").toBool(),"Not a stable release");
-  const auto tag=o.value("tag_name").toString();need(tag.startsWith('v')&&version(tag.mid(1)),"Invalid release version");
-  QUrl found;
-  for(const auto& item:o.value("assets").toArray()){
-    const auto a=item.toObject();if(a.value("name").toString()!="viewer-update.json")continue;
-    need(found.isEmpty(),"Duplicate update manifest");
-    need(a.value("state").toString()=="uploaded","Update metadata is not ready");
-    integer(a.value("size"),1024*1024);
-    found=QUrl(a.value("browser_download_url").toString());
-    need(found==assetUrl(tag,"viewer-update.json"),"Unexpected update metadata URL");
-  }
-  need(!found.isEmpty(),"This release has no online update metadata yet");return found;
+QUrl manifestUrl(){
+  return QUrl("https://dibuli.com/updates/prism-viewer/viewer-update.json");
 }
 Release parseManifest(const QByteArray& bytes,const QString& target){
   const auto o=object(bytes);need(o.value("schema").toInt()==1,"Unsupported update metadata version");
@@ -66,7 +54,7 @@ Release parseManifest(const QByteArray& bytes,const QString& target){
   need(r.name=="Prism-Viewer-"+r.version+"-"+target+suffix,"Unexpected update package name");
   r.size=integer(a.value("size"),2LL*1024*1024*1024);
   const auto digest=a.value("sha256").toString();need(QRegularExpression("^[0-9a-f]{64}$").match(digest).hasMatch(),"Invalid update checksum");
-  r.sha256=QByteArray::fromHex(digest.toLatin1());r.url=assetUrl("v"+r.version,r.name);return r;
+  r.sha256=QByteArray::fromHex(digest.toLatin1());r.url=assetUrl(r.revision,r.name);return r;
 }
 bool newer(const Release& r,const QString& current,qint64 epoch,const QString& revision){
   need(version(current),"Invalid local version");

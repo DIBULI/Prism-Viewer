@@ -18,7 +18,7 @@ class ViewerUpdateDialog final:public QDialog {
   explicit ViewerUpdateDialog(QWidget* parent,std::function<bool()> can_restart,QNetworkAccessManager* network=nullptr);
   ~ViewerUpdateDialog() override;
  private:
-  enum class Phase{Release,Manifest,Package};
+  enum class Phase{Manifest,Package};
   void request(const QUrl&,Phase);
   void check();void download();void fail(const QString&);void stop();
   void install();

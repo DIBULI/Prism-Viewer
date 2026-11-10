@@ -26,11 +26,20 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
     auto a=asset;a["sha256"]="not-a-hash";o["platforms"]=QJsonObject{{target,a}};reject(parse);
   }
   for(auto url:{"http://github.com/DIBULI/Prism-Viewer/releases/download/v1.3.0/a.zip", "https://github.com.evil/a", "https://github.com/other/repo/releases/download/v1/a", "https://user@github.com/DIBULI/Prism-Viewer/releases/download/a", "file:///tmp/a"})check(!trustedUrl(QUrl(url)));
-  QJsonObject asset{{"name","viewer-update.json"},{"size",100},{"state","uploaded"},
-    {"browser_download_url","https://github.com/DIBULI/Prism-Viewer/releases/download/v1.3.0/viewer-update.json"}};
-  QJsonObject release{{"draft",false},{"prerelease",false},{"tag_name","v1.3.0"},{"assets",QJsonArray{asset}}};
-  auto manifest=[&]{return manifestUrl(QJsonDocument(release).toJson());};check(trustedUrl(manifest()));
-  release["assets"]=QJsonArray{asset,asset};reject(manifest);release["assets"]=QJsonArray{asset};
-  release["draft"]=true;reject(manifest);reject([]{parseManifest(QByteArray(1024*1024+1,' '),"linux-x64");});
+  check(manifestUrl()==QUrl("https://dibuli.com/updates/prism-viewer/viewer-update.json"));
+  check(trustedUrl(manifestUrl()));
+  for(const auto& url:QStringList{
+      "https://dibuli.com.evil/updates/prism-viewer/viewer-update.json",
+      "http://dibuli.com/updates/prism-viewer/viewer-update.json",
+      "https://user@dibuli.com/updates/prism-viewer/viewer-update.json",
+      "https://dibuli.com:444/updates/prism-viewer/viewer-update.json",
+      "https://dibuli.com/updates/prism-viewer/viewer-update.json?redirect=evil",
+      "https://dibuli.com/updates/prism-viewer/viewer-update.json#fragment",
+      "https://dibuli.com/updates/prism-viewer/../viewer-update.json",
+      "https://dibuli.com/updates/prism-viewer/%2e%2e/viewer-update.json",
+      "https://dibuli.com/unrelated/file.zip",
+      "https://release-assets.githubusercontent.com/package.zip",
+      "https://api.github.com/repos/DIBULI/Prism-Viewer/releases/latest"})check(!trustedUrl(QUrl(url)));
+  reject([]{parseManifest(QByteArray(1024*1024+1,' '),"linux-x64");});
   std::cout<<"PASS four platform assets, same-version revisions, no downgrade, checksum/size/schema/URL validation\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

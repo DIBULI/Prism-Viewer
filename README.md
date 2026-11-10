@@ -17,7 +17,7 @@ compatibility: keep the bundled SDK 1.3.0 runtime, rather than replacing its DLL
 with SDK 1.2.1 files. Old USB protocols do not imply PRISM-NET/4 network support.
 A missing camera does not stop other camera previews or IMU callbacks.
 
-**Viewer Update** checks the official GitHub stable release, including newer
+**Viewer Update** checks and downloads directly from **dibuli.com**, including newer
 builds with the same 1.3.0 version. **Download and update** verifies the complete
 platform package, then exits, replaces and restarts Viewer. Stop capture/recording
 and close the device connection before installation. The previous package is
@@ -25,6 +25,10 @@ retained beside the installation; failure to start the new application restores
 it. Writable portable-package/app locations and 9 GiB free space are required.
 This updates Viewer and its bundled SDK only, never device firmware. Older Viewer
 builds without this button need one manual package replacement to gain online updates.
+
+The update feed is `https://dibuli.com/updates/prism-viewer/viewer-update.json`.
+Packages live under the same website in revision-specific directories. GitHub
+continues to host source and release archives; the in-app updater does not access it.
 
 415RSV0 USB data is preserved as full RAW8 for recording and zoom. Ordinary live
 tiles are downsampled in Viewer; bounded per-camera preview replacement does not
