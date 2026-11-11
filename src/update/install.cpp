@@ -45,6 +45,7 @@ void Installer::run(const QString& command,const QStringList& args,std::function
     if(code||status!=QProcess::NormalExit){fail("Cannot prepare update: "+QString::fromUtf8(process_.readAllStandardError()).left(2000));return;}
     try{next();}catch(const std::exception& e){fail(QString::fromUtf8(e.what()));}
   });
+  process_.setWorkingDirectory(work_);
   timeout_.start(300000);process_.start(command,args);
 }
 void Installer::start(const QString& archive,const Release& release){try{
@@ -68,11 +69,17 @@ void Installer::start(const QString& archive,const Release& release){try{
   const auto parent=QFileInfo(target_).absolutePath();
   need(parent!="/"&&target_!=QDir::homePath(),"Invalid application location");
   const QStorageInfo space(parent);need(!space.isReadOnly()&&space.bytesAvailable()>9LL*1024*1024*1024,"Update needs a writable application folder and 9 GiB free space");
-  QTemporaryDir work(parent+"/.prism-viewer-update-XXXXXX");need(work.isValid(),"Application folder is not writable");
-  work.setAutoRemove(false);work_=work.path();need(QDir().mkdir(work_+"/extract"),"Cannot create extraction directory");staged_=work_+"/extract/"+root_;
+  // Keep the helper outside the portable installation. Stage on the target
+  // volume so replacing/restoring directories never becomes a cross-volume copy.
+  QTemporaryDir work(QDir::tempPath()+"/prism-viewer-update-XXXXXX");need(work.isValid(),"Cannot create temporary update directory");
+  const auto workPath=QFileInfo(work.path()).canonicalFilePath();
+  need(workPath.compare(target_,Qt::CaseInsensitive)!=0&&!workPath.startsWith(target_+"/",Qt::CaseInsensitive),"System temporary directory must be outside the Viewer installation");
+  QTemporaryDir stage(parent+"/.prism-viewer-stage-XXXXXX");need(stage.isValid(),"Application folder is not writable");
+  work.setAutoRemove(false);work_=work.path();stage.setAutoRemove(false);stageWork_=stage.path();
+  need(QDir().mkdir(stageWork_+"/extract"),"Cannot create extraction directory");staged_=stageWork_+"/extract/"+root_;
 #if defined(Q_OS_WIN)
   const auto helper=script(work_,"extract.ps1");
-  run(powershell(),{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",helper,archive,work_+"/extract",root_},[this]{extracted();});
+  run(powershell(),{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",helper,archive,stageWork_+"/extract",root_},[this]{extracted();});
 #else
   const auto listing=platform()=="macos-arm64"?QString("/usr/bin/unzip"):QString("/usr/bin/tar");
   const QStringList args=platform()=="macos-arm64"?QStringList{"-Z1",archive}:QStringList{"-tzf",archive};
@@ -82,8 +89,8 @@ void Installer::start(const QString& archive,const Release& release){try{
       need(!name.startsWith('/')&&!name.contains('\\')&&!name.split('/').contains(".."),"Unsafe archive path");
       need(name==root_||name.startsWith(root_+"/")||(platform()=="macos-arm64"&&name.startsWith("__MACOSX/")),"Unexpected package root");
     }
-    if(platform()=="macos-arm64")run("/usr/bin/ditto",{"-x","-k",archive,work_+"/extract"},[this]{extracted();});
-    else run("/usr/bin/tar",{"--no-same-owner","-xzf",archive,"-C",work_+"/extract"},[this]{extracted();});
+    if(platform()=="macos-arm64")run("/usr/bin/ditto",{"-x","-k",archive,stageWork_+"/extract"},[this]{extracted();});
+    else run("/usr/bin/tar",{"--no-same-owner","-xzf",archive,"-C",stageWork_+"/extract"},[this]{extracted();});
   });
 #endif
 }catch(const std::exception& e){fail(QString::fromUtf8(e.what()));}}
@@ -97,7 +104,7 @@ void Installer::extracted(){
   }
   need(QFileInfo(staged_+"/"+relative_).isExecutable(),"Updated executable missing");
   need(idle_(),"Device became active; update prepared but Viewer was not closed");
-  const auto backup=target_+".backup-"+QFileInfo(work_).fileName().mid(21);
+  const auto backup=target_+".backup-"+QFileInfo(stageWork_).fileName().right(6);
   need(!QFileInfo::exists(backup),"Backup path already exists");
   QString program;QStringList arguments;
 #if defined(Q_OS_WIN)

@@ -2,13 +2,11 @@
 #include "common/ui_text.hpp"
 #include <QDesktopServices>
 #include <QDir>
-#include <QFileDialog>
 #include <QLabel>
 #include <QNetworkReply>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QStandardPaths>
 #include <QVBoxLayout>
 #include <functional>
 #include <stdexcept>
@@ -51,10 +49,11 @@ void ViewerUpdateDialog::check(){
 }
 void ViewerUpdateDialog::download(){
   if(reply_||release_.url.isEmpty())return;
-  const auto path=QFileDialog::getSaveFileName(this,uiText("Save update package","保存更新包"),
-      QDir(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).filePath(release_.name));
-  if(path.isEmpty())return;
-  downloadTo(path);
+  downloadDirectory_=std::make_unique<QTemporaryDir>(QDir::tempPath()+"/prism-viewer-download-XXXXXX");
+  if(!downloadDirectory_->isValid()){
+    fail(uiText("Cannot create temporary download directory.","无法创建临时下载目录。"));return;
+  }
+  downloadTo(downloadDirectory_->filePath(release_.name));
 }
 void ViewerUpdateDialog::downloadTo(const QString& path){
   path_=path;file_.setFileName(path);file_.setDirectWriteFallback(false);

@@ -637,7 +637,7 @@ if(BUILD_TESTING)
     add_test(NAME viewer-update-install COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_install_test.py"
       "${CMAKE_CURRENT_SOURCE_DIR}/resources" $<TARGET_FILE:update-process-fixture>)
-    set_tests_properties(viewer-update-install PROPERTIES TIMEOUT 55)
+    set_tests_properties(viewer-update-install PROPERTIES TIMEOUT 100)
   endif()
 
   add_executable(device-info-compat-test

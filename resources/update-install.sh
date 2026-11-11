@@ -3,6 +3,8 @@
 set -eu
 parent=$1 target=$2 staged=$3 backup=$4 relative=$5 work=$6
 exec >>"$work/install.log" 2>&1
+cd "$work"
+failed_package=$(dirname "$staged")/failed-package
 test -d "$target" && test ! -L "$target" && test -d "$staged"
 test ! -e "$backup" && test -x "$staged/$relative"
 printf ready >"$work/ready"
@@ -27,7 +29,7 @@ while test ! -f "$work/started"; do
       kill -KILL "$child" 2>/dev/null || true
     fi
     wait "$child" 2>/dev/null || true
-    mv "$target" "$work/failed-package"
+    mv "$target" "$failed_package"
     mv "$backup" "$target"
     "$target/$relative" &
     printf rollback >"$work/result"

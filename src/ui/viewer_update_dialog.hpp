@@ -5,6 +5,8 @@
 #include <QSaveFile>
 #include <QCryptographicHash>
 #include <QTimer>
+#include <QTemporaryDir>
+#include <memory>
 #include "update/release.hpp"
 #include "update/install.hpp"
 class QLabel;
@@ -31,6 +33,7 @@ class ViewerUpdateDialog final:public QDialog {
   QTimer timeout_;
   QByteArray metadata_;
   update::Release release_;
+  std::unique_ptr<QTemporaryDir> downloadDirectory_;
   QSaveFile file_;
   QCryptographicHash hash_{QCryptographicHash::Sha256};
   qint64 downloaded_=0;

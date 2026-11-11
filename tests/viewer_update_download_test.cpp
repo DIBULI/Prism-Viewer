@@ -2,6 +2,8 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,6 +19,8 @@ struct UpdateDialogHarness {
   static bool ready(ViewerUpdateDialog& d){return d.download_->isEnabled();}
   static bool active(ViewerUpdateDialog& d){return !d.reply_.isNull();}
   static void save(ViewerUpdateDialog& d,const QString& p){d.downloadTo(p);}
+  static void download(ViewerUpdateDialog& d){d.download();}
+  static QString path(ViewerUpdateDialog& d){return d.path_;}
   static void cancel(ViewerUpdateDialog& d){d.stop();}
   static void timeout(ViewerUpdateDialog& d){QMetaObject::invokeMethod(&d.timeout_,"timeout",Qt::DirectConnection);}
 };
@@ -55,6 +59,16 @@ class Network:public QNetworkAccessManager {
 };
 template<class F>void until(F f){QElapsedTimer t;t.start();while(!f()){check(t.elapsed()<2000);QCoreApplication::processEvents();}}
 int main(int argc,char** argv){QApplication app(argc,argv);try{
+  QString temporaryPackage;
+  {
+    Network network;ViewerUpdateDialog dialog(nullptr,[]{return false;},&network);
+    H::check(dialog);until([&]{return !H::active(dialog);});check(H::ready(dialog));
+    H::download(dialog);until([&]{return !H::active(dialog);});temporaryPackage=H::path(dialog);
+    check(QFileInfo(temporaryPackage).absolutePath().startsWith(QDir::tempPath()+"/prism-viewer-download-"));
+    QFile f(temporaryPackage);check(f.open(QIODevice::ReadOnly));check(f.readAll()==network.package);
+  }
+  check(!QFile::exists(temporaryPackage));
+  std::cout<<"PASS automatic system-temp download and cleanup\n";
   for(const auto& fault:QStringList{"","crc","short","long","cancel","timeout","tls","redirect"}){
     QTemporaryDir temp;check(temp.isValid());const auto path=temp.path()+"/update.zip";
     {QFile old(path);check(old.open(QIODevice::WriteOnly));old.write("old file");}

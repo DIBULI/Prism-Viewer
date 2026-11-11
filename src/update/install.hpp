@@ -17,7 +17,7 @@ class Installer final:public QObject {
   std::function<void(QString)> result_;
   QProcess process_;
   QTimer timeout_;
-  QString target_,work_,staged_,relative_,root_;
+  QString target_,work_,stageWork_,staged_,relative_,root_;
   bool failed_=false;
   bool handoff_=false;
 };

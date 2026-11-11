@@ -8,7 +8,20 @@ def wait(path,process,seconds=12):
         assert process.poll() is None,('helper exited',process.returncode,path)
         assert time.monotonic()<until,('deadline',path)
         time.sleep(.05)
-for scenario in ('success','rollback','cancel'):
+def lock_directory(path):
+    import ctypes
+    from ctypes import wintypes
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+    kernel.CreateFileW.restype=wintypes.HANDLE
+    kernel.CloseHandle.argtypes=[wintypes.HANDLE];kernel.CloseHandle.restype=wintypes.BOOL
+    handle=kernel.CreateFileW(str(path),0,3,None,3,0x02000000,None)
+    assert handle!=wintypes.HANDLE(-1).value,ctypes.get_last_error()
+    return lambda: kernel.CloseHandle(handle)
+
+scenarios=['success','rollback','cancel']
+if os.name=='nt':scenarios+=['transient-lock','persistent-lock']
+for scenario in scenarios:
     with tempfile.TemporaryDirectory(prefix='prism updater space-') as folder:
         base=Path(folder);target=base/'Viewer installed';stage=base/'new package';work=base/'.prism-viewer-update-test';backup=base/'old backup'
         for p in (target,stage,work):p.mkdir()
@@ -16,19 +29,27 @@ for scenario in ('success','rollback','cancel'):
         for p in (target,stage):shutil.copy2(fixture,p/relative)
         (target/'user-data.txt').write_text('keep me')
         if scenario=='rollback':(stage/'fail-start').touch()
-        parent=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])
+        parent=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],cwd=target)
         args=[str(parent.pid),str(target),str(stage),str(backup),relative,str(work)]
         if os.name=='nt':
             command=['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(resources/'update-install.ps1'),*args]
         else:command=['/bin/sh',str(resources/'update-install.sh'),*args]
-        helper=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        # The helper must release its inherited installation working directory.
+        helper=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=target)
+        unlock=None
         try:
             wait(work/'ready',helper)
             assert (target/'user-data.txt').read_text()=='keep me' and not backup.exists()
+            if scenario.endswith('-lock'):unlock=lock_directory(target)
             if scenario=='cancel':(work/'cancelled').touch()
             parent.terminate();parent.wait(timeout=5)
-            stdout,stderr=helper.communicate(timeout=15)
-            if scenario=='success':
+            if scenario=='transient-lock':
+                time.sleep(1.5)
+                assert helper.poll() is None and not backup.exists()
+                assert (target/'user-data.txt').read_text()=='keep me'
+                unlock();unlock=None
+            stdout,stderr=helper.communicate(timeout=25)
+            if scenario in ('success','transient-lock'):
                 assert helper.returncode==0,(stdout,stderr)
                 assert (work/'result').read_text()=='installed'
                 assert (backup/'user-data.txt').read_text()=='keep me'
@@ -44,7 +65,10 @@ for scenario in ('success','rollback','cancel'):
             else:
                 assert helper.returncode!=0 and not backup.exists() and stage.exists()
                 assert (target/'user-data.txt').read_text()=='keep me'
+                if scenario=='persistent-lock':
+                    assert (work/'install-error.txt').exists() and not (work/'result').exists()
         finally:
+            if unlock:unlock()
             for p in (parent,helper):
                 if p.poll() is None:p.kill();p.wait()
         print('PASS',scenario)
