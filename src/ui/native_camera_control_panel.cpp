@@ -10,6 +10,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 
 namespace prism_viewer::ui {
@@ -45,7 +46,7 @@ NativeCameraControlPanel::NativeCameraControlPanel(QWidget* parent):QWidget(pare
   auto globalGain=[&](const char* name){auto* w=new QDoubleSpinBox(global);w->setObjectName(name);w->setDecimals(4);w->setRange(1,56.25);w->setSingleStep(.0625);w->setSuffix(QStringLiteral("×"));return w;};
   min_rows_=globalSpin("nativeMinRows",3,4096);max_rows_=globalSpin("nativeMaxRows",3,4096);
   min_gain_=globalGain("nativeMinGain");max_gain_=globalGain("nativeMaxGain");
-  target_=globalSpin("nativeTarget",1,4095);deadband_=globalSpin("nativeDeadband",0,4094);
+  target_=globalSpin("nativeTarget",1,255);deadband_=globalSpin("nativeDeadband",0,254);
   ae_=new QCheckBox(uiText("Auto exposure","自动曝光"),global);ae_->setObjectName("nativeAe");
   agc_=new QCheckBox(uiText("Auto gain","自动增益"),global);agc_->setObjectName("nativeAgc");
   ae_->setToolTip(uiText("Shared automatic exposure setting for all cameras.","所有相机共用自动曝光配置。"));
@@ -108,8 +109,9 @@ void NativeCameraControlPanel::showConfiguration(const std::array<prism::CameraR
   const auto g=prism::cameraControlGlobals(v);
   min_rows_->setValue(g.min_rows);max_rows_->setValue(g.max_rows);
   min_gain_->setValue(g.min_gain_sixteenths/16.0);max_gain_->setValue(g.max_gain_sixteenths/16.0);
-  // Existing control units are normalized 0..4095, independent of pixel depth.
-  target_->setValue(g.target_raw12);deadband_->setValue(g.deadband_raw12);
+  // The wire protocol stays normalized to 4095; the RAW8 UI uses 255.
+  target_->setValue(std::lround(g.target_raw12*255.0/4095));
+  deadband_->setValue(std::lround(g.deadband_raw12*255.0/4095));
   ae_->setChecked(g.automatic_exposure);agc_->setChecked(g.automatic_gain);
   for(unsigned i=0;i<4;++i) {auto& w=cameras_[i];const auto& c=v[i];
     w.rows->setValue(c.manual_rows);w.gain->setValue(c.manual_gain_sixteenths/16.0);
@@ -121,8 +123,17 @@ std::array<prism::CameraRowGainConfig,4> NativeCameraControlPanel::edited()const
   for(unsigned i=0;i<4;++i){const auto& w=cameras_[i];auto& c=v[i];
     c.manual_rows=w.rows->value();c.manual_gain_sixteenths=exactGain(w.gain->value());
   }
+  const auto* original=live_?&live_->requested:idle_?&idle_->requested:nullptr;
+  auto wireBrightness=[&](QSpinBox* spin,uint16_t old){
+    // Editing a different field must not quantize an unchanged device value.
+    const auto displayed=std::clamp(int(std::lround(old*255.0/4095)),spin->minimum(),spin->maximum());
+    if(original&&spin->value()==displayed)return old;
+    return uint16_t(std::lround(spin->value()*4095.0/255));
+  };
   return prism::withCameraControlGlobals(v,{uint16_t(min_rows_->value()),uint16_t(max_rows_->value()),
-    exactGain(min_gain_->value()),exactGain(max_gain_->value()),uint16_t(target_->value()),uint16_t(deadband_->value()),ae_->isChecked(),agc_->isChecked()});
+    exactGain(min_gain_->value()),exactGain(max_gain_->value()),
+    wireBrightness(target_,original?(*original)[0].target_raw12:0),
+    wireBrightness(deadband_,original?(*original)[0].deadband_raw12:0),ae_->isChecked(),agc_->isChecked()});
 }
 void NativeCameraControlPanel::setAvailability(bool connected,bool active,bool locked) {
   if(connected_!=connected||active_!=active){idle_.reset();live_.reset();

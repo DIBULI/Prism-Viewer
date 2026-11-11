@@ -42,11 +42,12 @@ int main(int argc,char** argv){
  assert(!p.findChild<QSpinBox*>("nativeMinRows2"));
  auto* globalTarget=p.findChild<QSpinBox*>("nativeTarget");
  assert(globalTarget&&p.findChildren<QSpinBox*>("nativeTarget").size()==1);
- globalTarget->setValue(1600);p.findChild<QSpinBox*>("nativeMinRows")->setValue(10);
+ assert(globalTarget->minimum()==1&&globalTarget->maximum()==255&&globalTarget->singleStep()==1);
+ globalTarget->setValue(100);p.findChild<QSpinBox*>("nativeMinRows")->setValue(10);
  p.findChild<QSpinBox*>("nativeMaxRows")->setValue(3000);
  p.findChild<QDoubleSpinBox*>("nativeMaxGain")->setValue(8);
  const auto prior=calls;apply->click();assert(calls==prior+1);
- for(const auto& c:last.configuration)assert(c.min_rows==10&&c.max_rows==3000&&c.max_gain_sixteenths==128&&c.target_raw12==1600&&c.manual_rows==1024);
+ for(const auto& c:last.configuration)assert(c.min_rows==10&&c.max_rows==3000&&c.max_gain_sixteenths==128&&c.target_raw12==1606&&c.deadband_raw12==idle.requested[0].deadband_raw12&&c.manual_rows==1024);
  // Reject a global bound excluding ANY lane, not only the last-edited lane.
  rows->setValue(2048);p.findChild<QSpinBox*>("nativeMinRows")->setValue(1500);
  apply->click();assert(calls==prior+1);
@@ -66,6 +67,19 @@ int main(int argc,char** argv){
  auto* minGain=p.findChild<QDoubleSpinBox*>("nativeMinGain");
  auto* maxGain=p.findChild<QDoubleSpinBox*>("nativeMaxGain");
  auto* deadband=p.findChild<QSpinBox*>("nativeDeadband");
+ // Physical 415 defaults are protocol 482/80, displayed as RAW8 30/5.
+ auto raw8=idle;for(auto& c:raw8.requested){c.target_raw12=482;c.deadband_raw12=80;}
+ p.setIdle(raw8);assert(globalTarget->value()==30&&deadband->value()==5);
+ apply->click();for(const auto& c:last.configuration)assert(c.target_raw12==482&&c.deadband_raw12==80);
+ globalTarget->setValue(31);deadband->setValue(6);apply->click();
+ for(const auto& c:last.configuration)assert(c.target_raw12==498&&c.deadband_raw12==96);
+ globalTarget->setValue(255);deadband->setValue(0);apply->click();
+ for(const auto& c:last.configuration)assert(c.target_raw12==4095&&c.deadband_raw12==0);
+ globalTarget->setValue(1);apply->click();
+ for(const auto& c:last.configuration)assert(c.target_raw12==16&&c.deadband_raw12==0);
+ // Refresh/apply of non-grid protocol values must be lossless, including live.
+ s.requested=idle.requested;p.setAvailability(true,true,false);p.setLive(s);
+ apply->click();for(const auto& c:last.configuration)assert(c.target_raw12==idle.requested[0].target_raw12&&c.deadband_raw12==idle.requested[0].deadband_raw12);
  // Match 413GSV0's two-column field order, but retain integer rows and global AE/AGC.
  assert(globalTarget->geometry().y()==minRows->geometry().y());
  assert(maxRows->geometry().y()==minGain->geometry().y());
