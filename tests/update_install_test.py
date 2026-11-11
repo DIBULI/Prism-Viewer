@@ -74,4 +74,18 @@ for scenario in scenarios:
             if unlock:unlock()
             for p in (parent,helper):
                 if p.poll() is None:p.kill();p.wait()
+        if scenario=='persistent-lock':
+            until=time.monotonic()+5
+            while not(target/'started-old').exists():
+                assert time.monotonic()<until,'preserved Viewer was not restarted'
+                time.sleep(.05)
+        # The restarted fixture acknowledges just before exiting. Windows can
+        # still hold its executable mapping after the helper has returned.
+        # Wait only on deletion of our disposable test tree; never kill a PID.
+        until=time.monotonic()+5
+        while True:
+            try:shutil.rmtree(base);break
+            except PermissionError:
+                if time.monotonic()>=until:raise
+                time.sleep(.05)
         print('PASS',scenario)
