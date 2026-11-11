@@ -1,0 +1,38 @@
+name: Windows update helper
+on:
+  push:
+    branches: [master]
+    paths:
+      - resources/update-install.ps1
+      - tests/update_install_test.py
+      - tests/update_process_fixture.cpp
+      - .github/workflows/update-helper.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-helper:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build small updater process fixture
+        shell: pwsh
+        run: |
+          $source = (Join-Path $pwd 'tests/update_process_fixture.cpp').Replace('\','/')
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/helper-source" | Out-Null
+          @"
+          cmake_minimum_required(VERSION 3.20)
+          project(UpdateFixture LANGUAGES CXX)
+          add_executable(update-process-fixture "$source")
+          target_compile_features(update-process-fixture PRIVATE cxx_std_17)
+          "@ | Set-Content "$env:RUNNER_TEMP/helper-source/CMakeLists.txt"
+          cmake -S "$env:RUNNER_TEMP/helper-source" -B build-helper -A x64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build build-helper --config Release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Test real Windows directory locks and rollback
+        shell: pwsh
+        run: |
+          python tests/update_install_test.py "$pwd/resources" "$pwd/build-helper/Release/update-process-fixture.exe"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

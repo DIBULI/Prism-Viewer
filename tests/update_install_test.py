@@ -15,7 +15,9 @@ def lock_directory(path):
     kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
     kernel.CreateFileW.restype=wintypes.HANDLE
     kernel.CloseHandle.argtypes=[wintypes.HANDLE];kernel.CloseHandle.restype=wintypes.BOOL
-    handle=kernel.CreateFileW(str(path),0,3,None,3,0x02000000,None)
+    # A zero-access metadata handle can bypass normal sharing checks. Request
+    # real read access so this models an application holding the directory.
+    handle=kernel.CreateFileW(str(path),0x80000000,3,None,3,0x02000000,None)
     assert handle!=wintypes.HANDLE(-1).value,ctypes.get_last_error()
     return lambda: kernel.CloseHandle(handle)
 
@@ -45,7 +47,8 @@ for scenario in scenarios:
             parent.terminate();parent.wait(timeout=5)
             if scenario=='transient-lock':
                 time.sleep(1.5)
-                assert helper.poll() is None and not backup.exists()
+                diagnostic={p.name:p.read_text(errors='replace') for p in work.iterdir() if p.is_file()}
+                assert helper.poll() is None and not backup.exists(),(helper.poll(),backup.exists(),diagnostic)
                 assert (target/'user-data.txt').read_text()=='keep me'
                 unlock();unlock=None
             stdout,stderr=helper.communicate(timeout=25)
