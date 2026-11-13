@@ -1,7 +1,7 @@
-# Prism Viewer 1.3.0
+# Prism Viewer 1.3.1
 
-Matches the pinned public **Prism SDK 1.3.0** (core Runtime API 19, Network API 4,
-Profile API 1, CameraControl API 1), Agent 1.3.0 and 415RSV0 Sensor Board 0.5.2. Headers and binaries must
+Matches the pinned public **Prism SDK 1.3.1** (core Runtime API 19, Network API 4,
+Profile API 1, CameraControl API 1), Agent 1.3.0 / 1.3.1 and Sensor Board 0.5.3. Headers and binaries must
 come from the same current package; an older download with the same version
 number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 
@@ -13,12 +13,12 @@ including the SDK 1.2.1 protocol generation, can use an explicitly selected
 hardware model for the current connection. Viewer never guesses it. Optional
 features explicitly rejected by old firmware are disabled; timeouts, malformed
 responses and incompatible capture formats remain errors. This is device-protocol
-compatibility: keep the bundled SDK 1.3.0 runtime, rather than replacing its DLLs
+compatibility: keep the bundled SDK 1.3.1 runtime, rather than replacing its DLLs
 with SDK 1.2.1 files. Old USB protocols do not imply PRISM-NET/4 network support.
 A missing camera does not stop other camera previews or IMU callbacks.
 
 **Viewer Update** checks and downloads directly from **dibuli.com**, including newer
-builds with the same 1.3.0 version. **Download and update** verifies the complete
+builds with the same release version. **Download and update** verifies the complete
 platform package, then exits, replaces and restarts Viewer. Stop capture/recording
 and close the device connection before installation. The previous package is
 retained beside the installation; failure to start the new application restores
@@ -163,7 +163,7 @@ in the current user's local Qt settings.
 The Viewer does not compile Host SDK sources. The matching binary SDK is
 pinned as the `third_party/Prism-SDK` Git submodule.
 
-Viewer 1.3.0 pins the current SDK **1.3.0** across all platforms.
+Viewer 1.3.1 pins the current SDK **1.3.1** across all platforms.
 The `sdk-runtime` test checks the actual linked/loaded libraries and all required
 extension versions without connecting to hardware.
 The SDK release also provides the aligned C++ RK-local API for applications on
@@ -219,7 +219,7 @@ The RK download dialog uses the currently connected **USB** device and the
 SDK's raw-file transfer APIs, not HTTP or port 80. Stop RK capture before
 browsing/downloading. SDK downloads preserve original files; optional ROS1/ROS2
 bag conversion runs locally in Viewer. No Web address or login is needed.
-Use the matching Agent/SDK 1.3.0 build with dataset transfer support; a binary
+Use an Agent 1.3.0 / 1.3.1 build with dataset transfer support; a binary
 without the extension reports unsupported, without HTTP fallback.
 
 Recorded **Camera**, **IMU**, and **LiDAR** previews have separate tabs; each
@@ -313,8 +313,8 @@ additionally publishes all packaged Viewer archives as a GitHub Release. For
 example:
 
 ```sh
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.3.1
+git push origin v1.3.1
 ```
 
 All release archives include the Viewer, the matching Prism Host SDK runtime,
@@ -332,12 +332,12 @@ Linux x64 and arm64 releases are built inside Ubuntu 20.04 and require glibc
 Ubuntu 20.04, 22.04, 24.04, and 26.04 containers before publishing it:
 
 ```sh
-tar -xzf Prism-Viewer-1.3.0-linux-x64.tar.gz
-./Prism-Viewer-1.3.0-linux-x64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.3.1-linux-x64.tar.gz
+./Prism-Viewer-1.3.1-linux-x64/bin/prism-viewer
 
 # On an arm64 host:
-tar -xzf Prism-Viewer-1.3.0-linux-arm64.tar.gz
-./Prism-Viewer-1.3.0-linux-arm64/bin/prism-viewer
+tar -xzf Prism-Viewer-1.3.1-linux-arm64.tar.gz
+./Prism-Viewer-1.3.1-linux-arm64/bin/prism-viewer
 ```
 
 The Windows x64 release supports Windows 10 version 1809 or newer and Windows
@@ -354,6 +354,7 @@ glibc and display drivers come from the host.
 ## Documentation
 
 - [Independent LiDAR hardware standby / wake](docs/lidar-power.md)
+- [Viewer 1.3.1 release notes](docs/release-notes/v1.3.1.md)
 - [Viewer 1.3.0 release notes](docs/release-notes/v1.3.0.md)
 - [Viewer 1.3.0 API and behavior changes](docs/update/v1.3.0.md)
 - [Viewer 1.2.0 release notes](docs/release-notes/v1.2.0.md)

@@ -12,7 +12,7 @@ parser.add_argument('epoch', type=int)
 parser.add_argument('--output', type=Path)
 args = parser.parse_args()
 assert re.fullmatch('[0-9a-f]{40}', args.revision) and args.epoch > 0
-expected = dict(version='1.3.0', revision=args.revision, build_epoch=args.epoch)
+expected = dict(version='1.3.1', revision=args.revision, build_epoch=args.epoch)
 result = subprocess.run([str(Path(args.binary).resolve()), '--build-info'],
                         text=True, capture_output=True, check=True, timeout=20)
 actual = json.loads(result.stdout)
