@@ -86,9 +86,9 @@ inline DatasetIdentity readDatasetIdentity(const std::filesystem::path& root) {
       return QStringLiteral("415RSV0");
     if (model.compare(QStringLiteral("Prism-1315"), Qt::CaseInsensitive) == 0 ||
         model.compare(QStringLiteral("1315"), Qt::CaseInsensitive) == 0 ||
-        model.compare(QStringLiteral("Prism-21315V0"), Qt::CaseInsensitive) == 0 ||
-        model.compare(QStringLiteral("21315V0"), Qt::CaseInsensitive) == 0)
-      return QStringLiteral("21315V0");
+        model.compare(QStringLiteral("Prism-21312V0"), Qt::CaseInsensitive) == 0 ||
+        model.compare(QStringLiteral("21312V0"), Qt::CaseInsensitive) == 0)
+      return QStringLiteral("21312V0");
     if (model.size() > 64) throw std::runtime_error("Dataset model is too long");
     for (const auto c : model)
       if (!(c.isLetterOrNumber() || c == '-' || c == '_' || c == '.'))

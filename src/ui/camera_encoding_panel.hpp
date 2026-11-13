@@ -12,6 +12,7 @@ class QLabel;
 class QPushButton;
 class QSlider;
 class QSpinBox;
+class QComboBox;
 
 namespace prism_viewer::ui {
 
@@ -25,6 +26,7 @@ class CameraEncodingPanel final : public QWidget {
   void clear();
   void setDeviceOpen(bool open);
   void setNetworkCameraMaxFps(uint32_t max_fps);
+  void setMixed21315(bool mixed);
   void setControlsLocked(bool locked);
   void setCaptureActive(bool active);
   void setBusy(bool busy, const QString& message = {});
@@ -44,6 +46,8 @@ class CameraEncodingPanel final : public QWidget {
   QLabel* fps_hint_label_ = nullptr;
   QLabel* quality_hint_label_ = nullptr;
   QSpinBox* fps_spin_ = nullptr;
+  QComboBox* mixed_fps_ = nullptr;
+  bool mixed_ = false;
   QSlider* quality_slider_ = nullptr;
   QSpinBox* quality_spin_ = nullptr;
   QPushButton* refresh_button_ = nullptr;

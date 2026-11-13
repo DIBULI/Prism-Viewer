@@ -8,7 +8,7 @@ number is not interchangeable. See [update notes](docs/update/v1.3.0.md).
 DeviceInfo selects the product automatically; no Linux-only environment switch
 is required. 413GSV0 keeps its existing MJPEG capture and exposure controls. 415RSV0
 requests four-camera external-trigger 2 FPS native RAW8 from matching firmware.
-21315V0 uses its mixed-profile capture entry. Legacy DeviceInfo v3/v4 devices,
+21312V0 uses its mixed-profile capture entry. Legacy DeviceInfo v3/v4 devices,
 including the SDK 1.2.1 protocol generation, can use an explicitly selected
 hardware model for the current connection. Viewer never guesses it. Optional
 features explicitly rejected by old firmware are disabled; timeouts, malformed

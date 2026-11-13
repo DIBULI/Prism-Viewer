@@ -10,6 +10,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QVBoxLayout>
 #include <algorithm>
 
@@ -83,6 +84,10 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
   fps_header->addWidget(fps_label);
   fps_header->addStretch(1);
   fps_header->addWidget(fps_spin_);
+  mixed_fps_=new QComboBox(group);
+  mixed_fps_->setObjectName(QStringLiteral("mixed21315FpsCombo"));
+  for(int fps:{12,24,36})mixed_fps_->addItem(QString::number(fps)+QStringLiteral(" FPS"),fps);
+  mixed_fps_->setCurrentIndex(1);mixed_fps_->hide();fps_header->addWidget(mixed_fps_);
   group_layout->addLayout(fps_header);
 
   fps_hint_label_ = new QLabel(group);
@@ -158,6 +163,7 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
     // Merely showing a network cap must not overwrite a saved USB default.
     if (fps_spin_->value() != std::min<int>(configuration_.camera_fps, fps_spin_->maximum()))
       requested.camera_fps = static_cast<uint32_t>(fps_spin_->value());
+    if(mixed_)requested.camera_fps=mixed_fps_->currentData().toUInt();
     requested.mjpeg_quality =
         static_cast<uint32_t>(quality_spin_->value());
     on_apply(requested);
@@ -165,6 +171,7 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
   connect(fps_spin_,
           QOverload<int>::of(&QSpinBox::valueChanged),
           this, [this](int) { refreshView(); });
+  connect(mixed_fps_,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int){refreshView();});
   connect(quality_slider_, &QSlider::valueChanged, this, [this](int value) {
     const QSignalBlocker blocker(quality_spin_);
     quality_spin_->setValue(value);
@@ -181,6 +188,8 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
 }
 
 void CameraEncodingPanel::clear() {
+  mixed_=false;fps_spin_->show();mixed_fps_->hide();
+  {const QSignalBlocker blocker(mixed_fps_);mixed_fps_->setCurrentIndex(1);}
   network_max_fps_ = 0;
   fps_spin_->setMaximum(30);
   configuration_ = {};
@@ -219,6 +228,14 @@ void CameraEncodingPanel::setControlsLocked(bool locked) {
   controls_locked_ = locked;
   refreshView();
 }
+void CameraEncodingPanel::setMixed21315(bool mixed) {
+  if(mixed_==mixed)return;
+  mixed_=mixed;fps_spin_->setVisible(!mixed);mixed_fps_->setVisible(mixed);
+  const QSignalBlocker blocker(mixed_fps_);
+  const int index=mixed_fps_->findData(static_cast<int>(configuration_.camera_fps));
+  mixed_fps_->setCurrentIndex(index>=0?index:1);
+  refreshView();
+}
 
 void CameraEncodingPanel::setCaptureActive(bool active) {
   capture_active_ = active;
@@ -242,6 +259,9 @@ void CameraEncodingPanel::setConfiguration(
     const QSignalBlocker slider_blocker(quality_slider_);
     const QSignalBlocker spin_blocker(quality_spin_);
     fps_spin_->setValue(static_cast<int>(configuration.camera_fps));
+    const QSignalBlocker mixed_blocker(mixed_fps_);
+    const int index=mixed_fps_->findData(static_cast<int>(configuration.camera_fps));
+    mixed_fps_->setCurrentIndex(index>=0?index:1);
     quality_slider_->setValue(static_cast<int>(configuration.mjpeg_quality));
     quality_spin_->setValue(static_cast<int>(configuration.mjpeg_quality));
   }
@@ -258,6 +278,9 @@ bool CameraEncodingPanel::isDirty() const {
 }
 
 bool CameraEncodingPanel::cameraSettingsDirty() const {
+  if(mixed_)return has_configuration_ &&
+      (mixed_fps_->currentData().toUInt()!=configuration_.camera_fps ||
+       static_cast<uint32_t>(quality_spin_->value())!=configuration_.mjpeg_quality);
   return has_configuration_ &&
          (static_cast<uint32_t>(fps_spin_->value()) !=
               static_cast<uint32_t>(std::min<int>(configuration_.camera_fps, fps_spin_->maximum())) ||
@@ -289,6 +312,9 @@ void CameraEncodingPanel::refreshView() {
                         "当前网络每路最高%1 FPS（有线20、Wi-Fi10）。低帧率原生模式保持不变，不会自动修改已保存的USB默认帧率。") .arg(network_max_fps_) :
       fpsHint(static_cast<uint32_t>(fps_spin_->value())));
   quality_hint_label_->setText(qualityHint(quality_spin_->value()));
+  if(mixed_)fps_hint_label_->setText(uiText(
+      "1.3M: 12 / 24 / 36 FPS. Shared triggers with 15M at6 FPS; 15M delivery remains2 FPS.",
+      "1.3M 仅支持12 / 24 / 36 FPS，与15M的6 FPS共用触发时刻；15M仍以2 FPS输出。"));
   if (!device_open_) {
     setMessage(uiText("Open a device to configure camera stream settings",
                       "请先打开设备，再配置相机流设置"),
@@ -331,6 +357,7 @@ void CameraEncodingPanel::refreshView() {
   const bool can_edit = device_open_ && has_configuration_ && !busy_ &&
                         !controls_locked_;
   fps_spin_->setEnabled(can_edit && !capture_active_);
+  mixed_fps_->setEnabled(can_edit && !capture_active_);
   quality_slider_->setEnabled(can_edit && !capture_active_);
   quality_spin_->setEnabled(can_edit && !capture_active_);
   refresh_button_->setEnabled(device_open_ && !busy_ && !controls_locked_ &&

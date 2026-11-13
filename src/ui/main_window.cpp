@@ -478,6 +478,7 @@ class DatasetRecorder {
     bool enabled=false;
     bool raw8_companion=false; // RAW and onboard IMU share this root via Raw8Recorder.
     std::string device_model="413GSV0";
+    std::string device_serial;
   };
   // Optional limits/latency hook are used by the deterministic disk-pressure
   // self-test. Production retains the 256-job / 128 MiB bounds.
@@ -501,6 +502,13 @@ class DatasetRecorder {
       }
       if(received_policy_.device_model.find_first_of("\r\n=")!=std::string::npos){
         if(error)*error="Invalid dataset model name";return false;
+      }
+      if(received_policy_.device_serial.find_first_of("\r\n")!=std::string::npos||
+          received_policy_.device_serial.find('\0')!=std::string::npos){
+        if(error)*error="Invalid dataset device serial";return false;
+      }
+      if(received_policy_.device_model=="21312V0"&&received_policy_.device_serial.empty()){
+        if(error)*error="Device serial unavailable for recording";return false;
       }
       if(received_policy_.enabled){record_lidar_streams=true;lidar_has_imu=true;}
 
@@ -1703,6 +1711,7 @@ class DatasetRecorder {
     const uint64_t recording_host_end_unix_us = wallClockUs();
     manifest << "format=prism-dataset-v6\n"
              << "device_model="<<received_policy_.device_model<<"\n"
+             << "device_serial="<<received_policy_.device_serial<<"\n"
              << "recording_stream_policy="<<(received_policy_.enabled?"all-received":"legacy-aligned")<<"\n"
              << "onboard_imu_writer="<<(received_policy_.raw8_companion?"raw8-companion":"dataset")<<"\n"
              << "complete=" << (complete ? 1 : 0) << "\n"
@@ -4326,8 +4335,10 @@ class MainWindow : public QMainWindow {
   void configureCameraTools(prism::DeviceModel model) {
     const bool profile = prism_viewer::usesProfileCapture(model);
     const bool native = model == prism::DeviceModel::Prism415RSV0;
-    camera_stream_pages_->setCurrentIndex(profile ? 1 : 0);
-    camera_encoding_panel_->setEnabled(!profile);
+    const bool mixed=model==prism::DeviceModel::Prism21312V0;
+    camera_stream_pages_->setCurrentIndex(profile && !mixed ? 1 : 0);
+    camera_encoding_panel_->setMixed21315(mixed);
+    camera_encoding_panel_->setEnabled(!profile || mixed);
     camera_exposure_panel_->setDeviceModel(model);
     camera_exposure_panel_->setVisible(!native);
     native_camera_control_panel_->setVisible(native);
@@ -4337,7 +4348,7 @@ class MainWindow : public QMainWindow {
         "Profile camera stream. Native format and measured rate are shown with each image.",
         "产品相机流。原生格式与实测帧率显示在各路图像旁。"));
     // The same three tabs and default page apply to every product. Never
-    // expose the legacy JPEG/FPS write path for a native RAW profile.
+    // expose the JPEG/FPS write path for the all-RAW 415 profile.
     camera_tools_->setCurrentIndex(0);
   }
 
@@ -4350,14 +4361,15 @@ class MainWindow : public QMainWindow {
     // Exercise repeated product switches using the real setup path, without
     // enumerating hardware or opening a transport.
     for (auto model : {prism::DeviceModel::Prism415RSV0, prism::DeviceModel::Prism413GSV0,
-                       prism::DeviceModel::Prism21315V0, prism::DeviceModel::Prism415RSV0}) {
+                       prism::DeviceModel::Prism21312V0, prism::DeviceModel::Prism415RSV0}) {
       configureCameraTools(model);
       const bool native = model == prism::DeviceModel::Prism415RSV0;
       const bool profile = prism_viewer::usesProfileCapture(model);
+      const bool editable_stream = !profile || model==prism::DeviceModel::Prism21312V0;
       QApplication::processEvents();
-      ok = ok && camera_tools_->currentIndex() == 0 && camera_stream_pages_->currentIndex() == (profile ? 1 : 0)
-          && camera_encoding_panel_->isEnabled() == !profile
-          && camera_encoding_panel_->isVisible() == !profile;
+      ok = ok && camera_tools_->currentIndex() == 0 && camera_stream_pages_->currentIndex() == (editable_stream ? 0 : 1)
+          && camera_encoding_panel_->isEnabled() == editable_stream
+          && camera_encoding_panel_->isVisible() == editable_stream;
       camera_tools_->setCurrentIndex(1);
       QApplication::processEvents();
       ok = ok && native_camera_control_panel_->isVisible() == native
@@ -4378,7 +4390,7 @@ class MainWindow : public QMainWindow {
                 << " viewport=" << (exposure_scroll ? exposure_scroll->viewport()->width() : -1)
                 << " horizontal-overflow=" << (exposure_scroll ? exposure_scroll->horizontalScrollBar()->maximum() : -1)
                 << " ok=" << ok << '\n';
-      if (!screenshot_prefix.isEmpty() && model != prism::DeviceModel::Prism21315V0) {
+      if (!screenshot_prefix.isEmpty() && model != prism::DeviceModel::Prism21312V0) {
         QApplication::processEvents();
         const auto name = native ? QStringLiteral("415RSV0") : QStringLiteral("413GSV0");
         ok = camera_tools_->grab().save(screenshot_prefix + name + QStringLiteral("-exposure.png")) && ok;
@@ -6447,8 +6459,10 @@ class MainWindow : public QMainWindow {
     // Both directory/overwrite dialogs run nested event loops. Recheck the
     // current link after both have closed, before creating or replacing files.
     if (!worker_running_ || dataset_recorder_.isActive()) return;
+    std::string recording_device_serial;
     try {
       const auto info = runCorsUsbCommand([this]() { return client_.deviceInfo(); });
+      recording_device_serial=info.product_serial;
       recording_usb_gate_.observe(info.usb_speed, std::chrono::steady_clock::now());
     } catch (...) {
       recording_usb_gate_.reset();
@@ -6465,7 +6479,7 @@ class MainWindow : public QMainWindow {
         (mode != DatasetRecordingMode::ImuOnly || lidar_model != prism::LidarModel::Xt32);
     const DatasetTimestampDomain timestamp_domain =
         datasetTimestampDomainForProvider(latest_time_sync_provider_);
-    DatasetRecorder::ReceivedStreamsPolicy policy{true,false,prism::deviceModelName(capture_model_.load())};
+    DatasetRecorder::ReceivedStreamsPolicy policy{true,false,prism::deviceModelName(capture_model_.load()),recording_device_serial};
     std::string error;
     if (!dataset_recorder_.start(toFilesystemPath(selected_directory),
                                  overwrite, mode, record_lidar_streams,
@@ -9700,8 +9714,8 @@ class MainWindow : public QMainWindow {
                     .arg(prism_viewer::captureOptions(capture_product))
                     .arg(capture_product == prism_viewer::CaptureProduct::Strict415RSV0
                              ? QStringLiteral("415RSV0, 2 FPS")
-                             : capture_product == prism_viewer::CaptureProduct::Mixed21315V0
-                                   ? QStringLiteral("21315V0, saved FPS")
+                             : capture_product == prism_viewer::CaptureProduct::Mixed21312V0
+                                   ? QStringLiteral("21312V0, saved FPS")
                                    : QStringLiteral("413GSV0, saved FPS")));
       aggregate_stream_start_attempted = true;
       const auto status = withClientIo(
@@ -11052,11 +11066,12 @@ int runViewerApplication(int argc, char** argv) {
     const DatasetRecordingSummary summary = recorder.stop();
     // Exercise the production, product-independent policy using actual writers.
     // No attached hardware is required; legacy aligned tests below still run.
-    for(const auto* model:{"415RSV0","413GSV0","21315V0"})for(unsigned combination=0;combination<4;combination++){
+    for(const auto* model:{"415RSV0","413GSV0","21312V0"})for(unsigned combination=0;combination<4;combination++){
       QTemporaryDir temporary;
       const auto root=toFilesystemPath(temporary.path());
       DatasetRecorder received;
-      DatasetRecorder::ReceivedStreamsPolicy policy{true,combination==3,model};
+      DatasetRecorder::ReceivedStreamsPolicy policy{true,combination==3,model,"fixture-serial-with-variable-length-001"};
+      const auto expected_serial=policy.device_serial;
       if(policy.raw8_companion){
         for(const auto* name:{"dataset.info","imu_metadata.csv","imu0.tum","imu1.tum"}){
           // Match the production RAW writer's exact LF bytes on Windows too;
@@ -11071,6 +11086,7 @@ int runViewerApplication(int argc, char** argv) {
             DatasetTimestampDomain::SensorBoardBoot,&error,0,false,&policy)){
         std::cerr<<"received-stream start failed: "<<error<<'\n';return 10;
       }
+      policy.device_serial="different-device"; // Recorder owns an immutable copy.
       if(!received.startupReady()||!received.pollError().empty()){std::cerr<<"unexpected IMU startup gate\n";return 10;}
       received.appendRoverRtcm(rover_rtcm_chunk);
       received.appendBaseRtcm(base_rtcm.data(),base_rtcm.size(),std::chrono::steady_clock::now());
@@ -11093,7 +11109,10 @@ int runViewerApplication(int argc, char** argv) {
         std::cerr<<"all-received policy failed model="<<model<<" case="<<combination<<" error="<<got.error<<'\n';return 10;
       }
       QFile metadata_file(fromFilesystemPath(root/(policy.raw8_companion?"streams.info":"dataset.info")));
-      if(!metadata_file.open(QIODevice::ReadOnly)||!metadata_file.readAll().contains("recording_stream_policy=all-received\n")){
+      if(!metadata_file.open(QIODevice::ReadOnly)){std::cerr<<"missing recording manifest\n";return 10;}
+      const auto saved_manifest=metadata_file.readAll();
+      if(!saved_manifest.contains("recording_stream_policy=all-received\n")||
+          !saved_manifest.contains(QByteArray::fromStdString("device_serial="+expected_serial+"\n"))){
         std::cerr<<"received policy not persisted\n";return 10;
       }
       if(policy.raw8_companion){

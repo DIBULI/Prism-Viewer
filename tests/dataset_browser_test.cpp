@@ -121,8 +121,8 @@ int main() {
     identity("device_model=413GSV0\n", "413GSV0", false);
     identity("device_model=41M3\n", "413GSV0", false);
     identity("device_model=Prism-41m3\nmodel=413GSV0\n", "413GSV0", false);
-    identity("device_model=1315\nmodel=21315V0\n", "21315V0", false);
-    identity(R"({"device_model":"Prism-1315","model":"21315V0"})", "21315V0", false);
+    identity("device_model=1315\nmodel=21312V0\n", "21312V0", false);
+    identity(R"({"device_model":"Prism-1315","model":"21312V0"})", "21312V0", false);
     identity("device_model=Prism-413gsv0\n", "413GSV0", false);
     identity("device_model=413GSV0\nmodel=Prism-A4L\n", "413GSV0", false);
     identity(R"({"model":"Prism-A4L"})", "413GSV0", false);

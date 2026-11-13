@@ -4,6 +4,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QComboBox>
 
 #include <cstdlib>
 #include <iostream>
@@ -122,6 +123,22 @@ int main(int argc, char** argv) {
   require(!fps->isEnabled() && !quality->isEnabled() && !apply->isEnabled(),
           "camera settings are locked during another device operation");
 
+  panel.setControlsLocked(false);
+  panel.setMixed21315(true);
+  auto* mixed=panel.findChild<QComboBox*>(QStringLiteral("mixed21315FpsCombo"));
+  require(mixed && mixed->count()==3 && !mixed->isEditable(),"mixed FPS has exactly three fixed choices");
+  require(fps->isHidden() && !mixed->isHidden(),"mixed board does not expose arbitrary FPS editor");
+  for(int i=0;i<3;++i)require(mixed->itemData(i).toInt()==12*(i+1),"mixed FPS choices are12/24/36");
+  require(mixed->currentData().toUInt()==24,"unrecognized saved FPS defaults to24");
+  loaded.camera_fps=24;panel.setConfiguration(loaded);
+  panel.setNetworkCameraMaxFps(10);
+  require(mixed->currentData().toUInt()==24&&!apply->isEnabled(),"network transport cap does not change sensor source FPS");
+  mixed->setCurrentIndex(2);apply_called=false;apply->click();
+  require(apply_called&&requested.camera_fps==36,"36FPS survives application payload");
+  panel.setConfiguration(requested);panel.setCaptureActive(true);
+  require(!mixed->isEnabled()&&!apply->isEnabled(),"mixed FPS is immutable during capture");
+  panel.setCaptureActive(false);panel.clear();
+  require(mixed->isHidden()&&!fps->isHidden(),"disconnect removes mixed mode");
   std::cout << "camera encoding panel tests passed\n";
   return 0;
 }
