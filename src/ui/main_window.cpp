@@ -8427,6 +8427,14 @@ class MainWindow : public QMainWindow {
     refreshControls();
 
     if (result.success) {
+      if (result.synchronization_not_asserted) {
+        const auto notice = uiText(
+            "Source timestamps were preserved. Cross-sensor synchronization and UTC are not guaranteed. "
+            "This status is recorded in /prism/recording_info in the bag.",
+            "已保留原始时间戳，未保证各传感器同步或 UTC 时间。此状态已写入 Bag 的 /prism/recording_info 话题。");
+        appendLog(notice);
+        QMessageBox::warning(this, uiText("Recording time status", "录制时间状态"), notice);
+      }
       appendLog(
           QStringLiteral("%1 bag export complete: %2 camera=%3 "
                          "camera_exposure=%4 onboard_imu=%5 lidar_imu=%6 "
@@ -11090,6 +11098,33 @@ int runViewerApplication(int argc, char** argv) {
       }
     }
     std::cout<<"all-received recording policy: PASS (3 models x4 stream combinations)\n";
+    {
+      QTemporaryDir temporary;
+      const auto root = toFilesystemPath(temporary.path());
+      DatasetRecorder received;
+      DatasetRecorder::ReceivedStreamsPolicy policy{true, false, "413GSV0"};
+      if (!temporary.isValid() || !received.start(root, false, DatasetRecordingMode::Full,
+          false, DatasetTimestampDomain::SensorBoardBoot, &error, 0, false, &policy)) return 10;
+      auto sample = imu1;
+      sample.timestamp_synced = false; sample.timestamp_us = 100; sample.sample_id = 1;
+      received.appendImu(sample);
+      auto partial = jpeg; for (unsigned c = 1; c < 4; ++c) partial[c].clear();
+      received.appendFrameSet(7, 1780000000000500ULL, metadata, partial);
+      received.appendLidar(unsynced_lidar);
+      received.appendLidarImu(unsynced_lidar_imu);
+      if (!received.stop().success) return 10;
+      for (const auto format : {prism_viewer::dataset::RosbagFormat::Ros1,
+                                prism_viewer::dataset::RosbagFormat::Ros2}) {
+        const auto result = prism_viewer::dataset::exportDatasetToRosbag(root,
+            root / (format == prism_viewer::dataset::RosbagFormat::Ros1 ? "received.bag" : "received.rosbag2"),
+            format, false);
+        if (!result.success || !result.synchronization_not_asserted || result.camera_messages != 1 ||
+            result.imu_messages != 1 || result.lidar_points != unsynced_lidar.points.size() ||
+            result.lidar_imu_messages != 1) {
+          std::cerr << "actual all-received recorder bag export failed: " << result.error << '\n'; return 10;
+        }
+      }
+    }
     const auto recorded_identity = prism_viewer::dataset::readDatasetIdentity(test_root);
     if (recorded_identity.defaulted || recorded_identity.model != "413GSV0") {
       std::cerr << "Recorder did not write its model\n";

@@ -1,5 +1,18 @@
 # Prism Viewer 数据集格式
 
+## Exporting all-received v6 recordings
+
+ROS1 and ROS2 export accepts completed v6 recordings with
+`recording_stream_policy=all-received`,
+`timestamp_policy=source-preserved-see-per-stream-flags`, and
+`alignment=not-asserted`. Empty optional streams and unequal camera counts do
+not prevent exporting the recorded samples. Source timestamps, including zero
+or clock regressions, are preserved without inventing UTC or alignment.
+The exported `/prism/recording_info` string topic records that synchronization
+is not guaranteed; per-sample source flags remain in the original dataset.
+Unknown time-domain declarations and invalid payloads are still rejected.
+Legacy synchronized v6 recordings retain their stricter time checks.
+
 ## Device model metadata
 
 New datasets use a UTF-8 `key=value` text manifest named `dataset.info`.

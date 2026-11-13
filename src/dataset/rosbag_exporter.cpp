@@ -1014,6 +1014,7 @@ struct V6DatasetLayout {
   bool lidar = false;
   bool lidar_imu = false;
   bool unix_epoch = false;
+  bool all_received = false;
 };
 
 V6DatasetLayout readV6DatasetLayout(
@@ -1054,13 +1055,17 @@ V6DatasetLayout readV6DatasetLayout(
   const bool sensor_board_boot_epoch =
       required("time_domain") == "sensor-board-clock" &&
       required("timestamp_epoch") == "boot";
+  const bool all_received = fields["recording_stream_policy"] == "all-received" &&
+      fields["timestamp_policy"] == "source-preserved-see-per-stream-flags" &&
+      required("alignment") == "not-asserted";
   if ((!unix_epoch && !sensor_board_boot_epoch) ||
-      required("alignment") != "common-device-time-domain") {
+      (!all_received && required("alignment") != "common-device-time-domain")) {
     throw std::runtime_error("v6 dataset has an unsupported time domain");
   }
 
   V6DatasetLayout layout;
   layout.unix_epoch = unix_epoch;
+  layout.all_received = all_received;
   const std::string& recording_mode = required("recording_mode");
   if (recording_mode == "full") {
     layout.full = true;
@@ -1507,8 +1512,8 @@ class DatasetBagWriter {
                    const std::filesystem::path& final_output,
                    bool cameras_present, bool lidar_present,
                    bool lidar_imu_present, bool gnss_present, bool rtk_present,
-                   bool gnss_quality_present)
-      : format_(format) {
+                   bool gnss_quality_present, const std::string& recording_info = {})
+      : format_(format), recording_info_(recording_info) {
     if (format_ == RosbagFormat::Ros1) {
       ros1_ = std::make_unique<Ros1BagWriter>(temporary);
       if (cameras_present) {
@@ -1554,6 +1559,9 @@ class DatasetBagWriter {
         recording_ros1_[i] = &ros1_->addConnection(prefix + "recording_info", "std_msgs/String",
                          "992ce8a1687cec8c8bd883ec73ca41d1", "string data\n");
       }
+      if (!recording_info_.empty()) dataset_info_ros1_ = &ros1_->addConnection(
+          "/prism/recording_info", "std_msgs/String",
+          "992ce8a1687cec8c8bd883ec73ca41d1", "string data\n");
       if (gnss_quality_present) quality_ros1_ = &ros1_->addConnection("/prism/gnss/quality", "std_msgs/String",
                          "992ce8a1687cec8c8bd883ec73ca41d1", "string data\n");
       return;
@@ -1593,10 +1601,13 @@ class DatasetBagWriter {
       receiver_ros2_[i] = ros2_->addTopic(prefix + "receiver", "prism_ros_msgs/msg/ReceiverPosition");
       recording_ros2_[i] = ros2_->addTopic(prefix + "recording_info", "std_msgs/msg/String");
     }
+    if (!recording_info_.empty()) dataset_info_ros2_ = ros2_->addTopic(
+        "/prism/recording_info", "std_msgs/msg/String");
     if (gnss_quality_present) quality_ros2_ = ros2_->addTopic("/prism/gnss/quality", "std_msgs/msg/String");
   }
 
   void writePosition(const gnss_bag::Position& p) {
+    writeRecordingInfo(p.stamp);
     const size_t i = p.rtk ? 1 : 0;
     const std::string info = gnss_bag::metadata(p.original, p.stamp);
     if (ros1_) {
@@ -1616,6 +1627,7 @@ class DatasetBagWriter {
     }
   }
   void writeQuality(const gnss_bag::Quality& q) {
+    writeRecordingInfo(q.stamp);
     const auto info = gnss_bag::metadata(q.original, q.stamp);
     if (ros1_) {
       Ros1ValueWriter w; w.writeString(info); ros1_->writeMessage(quality_ros1_, q.stamp, w.finish());
@@ -1626,6 +1638,7 @@ class DatasetBagWriter {
 
   void writeCamera(size_t camera, uint32_t sequence, uint64_t timestamp_us,
                    uint32_t exposure_us, const Bytes& jpeg) {
+    writeRecordingInfo(timestamp_us);
     const std::string frame_id =
         "camera" + std::to_string(camera) + "_optical_frame";
     if (format_ == RosbagFormat::Ros1) {
@@ -1646,6 +1659,7 @@ class DatasetBagWriter {
   void writeImu(size_t imu, uint32_t sequence, uint64_t timestamp_us,
                 const std::array<double, 3>& acceleration,
                 const std::array<double, 3>& angular_velocity) {
+    writeRecordingInfo(timestamp_us);
     const std::string frame_id = "imu" + std::to_string(imu) + "_frame";
     if (format_ == RosbagFormat::Ros1) {
       ros1_->writeMessage(
@@ -1660,6 +1674,7 @@ class DatasetBagWriter {
   }
 
   void writeLidar(uint32_t sequence, const LidarFrame& frame) {
+    writeRecordingInfo(frame.timebase_ns / 1000u);
     if (format_ == RosbagFormat::Ros1) {
       ros1_->writeMessageNs(lidar_ros1_, frame.timebase_ns,
                             makeRos1PointCloud2(sequence, frame));
@@ -1672,6 +1687,7 @@ class DatasetBagWriter {
   void writeLidarImu(uint32_t sequence, uint64_t timestamp_us,
                      const std::array<double, 3>& acceleration,
                      const std::array<double, 3>& angular_velocity) {
+    writeRecordingInfo(timestamp_us);
     constexpr const char* kFrameId = "livox_imu";
     if (format_ == RosbagFormat::Ros1) {
       ros1_->writeMessage(
@@ -1691,7 +1707,22 @@ class DatasetBagWriter {
   }
 
  private:
+  void writeRecordingInfo(uint64_t timestamp_us) {
+    if (recording_info_.empty() || info_written_) return;
+    if (ros1_) {
+      Ros1ValueWriter value; value.writeString(recording_info_);
+      ros1_->writeMessage(dataset_info_ros1_, timestamp_us, value.finish());
+    } else {
+      CdrWriter value; value.writeString(recording_info_);
+      ros2_->writeMessage(dataset_info_ros2_, timestamp_us, value.finish());
+    }
+    info_written_ = true;
+  }
   RosbagFormat format_;
+  std::string recording_info_;
+  bool info_written_ = false;
+  Connection* dataset_info_ros1_ = nullptr;
+  int dataset_info_ros2_ = 0;
   std::unique_ptr<Ros1BagWriter> ros1_;
   std::unique_ptr<Ros2BagWriter> ros2_;
   std::array<Connection*, 4> camera_ros1_{};
@@ -1759,9 +1790,17 @@ RosbagExportResult exportDatasetToRosbag(
     if (dataset_version > 6u) {
       throw std::runtime_error("unsupported future Prism dataset format");
     }
-    const bool strict_time_v6 = dataset_version == 6u;
     V6DatasetLayout v6_layout;
-    if (strict_time_v6) v6_layout = readV6DatasetLayout(dataset_root);
+    if (dataset_version == 6u) v6_layout = readV6DatasetLayout(dataset_root);
+    const bool all_received = v6_layout.all_received;
+    const bool strict_time_v6 = dataset_version == 6u && !all_received;
+    result.synchronization_not_asserted = all_received;
+    const std::string recording_info = all_received
+        ? "recording_stream_policy=all-received\nalignment=not-asserted\n"
+          "timestamp_policy=source-preserved-see-per-stream-flags\n"
+          "warning=Source timestamps are preserved; cross-sensor synchronization and UTC are not guaranteed. "
+          "Per-sample source flags remain in the original dataset.\n"
+        : "";
 
     std::array<uint64_t, 4> camera_rows{};
     std::array<uint64_t, 2> imu_rows{};
@@ -1774,7 +1813,7 @@ RosbagExportResult exportDatasetToRosbag(
         ++camera_index_count;
       }
     }
-    if (strict_time_v6 &&
+    if (dataset_version == 6u &&
         camera_index_count != (v6_layout.cameras ? camera_rows.size() : 0u)) {
       throw std::runtime_error(
           "v6 camera indexes do not match the manifest declaration");
@@ -1817,8 +1856,8 @@ RosbagExportResult exportDatasetToRosbag(
     const uint64_t lidar_rows = countRows(lidar_index, false);
     const bool lidar_file_present =
         std::filesystem::is_regular_file(lidar_index);
-    if (strict_time_v6 &&
-        ((v6_layout.lidar && (!lidar_file_present || lidar_rows == 0u)) ||
+    if (dataset_version == 6u &&
+        ((v6_layout.lidar && (!lidar_file_present || (!all_received && lidar_rows == 0u))) ||
          (!v6_layout.lidar && lidar_file_present))) {
       throw std::runtime_error(
           "v6 LiDAR point index does not match the manifest declaration");
@@ -1831,9 +1870,9 @@ RosbagExportResult exportDatasetToRosbag(
     const uint64_t lidar_imu_rows = countRows(lidar_imu_index, false);
     const bool lidar_imu_file_present =
         std::filesystem::is_regular_file(lidar_imu_index);
-    if (strict_time_v6 &&
+    if (dataset_version == 6u &&
         ((v6_layout.lidar_imu &&
-          (!lidar_imu_file_present || lidar_imu_rows == 0u)) ||
+          (!lidar_imu_file_present || (!all_received && lidar_imu_rows == 0u))) ||
          (!v6_layout.lidar_imu && lidar_imu_file_present))) {
       throw std::runtime_error(
           "v6 LiDAR IMU index does not match the manifest declaration");
@@ -1847,7 +1886,7 @@ RosbagExportResult exportDatasetToRosbag(
 
     temporary = temporaryPathFor(output_path);
     DatasetBagWriter writer(format, temporary, output_path, cameras_present,
-                            lidar_present, lidar_imu_present, gnss.gnss, gnss.rtk, !gnss.quality.empty());
+                            lidar_present, lidar_imu_present, gnss.gnss, gnss.rtk, !gnss.quality.empty(), recording_info);
 
     uint64_t completed = 0;
     std::vector<uint64_t> camera0_timestamps;
@@ -1895,7 +1934,7 @@ RosbagExportResult exportDatasetToRosbag(
             throw std::runtime_error(
                 "v6 camera timestamp is not in the RK CLOCK_REALTIME epoch");
           }
-          if (sequence != 0 && timestamp_us < previous_timestamp) {
+          if (!all_received && sequence != 0 && timestamp_us < previous_timestamp) {
             throw std::runtime_error("camera timestamps are not monotonic");
           }
           if (strict_time_v6) {
@@ -1957,7 +1996,7 @@ RosbagExportResult exportDatasetToRosbag(
           throw std::runtime_error(
               "v6 IMU timestamp is not in the RK CLOCK_REALTIME epoch");
         }
-        if (sequence != 0 && timestamp_us < previous_timestamp) {
+        if (!all_received && sequence != 0 && timestamp_us < previous_timestamp) {
           throw std::runtime_error("IMU timestamps are not monotonic");
         }
         previous_timestamp = timestamp_us;
@@ -2036,8 +2075,8 @@ RosbagExportResult exportDatasetToRosbag(
           }
           has_v6_time_source = true;
         }
-        if (strict_time_v6 &&
-            (!has_v6_time_source || timestamp_synced != 1u)) {
+        if (dataset_version == 6u &&
+            (!has_v6_time_source || (!all_received && timestamp_synced != 1u))) {
           throw std::runtime_error(
               "v6 lidar.tum requires a synchronized sensor time source at line " +
               std::to_string(line_number));
@@ -2056,8 +2095,14 @@ RosbagExportResult exportDatasetToRosbag(
         }
         (void)time_type;
         (void)raw_timestamp;
-        if (sequence != 0 && timestamp_us < previous_timestamp) {
+        if (!all_received && sequence != 0 && timestamp_us < previous_timestamp) {
           throw std::runtime_error("LiDAR timestamps are not monotonic");
+        }
+        if (all_received && timestamp_us < previous_timestamp) {
+          if (auto tail = frame_accumulator.finish()) {
+            writer.writeLidar(sequence++, *tail);
+            ++result.lidar_messages;
+          }
         }
         previous_timestamp = timestamp_us;
         Bytes points = readContainerPayload(
@@ -2148,8 +2193,8 @@ RosbagExportResult exportDatasetToRosbag(
             has_tai_flag = true;
           }
         }
-        if (strict_time_v6 &&
-            (!has_time_source || !has_tai_flag || timestamp_synced != 1u)) {
+        if (dataset_version == 6u &&
+            (!has_time_source || !has_tai_flag || (!all_received && timestamp_synced != 1u))) {
           throw std::runtime_error(
               "v6 lidar_imu.tum requires a synchronized sensor time source at line " +
               std::to_string(line_number));
@@ -2161,7 +2206,7 @@ RosbagExportResult exportDatasetToRosbag(
           throw std::runtime_error(
               "v6 LiDAR IMU timestamp is not in the RK CLOCK_REALTIME epoch");
         }
-        if (sequence != 0 && timestamp_us < previous_timestamp) {
+        if (!all_received && sequence != 0 && timestamp_us < previous_timestamp) {
           throw std::runtime_error("LiDAR IMU timestamps are not monotonic");
         }
         previous_timestamp = timestamp_us;

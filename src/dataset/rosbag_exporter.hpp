@@ -21,6 +21,7 @@ struct RosbagExportProgress {
 struct RosbagExportResult {
   bool success = false;
   bool cancelled = false;
+  bool synchronization_not_asserted = false;
   uint64_t camera_messages = 0;
   uint64_t camera_exposure_messages = 0;
   // Board-mounted IMU0/IMU1 messages. Kept separate from the optional
