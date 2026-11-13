@@ -397,7 +397,7 @@ int main(int argc, char** argv) {
     if (magic != "#ROSBAG V2.0\n") throw std::runtime_error("bad bag magic");
     const Record file_header = parseRecord(bytes, 13u);
     if (op(file_header) != 0x03u ||
-        fieldU32(file_header, "conn_count") != 12u ||
+        fieldU32(file_header, "conn_count") != 15u ||
         fieldU32(file_header, "chunk_count") == 0u) {
       throw std::runtime_error("invalid bag file header");
     }
@@ -449,8 +449,8 @@ int main(int argc, char** argv) {
       }
       offset = record.next_offset;
     }
-    if (offset != index_position || index_entries != 13u ||
-        message_counts.size() != 12u) {
+    if (offset != index_position || index_entries != 16u ||
+        message_counts.size() != 15u) {
       throw std::runtime_error("bag chunks or indexes are incomplete");
     }
 
@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
       }
       offset = record.next_offset;
     }
-    if (connection_types.size() != 12u || chunk_infos == 0u ||
+    if (connection_types.size() != 15u || chunk_infos == 0u ||
         connection_types[0] != "sensor_msgs/CompressedImage" ||
         connection_types[4] != "std_msgs/UInt32" ||
         connection_types[8] != "sensor_msgs/Imu" ||
@@ -643,7 +643,7 @@ int main(int argc, char** argv) {
     const std::string metadata = readText(ros2_metadata);
     if (metadata.find("version: 5") == std::string::npos ||
         metadata.find("storage_identifier: sqlite3") == std::string::npos ||
-        metadata.find("message_count: 13") == std::string::npos ||
+        metadata.find("message_count: 16") == std::string::npos ||
         metadata.find("sensor_msgs/msg/CompressedImage") == std::string::npos ||
         metadata.find("std_msgs/msg/UInt32") == std::string::npos ||
         metadata.find("sensor_msgs/msg/Imu") == std::string::npos ||
@@ -693,7 +693,7 @@ int main(int argc, char** argv) {
         ros2_types.emplace(topics.value(0).toString().toStdString(),
                            topics.value(1).toString().toStdString());
       }
-      if (ros2_types.size() != 12u ||
+      if (ros2_types.size() != 15u ||
           ros2_types["/prism/camera0/image/compressed"] !=
               "sensor_msgs/msg/CompressedImage" ||
           ros2_types["/prism/camera0/exposure_us"] !=
@@ -707,7 +707,7 @@ int main(int argc, char** argv) {
       }
       QSqlQuery count(database);
       if (!count.exec(QStringLiteral("SELECT COUNT(*) FROM messages;")) ||
-          !count.next() || count.value(0).toULongLong() != 13u) {
+          !count.next() || count.value(0).toULongLong() != 16u) {
         throw std::runtime_error("ROS2 message count is incorrect");
       }
       const auto messageFor = [&database](const QString& topic) {
@@ -944,7 +944,7 @@ int main(int argc, char** argv) {
     if (!single_imu_result.success || single_imu_result.imu_messages != 1u ||
         single_imu_result.camera_messages != 0u ||
         fieldU32(parseRecord(readFile(single_imu_bag), 13u),
-                 "conn_count") != 2u) {
+                 "conn_count") != 3u) {
       throw std::runtime_error("single synchronized IMU export failed: " +
                                single_imu_result.error);
     }
@@ -975,7 +975,7 @@ int main(int argc, char** argv) {
     if (!boot_time_result.success || boot_time_result.imu_messages != 1u ||
         boot_time_result.camera_messages != 0u ||
         fieldU32(parseRecord(readFile(boot_time_bag), 13u),
-                 "conn_count") != 2u) {
+                 "conn_count") != 3u) {
       throw std::runtime_error(
           "Sensor Board boot-time export failed: " +
           boot_time_result.error);
@@ -1137,7 +1137,7 @@ int main(int argc, char** argv) {
     }
     const Record legacy_full_header =
         parseRecord(readFile(legacy_full_ros1), 13u);
-    if (fieldU32(legacy_full_header, "conn_count") != 11u) {
+    if (fieldU32(legacy_full_header, "conn_count") != 13u) {
       throw std::runtime_error(
           "legacy full dataset gained an unexpected LiDAR IMU connection");
     }
@@ -1160,7 +1160,7 @@ int main(int argc, char** argv) {
         legacy_camera_imu_ros1_result.lidar_messages != 0u ||
         legacy_camera_imu_ros1_result.lidar_imu_messages != 0u ||
         fieldU32(parseRecord(readFile(legacy_camera_imu_ros1), 13u),
-                 "conn_count") != 10u) {
+                 "conn_count") != 12u) {
       throw std::runtime_error(
           "legacy camera + onboard IMU ROS1 dataset export failed: " +
           legacy_camera_imu_ros1_result.error);
@@ -1180,7 +1180,7 @@ int main(int argc, char** argv) {
         legacy_camera_imu_ros2_result.imu_messages != 2u ||
         legacy_camera_imu_ros2_result.lidar_messages != 0u ||
         legacy_camera_imu_ros2_result.lidar_imu_messages != 0u ||
-        legacy_camera_imu_metadata.find("message_count: 10") ==
+        legacy_camera_imu_metadata.find("message_count: 12") ==
             std::string::npos ||
         legacy_camera_imu_metadata.find("PointCloud2") != std::string::npos ||
         legacy_camera_imu_metadata.find("/prism/lidar/imu/data") !=
@@ -1214,7 +1214,7 @@ int main(int argc, char** argv) {
     }
     const Bytes imu_only_ros1_bytes = readFile(imu_only_ros1);
     const Record imu_only_file_header = parseRecord(imu_only_ros1_bytes, 13u);
-    if (fieldU32(imu_only_file_header, "conn_count") != 2u) {
+    if (fieldU32(imu_only_file_header, "conn_count") != 4u) {
       throw std::runtime_error("IMU-only ROS1 bag has non-IMU connections");
     }
 
@@ -1234,7 +1234,7 @@ int main(int argc, char** argv) {
     }
     const std::string imu_only_metadata =
         readText(imu_only_ros2 / "metadata.yaml");
-    if (imu_only_metadata.find("message_count: 2") == std::string::npos ||
+    if (imu_only_metadata.find("message_count: 4") == std::string::npos ||
         imu_only_metadata.find("sensor_msgs/msg/Imu") == std::string::npos ||
         imu_only_metadata.find("CompressedImage") != std::string::npos ||
         imu_only_metadata.find("PointCloud2") != std::string::npos) {
@@ -1264,7 +1264,7 @@ int main(int argc, char** argv) {
     const Bytes imu_only_lidar_ros1_bytes = readFile(imu_only_lidar_ros1);
     const Record imu_only_lidar_file_header =
         parseRecord(imu_only_lidar_ros1_bytes, 13u);
-    if (fieldU32(imu_only_lidar_file_header, "conn_count") != 3u) {
+    if (fieldU32(imu_only_lidar_file_header, "conn_count") != 6u) {
       throw std::runtime_error(
           "IMU-only + LiDAR IMU ROS1 bag has incorrect connections");
     }
@@ -1285,7 +1285,7 @@ int main(int argc, char** argv) {
     }
     const std::string imu_only_lidar_metadata =
         readText(imu_only_lidar_ros2 / "metadata.yaml");
-    if (imu_only_lidar_metadata.find("message_count: 3") ==
+    if (imu_only_lidar_metadata.find("message_count: 6") ==
             std::string::npos ||
         imu_only_lidar_metadata.find("/prism/lidar/imu/data") ==
             std::string::npos ||

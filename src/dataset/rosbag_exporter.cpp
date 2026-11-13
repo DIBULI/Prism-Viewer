@@ -1505,6 +1505,41 @@ void writeReceiverFields(Writer& w, const gnss_bag::Position& p) {
   w.writeDouble(p.east); w.writeDouble(p.north); w.writeDouble(p.up);
 }
 
+// Wire-compatible with prism_ros_msgs/BatchIMUMessage in the ROS adapter.
+constexpr const char* kBatchImuFields =
+    "uint64[] timestamp_ns\n"
+    "float64[] acceleration_x\nfloat64[] acceleration_y\nfloat64[] acceleration_z\n"
+    "float64[] angular_velocity_x\nfloat64[] angular_velocity_y\nfloat64[] angular_velocity_z";
+const std::string kBatchImuDefinition =
+    std::string("std_msgs/Header header\n") + kBatchImuFields + "\n"
+    "================================================================================\n"
+    "MSG: std_msgs/Header\n" + kHeaderDefinition;
+const std::string kBatchImuMd5 = QCryptographicHash::hash(
+    QByteArray("2176decaecbce78abc3b96ef049fabed header\n") + kBatchImuFields,
+    QCryptographicHash::Md5).toHex().toStdString();
+
+struct BagImuSample {
+  uint64_t timestamp_us;
+  std::array<double, 3> acceleration;
+  std::array<double, 3> angular_velocity;
+};
+
+template <typename Writer>
+void writeBatchImuFields(Writer& writer, const std::vector<BagImuSample>& samples) {
+  writer.writeU32(static_cast<uint32_t>(samples.size()));
+  for (const auto& sample : samples) {
+    if (sample.timestamp_us > std::numeric_limits<uint64_t>::max() / 1000u)
+      throw std::runtime_error("IMU timestamp exceeds nanosecond range");
+    writer.writeU64(sample.timestamp_us * 1000u);
+  }
+  for (size_t field = 0; field < 6; ++field) {
+    writer.writeU32(static_cast<uint32_t>(samples.size()));
+    for (const auto& sample : samples)
+      writer.writeDouble(field < 3 ? sample.acceleration[field]
+                                   : sample.angular_velocity[field - 3]);
+  }
+}
+
 class DatasetBagWriter {
  public:
   DatasetBagWriter(RosbagFormat format,
@@ -1671,6 +1706,7 @@ class DatasetBagWriter {
           imu_ros2_.at(imu), timestamp_us,
           makeRos2Imu(timestamp_us, frame_id, acceleration, angular_velocity));
     }
+    appendBatchImu(imu, {timestamp_us, acceleration, angular_velocity});
   }
 
   void writeLidar(uint32_t sequence, const LidarFrame& frame) {
@@ -1700,13 +1736,64 @@ class DatasetBagWriter {
           makeRos2Imu(timestamp_us, kFrameId, acceleration,
                       angular_velocity));
     }
+    appendBatchImu(2, {timestamp_us, acceleration, angular_velocity});
   }
 
   uint64_t finish() {
+    for (size_t sensor = 0; sensor < imu_batches_.size(); ++sensor) flushBatchImu(sensor);
     return format_ == RosbagFormat::Ros1 ? ros1_->finish() : ros2_->finish();
   }
 
+  uint64_t imuBatchCount() const { return imu_batch_counts_[0] + imu_batch_counts_[1]; }
+  uint64_t lidarImuBatchCount() const { return imu_batch_counts_[2]; }
+
  private:
+  void appendBatchImu(size_t sensor, const BagImuSample& sample) {
+    auto& samples = imu_batches_.at(sensor);
+    // Bound each batch by sample count and recorded time span. Split before
+    // clock regressions; never sort, average, interpolate or discard samples.
+    if (!samples.empty() &&
+        (sample.timestamp_us < samples.back().timestamp_us ||
+         sample.timestamp_us - samples.front().timestamp_us > 20000u))
+      flushBatchImu(sensor);
+    samples.push_back(sample);
+    if (samples.size() == 16u) flushBatchImu(sensor);
+  }
+
+  void flushBatchImu(size_t sensor) {
+    auto& samples = imu_batches_.at(sensor);
+    if (samples.empty()) return;
+    const std::string prefix = sensor == 2 ? "/prism/lidar/imu" :
+        "/prism/imu" + std::to_string(sensor);
+    const std::string frame_id = sensor == 2 ? "livox_imu" :
+        "imu" + std::to_string(sensor) + "_frame";
+    const auto stamp = samples.front().timestamp_us;
+    if (ros1_) {
+      auto& connection = batch_ros1_.at(sensor);
+      if (!connection) connection = &ros1_->addConnection(
+          prefix + "/batch", "prism_ros_msgs/BatchIMUMessage",
+          kBatchImuMd5, kBatchImuDefinition);
+      Ros1ValueWriter value;
+      appendRos1Header(&value.bytes, static_cast<uint32_t>(imu_batch_counts_[sensor]), stamp, frame_id);
+      writeBatchImuFields(value, samples);
+      ros1_->writeMessage(connection, stamp, value.finish());
+    } else {
+      auto& topic = batch_ros2_.at(sensor);
+      if (!topic) topic = ros2_->addTopic(prefix + "/batch", "prism_ros_msgs/msg/BatchIMUMessage");
+      CdrWriter value;
+      writeRos2Header(&value, stamp, frame_id);
+      writeBatchImuFields(value, samples);
+      ros2_->writeMessage(topic, stamp, value.finish());
+    }
+    ++imu_batch_counts_[sensor];
+    samples.clear();
+  }
+
+  std::array<std::vector<BagImuSample>, 3> imu_batches_;
+  std::array<uint64_t, 3> imu_batch_counts_{};
+  std::array<Connection*, 3> batch_ros1_{};
+  std::array<int, 3> batch_ros2_{};
+
   void writeRecordingInfo(uint64_t timestamp_us) {
     if (recording_info_.empty() || info_written_) return;
     if (ros1_) {
@@ -2239,6 +2326,8 @@ RosbagExportResult exportDatasetToRosbag(
                                                 : "Finalizing ROS2 bag",
                    true);
     result.output_bytes = writer.finish();
+    result.imu_batch_messages = writer.imuBatchCount();
+    result.lidar_imu_batch_messages = writer.lidarImuBatchCount();
     checkCancelled(cancelled);
     if (std::filesystem::exists(output_path)) {
       const std::filesystem::path backup = temporaryPathFor(

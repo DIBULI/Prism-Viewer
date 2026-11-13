@@ -82,6 +82,24 @@ standard `std_msgs` and a JSON parser.
 
 ## Other sensor streams
 
+ROS1 和 ROS2 导出会同时包含逐样本 `sensor_msgs/Imu` 和
+`prism_ros_msgs/BatchIMUMessage`，不需要重新录制或选择导出模式：
+
+| 传感器 | 逐样本话题 | 批量话题 |
+| --- | --- | --- |
+| 板载 IMU0 | `/prism/imu0/data` | `/prism/imu0/batch` |
+| 板载 IMU1 | `/prism/imu1/data` | `/prism/imu1/batch` |
+| 雷达 IMU | `/prism/lidar/imu/data` | `/prism/lidar/imu/batch` |
+
+批量类型沿用 Prism ROS Adapter 的 `prism_ros_msgs` 定义；ROS2 的完整类型名为
+`prism_ros_msgs/msg/BatchIMUMessage`。在 ROS 中订阅批量话题前，请安装或构建
+配套 ROS Adapter 1.3.0 的消息包。ROS1 Bag 同时内嵌完整消息定义。
+每批最多 16 个样本，源时间跨度不超过 20 ms，`header.stamp` 和 Bag 时间均为
+首样本时间；`timestamp_ns`、三轴加速度、三轴角速度数组逐项对应，保持双精度 SI 值。
+不足一批的尾部仍保存，时间回退时另起一批；不平均、不插值、不删除样本。
+两种话题表达的是同一份测量，算法应选择一种输入，避免重复融合。
+没有样本的传感器不生成批量话题；导出结果分别报告样本数和批次数。
+
 `/prism/imu0/data` 和 `/prism/imu1/data` 始终对应 sensor-board 上的两路板载
 IMU；`/prism/lidar/imu/data` 是独立的雷达内置 IMU，不能混入或替代板载 IMU。
 三路 IMU 的加速度和角速度都使用数据集中的 SI 单位（m/s²、rad/s）。设备没有

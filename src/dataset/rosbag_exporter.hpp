@@ -28,6 +28,9 @@ struct RosbagExportResult {
   // LiDAR-integrated IMU for backwards-compatible result accounting.
   uint64_t imu_messages = 0;
   uint64_t lidar_imu_messages = 0;
+  // Additional BatchIMUMessage records; the sample counts above are unchanged.
+  uint64_t imu_batch_messages = 0;
+  uint64_t lidar_imu_batch_messages = 0;
   uint64_t lidar_messages = 0;
   uint64_t lidar_points = 0;
   uint64_t gnss_positions = 0;
