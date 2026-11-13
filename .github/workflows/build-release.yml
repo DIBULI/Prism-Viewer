@@ -27,12 +27,20 @@ concurrency:
 
 jobs:
   package-metadata:
+    outputs:
+      revision: ${{ steps.identity.outputs.revision }}
+      epoch: ${{ steps.identity.outputs.epoch }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           persist-credentials: false
+      - name: Capture release identity
+        id: identity
+        run: |
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
       - name: Verify version and pinned SDK
         run: |
           set -euo pipefail
@@ -101,6 +109,9 @@ jobs:
         run: |
           cmake -S . -B build-windows -A x64 `
             -DCMAKE_PREFIX_PATH="$env:QT_PREFIX" `
+            -DPRISM_VIEWER_REVISION="${{ needs.package-metadata.outputs.revision }}" `
+            -DPRISM_VIEWER_BUILD_EPOCH="${{ needs.package-metadata.outputs.epoch }}" `
+            -DPRISM_REQUIRE_RELEASE_IDENTITY=ON `
             -DPRISM_BUILD_BUNDLED_ZSTD=ON -DBUILD_TESTING=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-windows --config Release --parallel
@@ -184,6 +195,11 @@ jobs:
               throw "Missing packaged runtime dependency: $relative"
             }
           }
+
+          python scripts/verify_build_identity.py (Join-Path $package 'prism-viewer.exe') `
+            "${{ needs.package-metadata.outputs.revision }}" "${{ needs.package-metadata.outputs.epoch }}" `
+            --output (Join-Path $package 'BUILD_IDENTITY.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Push-Location $package
           Get-ChildItem -Recurse -File |
@@ -320,6 +336,9 @@ jobs:
       - name: Configure and build Viewer
         run: |
           cmake_args=(
+            -DPRISM_VIEWER_REVISION="${{ needs.package-metadata.outputs.revision }}"
+            -DPRISM_VIEWER_BUILD_EPOCH="${{ needs.package-metadata.outputs.epoch }}"
+            -DPRISM_REQUIRE_RELEASE_IDENTITY=ON
             -DCMAKE_BUILD_TYPE=Release
             -DPRISM_BUILD_BUNDLED_ZSTD=ON -DBUILD_TESTING=ON
             -DPRISM_DEPLOY_RUNTIME_DEPENDENCIES=OFF
@@ -513,6 +532,10 @@ jobs:
             echo "Prism SDK source: third_party/Prism-SDK/$LINUX_SDK_RUNTIME"
             echo "Prism SDK SHA256: $LINUX_SDK_SHA256"
           } > "$package/SDK_PROVENANCE.txt"
+
+          python3 scripts/verify_build_identity.py "$package/bin/prism-viewer" \
+            "${{ needs.package-metadata.outputs.revision }}" "${{ needs.package-metadata.outputs.epoch }}" \
+            --output "$package/BUILD_IDENTITY.json"
 
           checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
           (
@@ -741,6 +764,9 @@ jobs:
       - name: Configure and build Viewer
         run: |
           cmake -S . -B build-macos-ci -G Ninja \
+            -DPRISM_VIEWER_REVISION="${{ needs.package-metadata.outputs.revision }}" \
+            -DPRISM_VIEWER_BUILD_EPOCH="${{ needs.package-metadata.outputs.epoch }}" \
+            -DPRISM_REQUIRE_RELEASE_IDENTITY=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -802,6 +828,10 @@ jobs:
                        awk '/^[[:space:]]/ { print $1 }')
           done
 
+          codesign --force --deep --sign - "$app"
+          python3 scripts/verify_build_identity.py "$executable" \
+            "${{ needs.package-metadata.outputs.revision }}" "${{ needs.package-metadata.outputs.epoch }}" \
+            --output "$app/Contents/Resources/BUILD_IDENTITY.json"
           codesign --force --deep --sign - "$app"
           scripts/verify_macos_bundle.sh "$app"
           QT_QPA_PLATFORM=offscreen "$executable" --tls-self-test

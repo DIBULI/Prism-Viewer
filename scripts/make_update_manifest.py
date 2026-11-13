@@ -1,5 +1,6 @@
 """Publish metadata for the four packages built from this exact Git revision."""
 import hashlib,json,subprocess,sys
+from package_identity import read_package_identity
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 assets=Path(sys.argv[1])
@@ -11,6 +12,10 @@ for target in ('windows-x64','macos-arm64','linux-x64','linux-arm64'):
     suffix='.tar.gz' if target.startswith('linux-') else '.zip'
     name=f'Prism-Viewer-{version}-{target}{suffix}'
     path=assets/name
+    expected=dict(version=version,revision=revision,build_epoch=epoch)
+    actual=read_package_identity(path)
+    if actual != expected:
+        raise ValueError(f'{name}: artifact identity mismatch: {actual} != {expected}')
     digest=hashlib.sha256()
     with path.open('rb') as stream:
         for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)

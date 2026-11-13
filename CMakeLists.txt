@@ -7,15 +7,7 @@ endif()
 
 project(prism_viewer VERSION 1.3.0 LANGUAGES CXX)
 
-# Same-version maintenance releases still need an ordered, reproducible identity.
-execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-  OUTPUT_VARIABLE PRISM_VIEWER_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-execute_process(COMMAND git show -s --format=%ct HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-  OUTPUT_VARIABLE PRISM_VIEWER_BUILD_EPOCH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-if(NOT PRISM_VIEWER_BUILD_EPOCH MATCHES "^[0-9]+$")
-  set(PRISM_VIEWER_BUILD_EPOCH 0)
-  set(PRISM_VIEWER_REVISION "source-build")
-endif()
+include(cmake/ViewerBuildIdentity.cmake)
 
 # Viewer and its pinned binary SDK are versioned independently.
 set(PRISM_USB_SDK_VERSION "1.3.0")
@@ -634,6 +626,13 @@ if(BUILD_TESTING)
   target_compile_features(update-process-fixture PRIVATE cxx_std_17)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME viewer-build-identity COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_identity_test.py" "${CMAKE_COMMAND}")
+    if(NOT PRISM_VIEWER_REVISION STREQUAL "source-build")
+      add_test(NAME viewer-build-artifact COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_build_identity.py"
+        $<TARGET_FILE:prism-viewer> "${PRISM_VIEWER_REVISION}" "${PRISM_VIEWER_BUILD_EPOCH}")
+    endif()
     add_test(NAME viewer-update-install COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_install_test.py"
       "${CMAKE_CURRENT_SOURCE_DIR}/resources" $<TARGET_FILE:update-process-fixture>)
