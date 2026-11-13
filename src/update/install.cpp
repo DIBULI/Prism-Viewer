@@ -1,4 +1,5 @@
 #include "update/install.hpp"
+#include "update/startup_ack.hpp"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -71,7 +72,7 @@ void Installer::start(const QString& archive,const Release& release){try{
   const QStorageInfo space(parent);need(!space.isReadOnly()&&space.bytesAvailable()>9LL*1024*1024*1024,"Update needs a writable application folder and 9 GiB free space");
   // Keep the helper outside the portable installation. Stage on the target
   // volume so replacing/restoring directories never becomes a cross-volume copy.
-  QTemporaryDir work(QDir::tempPath()+"/prism-viewer-update-XXXXXX");need(work.isValid(),"Cannot create temporary update directory");
+  QTemporaryDir work(QDir::tempPath()+"/"+QLatin1String(kWorkDirectoryPrefix)+"XXXXXX");need(work.isValid(),"Cannot create temporary update directory");
   const auto workPath=QFileInfo(work.path()).canonicalFilePath();
   need(workPath.compare(target_,Qt::CaseInsensitive)!=0&&!workPath.startsWith(target_+"/",Qt::CaseInsensitive),"System temporary directory must be outside the Viewer installation");
   QTemporaryDir stage(parent+"/.prism-viewer-stage-XXXXXX");need(stage.isValid(),"Application folder is not writable");

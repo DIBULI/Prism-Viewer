@@ -25,7 +25,7 @@ scenarios=['success','rollback','cancel']
 if os.name=='nt':scenarios+=['transient-lock','persistent-lock']
 for scenario in scenarios:
     with tempfile.TemporaryDirectory(prefix='prism updater space-') as folder:
-        base=Path(folder);target=base/'Viewer installed';stage=base/'new package';work=base/'.prism-viewer-update-test';backup=base/'old backup'
+        base=Path(folder);target=base/'Viewer installed';stage=base/'new package';work=base/'prism-viewer-update-test';backup=base/'old backup'
         for p in (target,stage,work):p.mkdir()
         relative='fixture.exe' if os.name=='nt' else 'fixture'
         for p in (target,stage):shutil.copy2(fixture,p/relative)

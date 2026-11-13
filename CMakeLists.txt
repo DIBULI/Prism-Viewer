@@ -637,6 +637,10 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_install_test.py"
       "${CMAKE_CURRENT_SOURCE_DIR}/resources" $<TARGET_FILE:update-process-fixture>)
     set_tests_properties(viewer-update-install PROPERTIES TIMEOUT 100)
+    add_test(NAME viewer-update-startup COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_startup_test.py" $<TARGET_FILE:prism-viewer>)
+    set_tests_properties(viewer-update-startup PROPERTIES TIMEOUT 45
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software")
   endif()
 
   add_executable(device-info-compat-test

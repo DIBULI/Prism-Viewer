@@ -37,6 +37,7 @@
 #include "ui/lidar_power_panel.hpp"
 #include "ui/main_window.hpp"
 #include "ui/viewer_update_dialog.hpp"
+#include "update/startup_ack.hpp"
 #include "ui/preview_image_decoder.hpp"
 #include "ui/raw_preview.hpp"
 #include "communication/capture_credits.hpp"
@@ -12243,9 +12244,11 @@ int runViewerApplication(int argc, char** argv) {
   window.show();
   const int update_ack=command_line.indexOf(QStringLiteral("--viewer-update-ack"));
   if(update_ack>=0&&update_ack+1<command_line.size()){
-    const auto path=command_line[update_ack+1];const QFileInfo info(path);
-    if(info.fileName()=="started"&&info.dir().dirName().startsWith(".prism-viewer-update-"))
-      QTimer::singleShot(2000,&app,[path]{QFile ack(path);if(ack.open(QIODevice::WriteOnly|QIODevice::NewOnly)){ack.write("started");ack.close();}});
+    const auto path=command_line[update_ack+1];
+    QTimer::singleShot(2000,&app,[path]{
+      if (!update::writeStartupAcknowledgement(path))
+        qWarning("Cannot write Viewer update startup acknowledgement");
+    });
   }
   return app.exec();
 }
