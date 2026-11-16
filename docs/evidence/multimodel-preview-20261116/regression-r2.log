@@ -1,0 +1,35 @@
+Test project /Users/xiangfuli/Documents/ChatGPT/RK3576/artifacts/21312-device-20261114/viewer-r1/build
+      Start 39: bayer-preview
+ 1/12 Test #39: bayer-preview ....................   Passed    2.21 sec
+      Start 47: mixed-dataset
+ 2/12 Test #47: mixed-dataset ....................   Passed    6.57 sec
+      Start 48: mixed-dataset-ui
+ 3/12 Test #48: mixed-dataset-ui .................   Passed    4.00 sec
+      Start 49: image-sequence-export
+ 4/12 Test #49: image-sequence-export ............   Passed    7.01 sec
+      Start 50: image-sequence-export-ui
+ 5/12 Test #50: image-sequence-export-ui .........   Passed    6.88 sec
+      Start 51: raw-recorder
+ 6/12 Test #51: raw-recorder .....................***Failed    5.86 sec
+Absent camera/IMU blocked received-stream recording
+
+      Start 52: raw-dataset
+ 7/12 Test #52: raw-dataset ......................   Passed   36.00 sec
+      Start 53: raw-dataset-ui
+ 8/12 Test #53: raw-dataset-ui ...................   Passed    4.28 sec
+      Start 55: dataset-browser
+ 9/12 Test #55: dataset-browser ..................   Passed    0.09 sec
+      Start 56: dataset-playback-timing
+10/12 Test #56: dataset-playback-timing ..........   Passed    0.00 sec
+      Start 57: dataset-playback
+11/12 Test #57: dataset-playback .................   Passed    0.01 sec
+      Start 66: dataset-playback-ui
+12/12 Test #66: dataset-playback-ui ..............   Passed    0.33 sec
+
+92% tests passed, 1 tests failed out of 12
+
+Total Test time (real) =  73.24 sec
+
+The following tests FAILED:
+	 51 - raw-recorder (Failed)
+Errors while running CTest

@@ -33,7 +33,7 @@ int main(int argc,char** argv){
       check(validation.valid,"real dataset validation failed");
       const auto data=loadRaw8Dataset(root);
       for(size_t c=0;c<4;++c){std::cout<<"camera"<<c<<"="<<data.cameras[c].size()<<'\n';
-        if(!data.cameras[c].empty())check(!loadRaw8DatasetImage(data.cameras[c].back()).isNull(),"real tail decode");}
+        if(!data.cameras[c].empty())check(!loadProfileDatasetImage(data.cameras[c].back()).isNull(),"real tail decode");}
       std::cout<<"PASS real frames="<<validation.checked_records<<" steps="<<data.timestamps.size()<<'\n';return 0;
     }
     QTemporaryDir dir;check(dir.isValid(),"temp dir");
@@ -105,9 +105,9 @@ int main(int argc,char** argv){
       check(data.display[i][c]==int(i),"ordinal browse omitted source frame");
     v=validateRaw8Dataset(root,{},{});check(v.valid&&v.checked_records==9&&
         v.time_domain=="unknown-or-mixed-image-clocks","unknown preserved without fabricated sync");
-    for(unsigned stride:{2u,4u})for(bool drops:{false,true}){
-      info=raw_fixture::create(root,drops,drops,4,false,stride);data=loadRaw8Dataset(root);
-      check(data.cameras[3].size()==3&&data.cameras[3][1].frame_id-data.cameras[3][0].frame_id==stride,
+    for(unsigned source_step:{1u,3u})for(unsigned stride:{2u,4u})for(bool drops:{false,true}){
+      info=raw_fixture::create(root,drops,drops,4,false,stride,source_step);data=loadRaw8Dataset(root);
+      check(data.cameras[3].size()==3&&data.cameras[3][1].frame_id-data.cameras[3][0].frame_id==source_step*stride,
             "sampled source frame IDs lost");
       check(data.cameras[3][1].timestamp_us-data.cameras[3][0].timestamp_us==500000ULL*stride,
             "sampled source time changed");

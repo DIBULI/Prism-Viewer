@@ -505,7 +505,7 @@ DatasetValidationResult validatePrismDatasetImpl(
   try {
     const auto identity = readDatasetIdentity(root);
     result.device_model = identity.model;
-    if (identity.raw8_recording) {
+    if (identity.raw8_recording || identity.mixed_recording) {
       return validateRaw8Dataset(root, progress, cancelled);
     }
   } catch (const std::exception& error) {

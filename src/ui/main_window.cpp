@@ -4118,11 +4118,12 @@ class MainWindow : public QMainWindow {
       for (size_t c=0;c<4;++c) {
         const bool present = raw_dataset_.display[last][c] >= 0;
         ok = (present != dataset_images_[c].isNull()) && ok;
-        if (present) ok = dataset_images_[c].size() == QSize(5120,3072) && ok;
+        if (present) ok = dataset_images_[c].size() == (raw_dataset_.mixed?
+            ((c==1||c==2)?QSize(4096,3072):QSize(1280,1024)):QSize(5120,3072)) && ok;
       }
       const QString screenshot = qEnvironmentVariable("PRISM_RAW_DATASET_SCREENSHOT");
       if (!screenshot.isEmpty()) { QApplication::processEvents(); ok = grab().save(screenshot) && ok; }
-      if (report) *report = QStringLiteral("RAW8 seek/play/pause/tail/CRC/async PASS=%1 steps=%2 frames=%3/%4/%5/%6")
+      if (report) *report = QStringLiteral("Profile dataset seek/play/pause/tail/async PASS=%1 steps=%2 frames=%3/%4/%5/%6")
           .arg(ok).arg(dataset_frame_count_).arg(raw_dataset_.cameras[0].size()).arg(raw_dataset_.cameras[1].size())
           .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size());
       setDatasetPlaybackActive(false); return ok;
@@ -8594,13 +8595,7 @@ class MainWindow : public QMainWindow {
           "导出原始 JPEG／原生 RAW8 PNG。各相机时间戳保存在 CSV 中，不推定为同步帧组。本段录制不支持时间轴回放。"));
       updateDatasetPlaybackControls();refreshControls();return true;
     };
-    if (identity.mixed_recording) {
-      if (!openImagesWithoutPlayback() && show_errors)
-        QMessageBox::warning(this, uiText("Unable to open dataset", "无法打开数据集"),
-            uiText("Cannot read completed camera indexes.", "无法读取已完成录制的相机索引。"));
-      return;
-    }
-    if (identity.raw8_recording) {
+    if (identity.raw8_recording || identity.mixed_recording) {
       // Clear old data even if the new recording fails validation.
       ++raw_dataset_generation_;
       dataset_raw8_ = true;
@@ -8617,8 +8612,8 @@ class MainWindow : public QMainWindow {
       dataset_path_label_->setText(directory);
       dataset_path_label_->setToolTip(directory);
       const auto message = uiText(
-          "Model: %1 | Loading RAW8 indexes. ROS bag export is unavailable for this format.",
-          "机型：%1 | 正在读取 RAW8 索引。此格式暂不支持 ROS Bag 导出。")
+          "Model: %1 | Loading camera indexes. ROS bag export is unavailable for this format.",
+          "机型：%1 | 正在读取相机索引。此格式暂不支持 ROS Bag 导出。")
           .arg(toQString(identity.model));
       dataset_summary_label_->setText(message);
       dataset_summary_label_->setStyleSheet(QStringLiteral(
@@ -8641,7 +8636,7 @@ class MainWindow : public QMainWindow {
       refreshControls();
       try {
         raw_dataset_ = prism_viewer::dataset::loadRaw8Dataset(root);
-        if (raw_dataset_.timestamps.empty()) throw std::runtime_error("No recorded RAW8 images");
+        if (raw_dataset_.timestamps.empty()) throw std::runtime_error("No recorded camera images");
         dataset_image_export_available_=true;
         dataset_camera_entries_ = raw_dataset_.cameras;
         dataset_frame_count_ = raw_dataset_.timestamps.size();
@@ -8650,15 +8645,18 @@ class MainWindow : public QMainWindow {
         dataset_metadata_only_ = false;
         const auto drops = raw_dataset_.dropped[0] + raw_dataset_.dropped[1] + raw_dataset_.dropped[2] + raw_dataset_.dropped[3];
         dataset_summary_label_->setText(uiText(
-            "Model: %1 | RAW8 lossless · grayscale display | Frames %2 / %3 / %4 / %5 | Recorded drops: %6 | Original per-frame timing retained",
-            "机型：%1 | RAW8 无损 · 灰度显示 | 帧数 %2 / %3 / %4 / %5 | 录制丢帧：%6 | 保留各帧原始时标")
+            "Model: %1 | %7 | Frames %2 / %3 / %4 / %5 | Recorded drops: %6 | Original per-frame timing retained",
+            "机型：%1 | %7 | 帧数 %2 / %3 / %4 / %5 | 录制丢帧：%6 | 保留各帧原始时标")
             .arg(toQString(identity.model)).arg(raw_dataset_.cameras[0].size()).arg(raw_dataset_.cameras[1].size())
-            .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size()).arg(drops));
-        QString details = QStringLiteral("device_model=%1\nformat=prism-raw8-dataset-v1\nwidth=5120\nheight=3072\nsource_bits=8\n").arg(toQString(identity.model));
+            .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size()).arg(drops)
+            .arg(raw_dataset_.mixed?uiText("JPEG + 12M RAW8 grayscale","JPEG + 12M RAW8 灰度"):
+                uiText("RAW8 lossless · grayscale display","RAW8 无损 · 灰度显示")));
+        QString details = QStringLiteral("device_model=%1\nformat=%2\n").arg(toQString(identity.model),
+            raw_dataset_.mixed?QStringLiteral("prism-mixed-dataset-v1"):QStringLiteral("prism-raw8-dataset-v1"));
         for (size_t c = 0; c < 4; ++c)
           details += QStringLiteral("camera%1_images=%2\ncamera%1_dropped=%3\n").arg(c).arg(raw_dataset_.cameras[c].size()).arg(raw_dataset_.dropped[c]);
-        details += uiText("\nIndexes and headers checked. Use Validate for a full readback.\nDisplay uses native 8-bit pixels, without ISP. Source files are unchanged.\nROS bag export is not supported for this format.",
-            "\n已检查索引和帧头。可使用“验证”读取全部数据。\n使用原生 8 位像素显示，不经过 ISP，不修改原始文件。\n此格式暂不支持 ROS Bag 导出。");
+        details += uiText("\nIndexes and image headers checked. Validate reads the camera streams.\nJPEG is displayed as recorded; RAW8 uses native grayscale pixels. Source files are unchanged.\nROS bag export is not supported for this format.",
+            "\n已检查索引和帧头。可使用“验证”检查相机流。\nJPEG 按录制画面显示；RAW8 使用原生灰度像素，不修改原始文件。\n此格式暂不支持 ROS Bag 导出。");
         dataset_details_->setPlainText(details);
         { const QSignalBlocker blocker(dataset_frame_slider_);
           dataset_frame_slider_->setRange(0, int(dataset_frame_count_)-1); dataset_frame_slider_->setValue(0); }
@@ -8671,7 +8669,7 @@ class MainWindow : public QMainWindow {
         updateDatasetPlaybackControls(); refreshControls();
       } catch (const std::exception& error) {
         raw_dataset_ = {};
-        dataset_summary_label_->setText(uiText("Model: %1 | RAW8 dataset could not be opened: %2", "机型：%1 | 无法打开 RAW8 数据集：%2").arg(toQString(identity.model), toQString(error.what())));
+        dataset_summary_label_->setText(uiText("Model: %1 | Camera dataset could not be opened: %2", "机型：%1 | 无法打开相机数据集：%2").arg(toQString(identity.model), toQString(error.what())));
         // Image extraction preserves independent source rows and does not need
         // the older playback reader's synchronized cadence assumptions.
         try {
@@ -8964,7 +8962,7 @@ class MainWindow : public QMainWindow {
           previous.raw_crc32 == entries[c].raw_crc32;
       if (!unchanged) {
         dataset_images_[c] = {};
-        dataset_image_labels_[c]->clearImage(index >= 0 ? uiText("Decoding RAW8…", "正在解码 RAW8……") : uiText("No current sample / recording gap", "当前无帧／录制缺帧"));
+        dataset_image_labels_[c]->clearImage(index >= 0 ? uiText("Decoding image…", "正在解码图像……") : uiText("No current sample / recording gap", "当前无帧／录制缺帧"));
       }
     }
     dataset_frame_label_->setText(uiText("Time step %1/%2 | %3\n%4", "时间步 %1/%2 | %3\n%4")
@@ -8972,7 +8970,7 @@ class MainWindow : public QMainWindow {
             uiText("Ordinal browsing: missing/mixed timing; no synchronized grouping or timed playback",
                    "按帧序号浏览：存在未知或混合时标，不作为同步帧组，不按时间自动播放"):
             describeDatasetTimestamp(time), samples.join(" · ")));
-    if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Decoding RAW8…", "正在解码 RAW8……"), {true, true, true, true});
+    if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Decoding image…", "正在解码图像……"), {true, true, true, true});
     if (!raw_dataset_decoder_) raw_dataset_decoder_ = std::make_unique<prism_viewer::ui::RawDatasetDecoder>(
         [this](prism_viewer::ui::RawDatasetDecoder::Result result) {
           post([this, result = std::move(result)] {
@@ -8981,11 +8979,11 @@ class MainWindow : public QMainWindow {
             dataset_images_ = result.images;
             for (size_t c = 0; c < 4; ++c) {
               if (!result.errors[c].isEmpty()) {
-                dataset_image_labels_[c]->clearImage(uiText("RAW8 read/decode error: %1", "RAW8 读取／解码错误：%1").arg(result.errors[c]));
+                dataset_image_labels_[c]->clearImage(uiText("Image read/decode error: %1", "图像读取／解码错误：%1").arg(result.errors[c]));
                 appendLog(QStringLiteral("Dataset camera%1: %2").arg(c).arg(result.errors[c]));
               } else if (!result.images[c].isNull()) dataset_image_labels_[c]->setImage(result.images[c]);
             }
-            if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("RAW8 grayscale", "RAW8 灰度图"), {true, true, true, true});
+            if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Recorded camera images", "相机录制图像"), {true, true, true, true});
           });
         });
     raw_dataset_requested_entries_ = entries;

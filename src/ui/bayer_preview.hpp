@@ -8,7 +8,7 @@
 
 namespace prism_viewer::ui {
 
-// Display-only provenance, attached only after a complete 415RSV0 RAW8 decode.
+// Display-only provenance, attached only after a complete profile RAW8 decode.
 // It is not wire metadata and never changes or accompanies recorded RAW bytes.
 inline constexpr auto kRaw8PreviewKey = "prism.raw8.preview";
 inline constexpr auto kRaw8TransferKey = "prism.raw8.transfer";
@@ -23,7 +23,7 @@ inline bool isNativeBayerPreview(const QImage& image) {
   return image.text(kRaw8PreviewKey) == QStringLiteral("native-bayer") &&
          image.text(kRaw8TransferKey) != QStringLiteral("srgb") &&
          image.format() == QImage::Format_Grayscale8 &&
-         image.size() == QSize(5120, 3072);
+         (image.size() == QSize(5120, 3072) || image.size() == QSize(4096, 3072));
 }
 
 // Equal weight for every CFA phase, independent of Bayer order. This is a

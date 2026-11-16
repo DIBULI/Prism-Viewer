@@ -44,14 +44,16 @@ without a current sample is left empty. These independent diagnostic timestamps
 are **not synchronized exposure UTC**; a time step does not claim simultaneous
 four-camera exposure.
 
-Display uses a fixed linear 12-bit-to-8-bit grayscale mapping, without ISP or
-automatic brightness changes. Lossless 12-bit source pixels remain unchanged.
+RAW8 is decoded to native 8-bit Bayer grayscale. Scaled previews average each
+2×2 Bayer cell and apply the existing sRGB display transfer, without automatic
+brightness changes. Original pixels and source files remain unchanged.
 Full-resolution decoding runs in a bounded background worker. Seeking replaces
 only pending display work, never recorded data. Playback speed can be limited by
 the computer's decoding throughput.
 
 Opening checks manifest fields, indexes, frame headers, byte ranges, counts and
-source continuity. Display checks both encoded and original-pixel CRCs.
+source continuity. Decoding follows the recorded container version; historical
+containers with payload CRCs keep their existing integrity checks.
 **Validate dataset** rereads and decodes every frame, with cancellation/progress.
 Truncation, corruption, unaccounted gaps and counter mismatches are errors.
 Accounted disk queue drops are warnings with per-camera counts; finalized does
@@ -66,6 +68,28 @@ frame is rejected without evicting otherwise useful queued data.
 Playback does not require a GPU or connected device. GPU-required capture and
 compression behavior is unchanged. ROS bag export is not provided for this RAW8
 format; the A4L playback/export path is unchanged.
+
+## 21312V0 mixed-camera playback
+
+Completed `prism-mixed-dataset-v1` recordings open in the same four-camera
+preview and timeline. Cam0/3 display their original 1280×1024 JPEG images;
+cam1/2 display 4096×3072 (12M) RAW8 grayscale. Play/pause, playback speed,
+timeline seeking, frame jumps and individual image enlargement are supported.
+
+The timeline retains every actual timestamp from all cameras. Each camera uses
+its own recorded output rate to determine whether its last image is still
+current; a missing/expired image is blank rather than silently held forever.
+Frame IDs, trigger sequence, exposure and gain remain tied to each source image.
+Unknown or mixed clock semantics allow manual ordinal browsing only, without
+inventing synchronization or UTC. Empty camera lanes and accounted recording
+drops are retained. Original zero exposure/gain metadata is not repaired by the
+reader.
+
+This path previews and validates camera streams. Companion IMU/GNSS/LiDAR files
+remain in the dataset; this camera reader does not validate or play those streams.
+The existing 413GSV0 multi-sensor playback path is unchanged. Image-sequence
+export remains available for all three models; ROS bag export of mixed/profile
+recordings is not implemented.
 
 Viewer 顶部的“录制...”菜单提供“完整数据集”和“仅录制 IMU”两种模式。
 两种模式都只允许在确认 **USB 3.0 或更高速度** 连接时启动。USB 2.0、

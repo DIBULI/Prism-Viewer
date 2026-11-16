@@ -1,0 +1,89 @@
+{
+  "task": "Viewer dataset camera preview/playback for 413GSV0,415RSV0,21312V0",
+  "status": "Implemented and tested locally in Viewer1.4.0; no new Release/tag/download package published",
+  "base_commit": "082a7506ed1e11a5ab98e9319f8c2fa1bebc0690",
+  "changes": [
+    "21312 completed mixed JPEG/RAW8 recordings use bounded background decoding and four-camera timeline, play/pause, seek, frame jump and full-resolution enlargement.",
+    "cam0/3:1280x1024 JPEG color; cam1/2:4096x3072 native RAW8 grayscale. 12M Bayer preview averaging added; original pixels unchanged.",
+    "Per-camera output cadence controls stale samples; latest actual source frames retained independently. No source FPS exposed, no invented UTC/synchronized sets.",
+    "415 manifest source frame step3 supported alongside legacy step1 and recording strides1/2/4.",
+    "Shared JPEG source-envelope reader for preview/export; zero exposure/gain retained. Empty/absent camera recording policy preserved."
+  ],
+  "regressions": {
+    "regression-r2.log": "11/12 passed; raw-recorder found added empty-image check incorrectly rejected all-received datasets without cameras.",
+    "recorder-regression-r3.log": "After removing only that loader rejection (UI already handles no-images), raw-recorder passed19.38s, including absent cameras and IMU.",
+    "synthetic": "12 distinct relevant tests passed across final relevant runs: mixed-dataset, mixed-dataset-ui, raw-dataset, raw-dataset-ui, raw-recorder, bayer-preview, image-sequence-export, image-sequence-export-ui, dataset-browser, dataset-playback, dataset-playback-ui, dataset-playback-timing.",
+    "coverage": "Unequal JPEG/RAW8 cadence, delayed first sample, stale lane, tail image, drops, absent lane, unknown clocks, corrupt header/JPEG, dimensions, source step3, output sampling, original metadata and pixels."
+  },
+  "real21312": {
+    "dataset": "capture-19700102-000034-1b140a241e4f",
+    "frames": [
+      740,
+      123,
+      123,
+      740
+    ],
+    "decoded_frames": 1726,
+    "timeline_steps": 741,
+    "full_camera_decode": {
+      "rc": 0,
+      "seconds": 180.361923125,
+      "dataset": "/Users/xiangfuli/Documents/ChatGPT/RK3576/artifacts/21312-frame-metadata-20261116/capture-19700102-000034-1b140a241e4f"
+    },
+    "actual_qt_ui": {
+      "rc": 0,
+      "seconds": 15.263532334
+    },
+    "ui_test": "Rapid seek,8x timed playback,jump-to-tail,all four final image dimensions; screenshot visually inspected.",
+    "source_files": {
+      "files": 22,
+      "bytes": 1400562780,
+      "all_original_hashes_unchanged": true,
+      "seconds": 0.710948125
+    },
+    "screenshot": "artifacts/viewer-multimodel-preview-20261116/real21312-preview-r1.png",
+    "expected_scene": "Dark/covered cameras from existing recording; no image brightness normalization or source modification."
+  },
+  "source_files_sha256": {
+    "CMakeLists.txt": "7e5f792affa10ff7b85a2b04f51f341d9fab52afc9cd05bb2a23360d07ce0c9e",
+    "docs/dataset-format.md": "f5e5cc689637c4579253ef7d5b9ea3ee535e49305f65698b862dc399b6db64ba",
+    "docs/image-sequence-export.md": "e39ad84fe3af8b5a98b7dbb0ac02533d43a79a0da3c0306c182e4ba587054398",
+    "src/dataset/dataset_browser.cpp": "a526304dce642753243987c37874f5d897fdb8c4d4b81fbdde8b89a41c2d24c1",
+    "src/dataset/image_sequence_exporter.cpp": "7782faee87adb06522dcebb9e7011ead812dc030fafc7278b4725777c4fae9c0",
+    "src/dataset/raw8_dataset.cpp": "3bf07bdf62b951ce0886075fd4874025bc1d362a541e8fe9f07e7f0a3adde59f",
+    "src/dataset/raw8_dataset.hpp": "7eabb6e3817924c71a6f96d0bf7bbdfa1b49feacb895986ac157dfc017f97fad",
+    "src/ui/bayer_preview.hpp": "1428e146c0f22146d1a931f76d59001db1c4dfbcfc9a55a25559cc25550ab10d",
+    "src/ui/main_window.cpp": "2ddfc1f6d0237bfaf7709d8b83d157c88da307a109ac41cf0268a26d67d4a0e0",
+    "src/ui/raw_dataset_decoder.hpp": "51c0b763a00f6ed54c2c1a79aa73a34dda846769a7182fd4aa354e0d0f9f7805",
+    "tests/raw_dataset_fixture.hpp": "960339d8be2eea8a00b6580e46b9251883cb74be24a7acc6c46c723ac52888ee",
+    "tests/raw_dataset_test.cpp": "81896a7174bdee16147a58853b0014887a42d811fab8df02e0a68f21553187dd",
+    "src/dataset/profile_jpeg_header.hpp": "8200e0274e6e90796785537926354555df261f7e871418e57eab483aeb7f31c1",
+    "tests/mixed_dataset_test.cpp": "330b9927d30fc489981f7e29fd4ee4de8e5cc1312afb0681d228f993b20c6ad3"
+  },
+  "binary_sha256": "2d0ef7aecc366002e06633bd1ac1ee9e473b26a3507d0c61c538130fb843c7cd",
+  "artifact_root": "artifacts/viewer-multimodel-preview-20261116",
+  "limits": [
+    "Only macOS build and actual Qt offscreen GUI tested here; Windows/Linux packaging/CI not executed.",
+    "Profile/mixed path previews and validates camera streams only; companion IMU/GNSS/LiDAR not newly played/validated. Existing413 multi-sensor playback unchanged.",
+    "No new profile/mixed ROS bag export. Existing image-sequence export retained.",
+    "Original v2 RAW8 payloads decoded according to declared policy; no claim of payload CRC checks when absent from container.",
+    "No device access, capture, restart, OTA or power change. No GitHub push/tag/release in this task."
+  ],
+  "resolved_test_failures": [
+    "New12M image dimension was missing from native Bayer thumbnail predicate; fixed.",
+    "Synthetic415 step3 fixture incorrectly put21312-only cadence fields in reserved415 header; corrected fixture and manifest-based415 continuity check.",
+    "New all-empty-camera loader check broke existing all-received recording; removed and recorder regression passed."
+  ],
+  "closed_sessions": [
+    14853,
+    76215,
+    50803,
+    9413,
+    83928,
+    64993,
+    40350,
+    9171,
+    48887,
+    20539
+  ]
+}

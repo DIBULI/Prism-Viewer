@@ -1,0 +1,7 @@
+dataset.info: Common physical trigger timestamps on the device clock. UTC synchronization is not asserted by this image flag.
+dataset.info: Camera streams checked. Companion IMU/GNSS/LiDAR streams are retained but not validated by this camera reader.
+camera0=740
+camera1=123
+camera2=123
+camera3=740
+PASS real frames=1726 steps=741

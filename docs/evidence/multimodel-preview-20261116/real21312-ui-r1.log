@@ -1,0 +1,3 @@
+qt.qpa.fonts: Populating font family aliases took 36 ms. Replace uses of missing font family "Sans Serif" with one that exists to avoid this cost. 
+This plugin does not support propagateSizeHints()
+dataset_playback_ui_self_test=PASS Profile dataset seek/play/pause/tail/async PASS=1 steps=741 frames=740/123/123/740

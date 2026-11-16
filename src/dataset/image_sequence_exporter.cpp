@@ -1,5 +1,6 @@
 #include "dataset/image_sequence_exporter.hpp"
 #include "dataset/raw8_dataset.hpp"
+#include "dataset/profile_jpeg_header.hpp"
 #include "common/ui_text.hpp"
 #include "prism/usb/profile_video.hpp"
 #include <QFile>
@@ -51,15 +52,7 @@ void write(const fs::path& p,const QByteArray& data) {
   need(f.write(data)==data.size()&&f.flush(),"Export write failed (disk full?)");
 }
 void jpegHeader(const QByteArray& bytes,DatasetImageEntry& e) {
-  const auto* b=reinterpret_cast<const uint8_t*>(bytes.constData());
-  need(bytes.size()>=70&&b[0]==255&&b[1]==216&&b[2]==255&&b[3]==239&&b[4]==0&&b[5]==66,"Missing JPEG source metadata");
-  const auto* p=b+6;using prism::capture::rawLe32;
-  need(!std::memcmp(p,"PRJ1",4)&&(p[4]==1||p[4]==2)&&p[5]==64&&p[28]==e.camera&&p[29]==1&&
-      rawLe32(p+8)==1280&&rawLe32(p+12)==1024&&rawLe32(p+16)==e.frame_id&&p[30]==e.timing_mode&&
-      (rawLe32(p+32)|(uint64_t(rawLe32(p+36))<<32))==e.timestamp_us&&rawLe32(p+44)==e.byte_size-68&&
-      rawLe32(p+(p[4]==2?60:48))==prism::capture::rawCrc32(p,p[4]==2?60:48),"JPEG header/index mismatch");
-  need(e.trigger_sequence==(p[4]==2?rawLe32(p+48):0),"JPEG trigger/index mismatch");
-  e.exposure_us=rawLe32(p+20);e.gain_x1024=rawLe32(p+24);
+  readProfileJpegHeader(reinterpret_cast<const uint8_t*>(bytes.constData()),size_t(bytes.size()),e);
 }
 }
 

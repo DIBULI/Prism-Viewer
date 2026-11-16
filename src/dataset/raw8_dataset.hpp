@@ -12,6 +12,7 @@ struct Raw8Dataset {
   std::vector<std::array<int, 4>> display;
   uint64_t bytes = 0;
   bool complete = false;
+  bool mixed = false; // 21312: JPEG cam0/3 and RAW8 cam1/2.
   // Missing or mixed clock semantics cannot form a common time axis. Retain
   // every image for ordinal/manual browsing instead of inventing timestamps.
   bool ordinal_only = false;
@@ -19,6 +20,7 @@ struct Raw8Dataset {
 Raw8Dataset loadRaw8Dataset(const std::filesystem::path& root,
                              const DatasetValidationCancelCallback& cancelled = {});
 QImage loadRaw8DatasetImage(const DatasetImageEntry& entry);
+QImage loadProfileDatasetImage(const DatasetImageEntry& entry);
 DatasetValidationResult validateRaw8Dataset(
     const std::filesystem::path& root,
     const DatasetValidationProgressCallback& progress,

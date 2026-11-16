@@ -1,4 +1,5 @@
 #include "dataset/raw8_dataset.hpp"
+#include "dataset/profile_jpeg_header.hpp"
 #include "common/ui_text.hpp"
 #include "ui/bayer_preview.hpp"
 #include "prism/usb/profile_video.hpp"
@@ -88,6 +89,17 @@ Fields manifest(const std::filesystem::path& root) {
               "Duplicate manifest field");
     }
   }
+  if(fields["format"]=="prism-mixed-dataset-v1") {
+    require(readDatasetIdentity(root).model=="21312V0"&&fields["codec"]=="per-camera-jpeg-and-raw8-rice"&&
+            number(fields,"camera_count")==4,"Unsupported mixed dataset format");
+    for(unsigned c=0;c<4;++c) {
+      const auto p="camera"+std::to_string(c)+"_";const bool raw=c==1||c==2;
+      require(number(fields,p+"width")==unsigned(raw?4096:1280)&&
+              number(fields,p+"height")==unsigned(raw?3072:1024)&&number(fields,p+"source_bits")==8&&
+              number(fields,p+"profile")==unsigned(raw?2:1),"Unsupported mixed camera geometry");
+    }
+    return fields;
+  }
   require(fields["format"] == "prism-raw8-dataset-v1" && fields["codec"] == "raw8-rice-lossless",
           "Unsupported RAW8 dataset format");
   require(number(fields, "width") == 5120 && number(fields, "height") == 3072 &&
@@ -125,6 +137,7 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
                              const DatasetValidationCancelCallback& cancelled, bool unpublished) {
   const auto fields = manifest(root);
   Raw8Dataset result;
+  result.mixed=fields.at("format")=="prism-mixed-dataset-v1";
   unsigned dataset_timing=0;
   const auto complete = number(fields, "complete");
   require(complete == (unpublished ? 0u : 1u), "RAW8 recording completion state mismatch");
@@ -135,7 +148,7 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
   }
   result.complete = complete == 1;
   const bool accounted = fields.count("drop_accounting") != 0;
-  const bool allow_absent=fields.count("allow_absent_cameras")&&number(fields,"allow_absent_cameras")==1;
+  const bool allow_absent=result.mixed||(fields.count("allow_absent_cameras")&&number(fields,"allow_absent_cameras")==1);
   if (accounted) require(number(fields, "drop_accounting") == 1, "Unsupported drop accounting");
   else for (const auto& field : fields)
     require(field.first != "has_drops" && field.first != "frames_complete" &&
@@ -151,10 +164,15 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
             "Invalid transfer accounting");
     first_transfer=uint32_t(number(fields,"first_transfer"));
   }
-  const double fps = fields.at("fps_per_camera")=="0.5" ? 0.5 : double(number(fields, "fps_per_camera"));
+  const double fps = result.mixed?2.0:fields.at("fps_per_camera")=="0.5" ? 0.5 : double(number(fields, "fps_per_camera"));
   require(fps > 0 && fps <= 120, "Invalid recording rate");
   const uint64_t stride=fields.count("frame_stride")?number(fields,"frame_stride"):1;
   require(stride==1||stride==2||stride==4,"Invalid recording stride");
+  require(!result.mixed||stride==1,"Mixed recording uses per-camera cadence");
+  const auto global_source_step=fields.count("source_frame_step")?number(fields,"source_frame_step"):1;
+  require(global_source_step==1||(!result.mixed&&global_source_step==3&&fields.at("sampling")=="source_cadence"&&
+          number(fields,"sensor_milli_fps")==6000),"Invalid source frame step");
+  std::array<uint64_t,4> stale_after{};
   if(stride!=1||fps==0.5)require(accounted&&fields.at("sampling")=="source_cadence"&&
       number(fields,"source_fps_per_camera")==2&&number(fields,"source_milli_fps")==2000&&
       number(fields,"source_clock_hz")==25000000&&number(fields,"source_period_cycles")==12500000&&
@@ -162,7 +180,13 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
   for (unsigned c = 0; c < 4; ++c) {
     checkCancelled(cancelled);
     const auto prefix = "camera" + std::to_string(c);
-    const auto file = root / (prefix + ".pr8-stream");
+    const bool raw=!result.mixed||c==1||c==2;
+    const auto source_step=result.mixed?number(fields,prefix+"_source_steps"):global_source_step;
+    require(!result.mixed||source_step==unsigned(raw?3:1),"Invalid mixed source frame step");
+    const double camera_fps=result.mixed?double(number(fields,prefix+"_fps_per_camera")):fps;
+    require(!result.mixed||(raw?camera_fps==2:(camera_fps==12||camera_fps==24||camera_fps==36)),"Invalid mixed recording rate");
+    stale_after[c]=uint64_t(1500000/camera_fps);
+    const auto file = root / (prefix + (raw?".pr8-stream":".mjpg-stream"));
     regularLocal(file); regularLocal(root / (prefix + ".jsonl"));
     const uint64_t size = std::filesystem::file_size(file);
     QFile index(common::fromFilesystemPath(root / (prefix + ".jsonl")));
@@ -179,7 +203,7 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
         "Invalid sampling accounting for "+prefix);
     if (accounted) require((received > 0 || (allow_absent&&!size&&!dropped&&!tail&&!first&&!final)) && received <= UINT32_MAX && dropped <= received &&
         tail <= dropped && first <= UINT32_MAX && final <= UINT32_MAX &&
-        (!received||uint32_t(first + received - 1) == final), "Invalid drop accounting for " + prefix);
+        (!received||uint32_t(first + source_step*(received - 1)) == final), "Invalid drop accounting for " + prefix);
     auto& entries = result.cameras[c];
     while (!index.atEnd()) {
       checkCancelled(cancelled);
@@ -190,7 +214,7 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
       require(error.error == QJsonParseError::NoError && doc.isObject(), "Invalid index JSON");
       const auto row = doc.object();
       DatasetImageEntry entry;
-      entry.raw8 = true; entry.camera = uint8_t(c);
+      entry.raw8 = raw; entry.camera = uint8_t(c);
       entry.absolute_path = common::fromFilesystemPath(file);
       entry.byte_offset = jsonNumber(row, "offset", 9007199254740991ULL);
       entry.byte_size = uint32_t(jsonNumber(row, "bytes"));
@@ -213,8 +237,8 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
               "Unaccounted recording gap");
       require(entry.byte_offset == offset && entry.byte_size > prism::capture::kRaw8HeaderBytes && entry.byte_size <= prism::capture::kProfileImageLimit &&
               offset <= size && entry.byte_size <= size - offset, "Invalid frame range for " + prefix);
-      require(entries.empty() ? (!accounted || entry.frame_id == uint32_t(first + stride*entry.dropped_before)) :
-              (entry.frame_id == uint32_t(uint64_t(entries.back().frame_id)+stride*(1+entry.dropped_before)) &&
+      require(entries.empty() ? (!accounted || entry.frame_id == uint32_t(first + source_step*stride*entry.dropped_before)) :
+              (entry.frame_id == uint32_t(uint64_t(entries.back().frame_id)+source_step*stride*(1+entry.dropped_before)) &&
                (!entry.timing_mode || entry.timing_mode!=entries.back().timing_mode ||
                 entry.timestamp_us > entries.back().timestamp_us)), "Frame sequence/timestamp mismatch for " + prefix);
       // Opening reads fixed-size headers; display and the cancellable Validate
@@ -222,15 +246,22 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
       uint8_t h[80]{};
       data.seekg(std::streamoff(offset)); data.read(reinterpret_cast<char*>(h), sizeof(h));
       require(data.gcount()==sizeof(h),"Truncated RAW8 header");
+      entry.trigger_sequence=row.contains("trigger_sequence")?uint32_t(jsonNumber(row,"trigger_sequence")):0;
+      if(raw) {
       const auto header=prism::capture::parseRaw8Header(h,sizeof(h),entry.byte_size,prism::capture::kRaw8Rice);
       require(header.camera==c && header.timing_mode==entry.timing_mode &&
               header.raw_crc==entry.raw_crc32 && header.frame_id==entry.frame_id &&
               header.timestamp_us==entry.timestamp_us && header.encoded_crc==entry.encoded_crc32,
               "RAW8 header/index mismatch for " + prefix);
+      require(header.width==unsigned(result.mixed?4096:5120)&&header.height==3072,
+              "RAW8 header geometry mismatch");
+      require(!result.mixed||header.source_frame_step==source_step,
+              "RAW8 source frame step mismatch");
       require((row.contains("trigger_sequence") ? uint32_t(jsonNumber(row,"trigger_sequence")) : 0u)==header.trigger_sequence,
               "RAW8 trigger-group/index mismatch for "+prefix);
       entry.trigger_sequence=header.trigger_sequence;
       entry.exposure_us = prism::capture::rawLe32(h+28); entry.gain_x1024 = prism::capture::rawLe32(h+32);
+      } else readProfileJpegHeader(h,sizeof(h),entry);
       require(result.timestamps.size() < 1000000, "Dataset index exceeds playback limit (one million images)");
       entries.push_back(entry); result.timestamps.push_back(entry.timestamp_us);
       offset += entry.byte_size; beforeTotal += entry.dropped_before;
@@ -239,9 +270,9 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
     require(index.error() == QFile::NoError && offset == size && number(fields, prefix + "_images") == entries.size(),
             "Camera file/count mismatch for " + prefix);
     if (accounted) require(entries.size() == scheduled - dropped && beforeTotal + tail == dropped &&
-        (entries.empty() || uint32_t(uint64_t(entries.back().frame_id) + stride*tail) ==
-         uint32_t(first+stride*(scheduled-1))), "Manifest drop mismatch");
-    else require(!entries.empty(), "Missing camera frames");
+        (entries.empty() || uint32_t(uint64_t(entries.back().frame_id) + source_step*stride*tail) ==
+         uint32_t(first+source_step*stride*(scheduled-1))), "Manifest drop mismatch");
+    else require(allow_absent||!entries.empty(), "Missing camera frames");
     result.bytes += size; result.dropped[c] = dropped; totalDrops += dropped;
   }
   require(number(fields, "bytes") == result.bytes, "Manifest byte count mismatch");
@@ -282,7 +313,7 @@ static Raw8Dataset loadRaw8DatasetImpl(const std::filesystem::path& root,
       const auto& entries = result.cameras[c];
       while (next[c] < entries.size() && entries[next[c]].timestamp_us <= t) current[c] = int(next[c]++);
       display[c] = current[c];
-      if (current[c] >= 0 && t - entries[size_t(current[c])].timestamp_us > 1500000 / fps)
+      if (current[c] >= 0 && t - entries[size_t(current[c])].timestamp_us > stale_after[c])
         display[c] = -1; // Never let a lost stream silently freeze forever.
     }
     result.display.push_back(display);
@@ -310,6 +341,18 @@ QImage loadRaw8DatasetImage(const DatasetImageEntry& entry) {
   return image;
 }
 
+QImage loadProfileDatasetImage(const DatasetImageEntry& entry) {
+  if(entry.raw8)return loadRaw8DatasetImage(entry);
+  const auto bytes=readFrame(entry);auto checked=entry;
+  readProfileJpegHeader(bytes.data(),bytes.size(),checked);
+  require(checked.exposure_us==entry.exposure_us&&checked.gain_x1024==entry.gain_x1024,
+          "JPEG metadata changed after opening");
+  require(bytes[bytes.size()-2]==255&&bytes.back()==217,"Truncated JPEG payload");
+  auto image=QImage::fromData(bytes.data(),int(bytes.size()),"JPG");
+  require(!image.isNull()&&image.size()==QSize(1280,1024),"Invalid JPEG image geometry or payload");
+  return image;
+}
+
 static DatasetValidationResult validateRaw8DatasetImpl(const std::filesystem::path& root,
     const DatasetValidationProgressCallback& progress, const DatasetValidationCancelCallback& cancelled,
     bool unpublished) {
@@ -318,6 +361,7 @@ static DatasetValidationResult validateRaw8DatasetImpl(const std::filesystem::pa
   try {
     result.device_model = readDatasetIdentity(root).model;
     const auto data = loadRaw8DatasetImpl(root, cancelled, unpublished);
+    if(data.mixed) {result.format_name="prism-mixed-dataset-v1";result.recording_mode="Mixed JPEG / RAW8";}
     bool common=false;for(const auto& lane:data.cameras)if(!lane.empty()){common=lane.front().timing_mode==4;break;}
     result.time_domain=data.ordinal_only?"unknown-or-mixed-image-clocks":common?
         "common-external-trigger-device-clock":"diagnostic-not-synchronized-exposure";
@@ -327,7 +371,8 @@ static DatasetValidationResult validateRaw8DatasetImpl(const std::filesystem::pa
       auto& summary = result.cameras[c];
       std::vector<uint64_t> intervals;
       for (const auto& entry : data.cameras[c]) {
-        checkCancelled(cancelled); (void)decode(entry);
+        checkCancelled(cancelled);
+        if(entry.raw8)(void)decode(entry);else (void)loadProfileDatasetImage(entry);
         if (summary.rows && !data.ordinal_only) intervals.push_back(entry.timestamp_us - summary.last_timestamp_us);
         else summary.first_timestamp_us = entry.timestamp_us;
         summary.last_timestamp_us = entry.timestamp_us; ++summary.rows; ++result.checked_records;
@@ -350,6 +395,11 @@ static DatasetValidationResult validateRaw8DatasetImpl(const std::filesystem::pa
         common?"Common physical trigger timestamps on the device clock. UTC synchronization is not asserted by this image flag.":
         "Diagnostic sample timing; not synchronized exposure UTC. Independent camera counts are retained."});
     result.valid = true;
+    if(data.mixed){
+      ++result.total_warnings;
+      result.issues.push_back({DatasetValidationSeverity::Warning,"dataset.info",0,
+          "Camera streams checked. Companion IMU/GNSS/LiDAR streams are retained but not validated by this camera reader."});
+    }
   } catch (const std::exception& e) {
     result.cancelled = cancelled && cancelled();
     if (!result.cancelled) {
