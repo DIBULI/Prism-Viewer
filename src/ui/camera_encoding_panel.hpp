@@ -26,7 +26,7 @@ class CameraEncodingPanel final : public QWidget {
   void clear();
   void setDeviceOpen(bool open);
   void setNetworkCameraMaxFps(uint32_t max_fps);
-  void setMixed21315(bool mixed);
+  void setMixed21312(bool mixed);
   void setControlsLocked(bool locked);
   void setCaptureActive(bool active);
   void setBusy(bool busy, const QString& message = {});

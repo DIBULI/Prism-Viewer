@@ -5,6 +5,8 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QLabel>
+#include <QtCore/QRegularExpression>
 
 #include <cstdlib>
 #include <iostream>
@@ -124,8 +126,13 @@ int main(int argc, char** argv) {
           "camera settings are locked during another device operation");
 
   panel.setControlsLocked(false);
-  panel.setMixed21315(true);
-  auto* mixed=panel.findChild<QComboBox*>(QStringLiteral("mixed21315FpsCombo"));
+  panel.setMixed21312(true);
+  auto* hint=panel.findChild<QLabel*>(QStringLiteral("cameraFpsHint"));
+  require(hint && hint->text().contains(QStringLiteral("12M")) &&
+              !hint->text().contains(QStringLiteral("15M")) &&
+              !hint->text().contains(QRegularExpression(QStringLiteral("\\b6\\s*FPS"))),
+          "mixed camera hint uses12M and keeps source cadence private");
+  auto* mixed=panel.findChild<QComboBox*>(QStringLiteral("mixed21312FpsCombo"));
   require(mixed && mixed->count()==3 && !mixed->isEditable(),"mixed FPS has exactly three fixed choices");
   require(fps->isHidden() && !mixed->isHidden(),"mixed board does not expose arbitrary FPS editor");
   for(int i=0;i<3;++i)require(mixed->itemData(i).toInt()==12*(i+1),"mixed FPS choices are12/24/36");

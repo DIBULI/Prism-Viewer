@@ -85,12 +85,13 @@ CameraEncodingPanel::CameraEncodingPanel(QWidget* parent) : QWidget(parent) {
   fps_header->addStretch(1);
   fps_header->addWidget(fps_spin_);
   mixed_fps_=new QComboBox(group);
-  mixed_fps_->setObjectName(QStringLiteral("mixed21315FpsCombo"));
+  mixed_fps_->setObjectName(QStringLiteral("mixed21312FpsCombo"));
   for(int fps:{12,24,36})mixed_fps_->addItem(QString::number(fps)+QStringLiteral(" FPS"),fps);
   mixed_fps_->setCurrentIndex(1);mixed_fps_->hide();fps_header->addWidget(mixed_fps_);
   group_layout->addLayout(fps_header);
 
   fps_hint_label_ = new QLabel(group);
+  fps_hint_label_->setObjectName(QStringLiteral("cameraFpsHint"));
   fps_hint_label_->setWordWrap(true);
   fps_hint_label_->setStyleSheet(QStringLiteral(
       "color: #475467; background: #f8fafc; border: 1px solid #e4e7ec;"
@@ -228,7 +229,7 @@ void CameraEncodingPanel::setControlsLocked(bool locked) {
   controls_locked_ = locked;
   refreshView();
 }
-void CameraEncodingPanel::setMixed21315(bool mixed) {
+void CameraEncodingPanel::setMixed21312(bool mixed) {
   if(mixed_==mixed)return;
   mixed_=mixed;fps_spin_->setVisible(!mixed);mixed_fps_->setVisible(mixed);
   const QSignalBlocker blocker(mixed_fps_);
@@ -313,8 +314,8 @@ void CameraEncodingPanel::refreshView() {
       fpsHint(static_cast<uint32_t>(fps_spin_->value())));
   quality_hint_label_->setText(qualityHint(quality_spin_->value()));
   if(mixed_)fps_hint_label_->setText(uiText(
-      "1.3M: 12 / 24 / 36 FPS. Shared triggers with 15M at6 FPS; 15M delivery remains2 FPS.",
-      "1.3M 仅支持12 / 24 / 36 FPS，与15M的6 FPS共用触发时刻；15M仍以2 FPS输出。"));
+      "1.3M: 12 / 24 / 36 FPS. 12M output: 2 FPS.",
+      "1.3M 支持12 / 24 / 36 FPS；12M 输出2 FPS。"));
   if (!device_open_) {
     setMessage(uiText("Open a device to configure camera stream settings",
                       "请先打开设备，再配置相机流设置"),

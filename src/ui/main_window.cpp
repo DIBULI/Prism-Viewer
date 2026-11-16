@@ -4362,7 +4362,7 @@ class MainWindow : public QMainWindow {
     const bool native = model == prism::DeviceModel::Prism415RSV0;
     const bool mixed=model==prism::DeviceModel::Prism21312V0;
     camera_stream_pages_->setCurrentIndex(profile && !mixed ? 1 : 0);
-    camera_encoding_panel_->setMixed21315(mixed);
+    camera_encoding_panel_->setMixed21312(mixed);
     camera_encoding_panel_->setEnabled(!profile || mixed);
     camera_exposure_panel_->setDeviceModel(model);
     camera_exposure_panel_->setVisible(!native);
