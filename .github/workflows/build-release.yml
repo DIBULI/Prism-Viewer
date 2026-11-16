@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           test "$(cat VERSION)" = 1.3.1
           grep -Fq 'project(prism_viewer VERSION 1.3.1 LANGUAGES CXX)' CMakeLists.txt
-          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = ebd6659e0c304e1e32d7396ea9362e7219ecfdb1
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 4b8e517d2c815c90668e85e11b4183be4929594d
           test "$(cat third_party/Prism-SDK/VERSION)" = 1.3.1
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
@@ -85,7 +85,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "51af7735bb351b597078f7f0bf1d68a22fbcb79798cbc30afc7f914b4fe715b7"
+          $expected = "66e31e2eb2470996788d97dcc147a6a832420b866ed798e5d1fcf423fca3fa15"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -239,13 +239,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: 402def11b4668f82bae3053cc27835de76038319d4f5803b16fbd9e1fe5dd4e6
+            sdk_sha256: 6bc7a1e5f187646cf9353f8252e8cab51616806bd81f3a98bd115b32d8d574a8
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: c8a0f7dbc34321c91e4eaca0c925dc3f87bcc086216aea080894dfbbb4402d2f
+            sdk_sha256: 7e29deb377d703a54cdd456cec12a1f089be6f87bac2042553a01b217d4fb986
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
@@ -722,7 +722,7 @@ jobs:
           sdk="third_party/Prism-SDK/runtime/macos-arm64/libprism_usb_sdk.dylib"
           libusb="third_party/Prism-SDK/runtime/macos-arm64/libusb-1.0.0.dylib"
           license="third_party/Prism-SDK/runtime/macos-arm64/libusb-COPYING.txt"
-          sdk_expected="2b49a499e7662bd59c634f6e70d09ab1d948688a3d92e5bbae6f56b1293160c5"
+          sdk_expected="8e3183d9db3bf5c58fc068d26cdcb4e8133796d493f0af352267dc4fc5e30a98"
           libusb_expected="30cfce3b736acdd5e3e4d276614d7ef917b42d8eddada4932561198bdd4ae414"
           sdk_actual="$(shasum -a 256 "$sdk" | awk '{print $1}')"
           libusb_actual="$(shasum -a 256 "$libusb" | awk '{print $1}')"
