@@ -7,12 +7,20 @@
 #include <QtWidgets/QWidget>
 
 #include <deque>
+#include <array>
 #include <vector>
 
 namespace prism_viewer {
 
 class LidarPointCloudWidget : public QWidget {
  public:
+  // Active right-handed rotations about fixed X/Y/Z axes: Rz(yaw)Ry(pitch)Rx(roll).
+  // Applied only while painting; stored sensor samples remain unchanged.
+  struct DisplayRotation {
+    double roll_degrees = 0.0;
+    double pitch_degrees = 0.0;
+    double yaw_degrees = 0.0;
+  };
   struct ViewState {
     double yaw_radians;
     double pitch_radians;
@@ -46,6 +54,10 @@ class LidarPointCloudWidget : public QWidget {
   ViewState viewState() const noexcept;
   void setTopView();
   void resetView();
+  bool setDisplayRotation(DisplayRotation rotation);
+  DisplayRotation displayRotation() const noexcept;
+  std::array<double, 3> displayPointMm(const prism::LidarPoint& point) const noexcept;
+  static bool validDisplayRotation(DisplayRotation rotation) noexcept;
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -63,6 +75,8 @@ class LidarPointCloudWidget : public QWidget {
   double pitch_ = kDefaultPitchRadians;
   double pixels_per_meter_ = kDefaultPixelsPerMeter;
   int point_size_ = kDefaultPointSize;
+  DisplayRotation display_rotation_;
+  std::array<double, 9> display_rotation_matrix_{{1,0,0, 0,1,0, 0,0,1}};
 };
 
 }  // namespace prism_viewer

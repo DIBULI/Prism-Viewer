@@ -35,6 +35,7 @@
 #include "ui/camera_lane_progress.hpp"
 #include "ui/imu_sample_rate.hpp"
 #include "ui/lidar_point_cloud_widget.hpp"
+#include "ui/lidar_rotation_controls.hpp"
 #include "ui/lidar_power_panel.hpp"
 #include "ui/main_window.hpp"
 #include "ui/viewer_update_dialog.hpp"
@@ -2855,6 +2856,9 @@ class MainWindow : public QMainWindow {
     lidar_view_actions->addWidget(lidar_top_view_button, 1);
     lidar_view_actions->addWidget(lidar_reset_view_button, 1);
     lidar_controls_layout->addLayout(lidar_view_actions);
+    auto* lidar_rotation_button = new QPushButton(lidar_controls);
+    lidar_rotation_button->setObjectName(QStringLiteral("lidarRotationButton"));
+    lidar_controls_layout->addWidget(lidar_rotation_button);
     lidar_controls_layout->addWidget(lidar_status_label_);
     lidar_view_layout->addWidget(lidar_controls);
 
@@ -3414,6 +3418,9 @@ class MainWindow : public QMainWindow {
     dataset_lidar_header->addWidget(dataset_lidar_status_label_, 1);
     dataset_lidar_header->addWidget(dataset_lidar_top_view_button);
     dataset_lidar_header->addWidget(dataset_lidar_reset_view_button);
+    auto* dataset_lidar_rotation_button = new QPushButton(dataset_lidar_group);
+    dataset_lidar_rotation_button->setObjectName(QStringLiteral("datasetLidarRotationButton"));
+    dataset_lidar_header->addWidget(dataset_lidar_rotation_button);
     dataset_lidar_layout->addLayout(dataset_lidar_header);
     dataset_lidar_imu_status_label_ = new QLabel(
         uiText("Dataset LiDAR IMU: no playback sample",
@@ -3432,6 +3439,11 @@ class MainWindow : public QMainWindow {
     dataset_lidar_point_cloud_widget_->setMinimumSize(0, 220);
     dataset_lidar_point_cloud_widget_->setPointSize(
         lidar_point_size_spin_->value());
+    auto* lidar_rotation_settings = new QSettings(
+        QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"), this);
+    new prism_viewer::ui::LidarRotationControls(*lidar_rotation_settings,
+        *lidar_point_cloud_widget_, *dataset_lidar_point_cloud_widget_,
+        *lidar_rotation_button, *dataset_lidar_rotation_button, this);
     dataset_lidar_layout->addWidget(dataset_lidar_point_cloud_widget_, 1);
     connect(dataset_lidar_top_view_button, &QPushButton::clicked,
             dataset_lidar_point_cloud_widget_,

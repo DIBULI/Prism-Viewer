@@ -78,6 +78,37 @@ void LidarPointCloudWidget::resetView() {
   update();
 }
 
+bool LidarPointCloudWidget::validDisplayRotation(DisplayRotation r) noexcept {
+  for (double angle : {r.roll_degrees, r.pitch_degrees, r.yaw_degrees})
+    if (!std::isfinite(angle) || std::abs(angle) > 360.0) return false;
+  return true;
+}
+
+bool LidarPointCloudWidget::setDisplayRotation(DisplayRotation r) {
+  if (!validDisplayRotation(r)) return false;
+  constexpr double radians = 3.14159265358979323846 / 180.0;
+  const double cr=std::cos(r.roll_degrees*radians), sr=std::sin(r.roll_degrees*radians);
+  const double cp=std::cos(r.pitch_degrees*radians), sp=std::sin(r.pitch_degrees*radians);
+  const double cy=std::cos(r.yaw_degrees*radians), sy=std::sin(r.yaw_degrees*radians);
+  display_rotation_matrix_ = {{cy*cp, cy*sp*sr-sy*cr, cy*sp*cr+sy*sr,
+                              sy*cp, sy*sp*sr+cy*cr, sy*sp*cr-cy*sr,
+                              -sp, cp*sr, cp*cr}};
+  display_rotation_ = r;
+  update();
+  return true;
+}
+
+LidarPointCloudWidget::DisplayRotation LidarPointCloudWidget::displayRotation() const noexcept {
+  return display_rotation_;
+}
+
+std::array<double,3> LidarPointCloudWidget::displayPointMm(const prism::LidarPoint& p) const noexcept {
+  const auto& m = display_rotation_matrix_;
+  return {{m[0]*p.x_mm+m[1]*p.y_mm+m[2]*p.z_mm,
+           m[3]*p.x_mm+m[4]*p.y_mm+m[5]*p.z_mm,
+           m[6]*p.x_mm+m[7]*p.y_mm+m[8]*p.z_mm}};
+}
+
 void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.fillRect(rect(), QColor(7, 14, 25));
@@ -117,9 +148,10 @@ void LidarPointCloudWidget::paintEvent(QPaintEvent*) {
   QPen point_pen(Qt::white, point_size_, Qt::SolidLine, Qt::RoundCap);
   for (size_t index = 0; index < points_.size(); index += step) {
     const auto& point = points_[index];
-    const QPointF screen = project(point.x_mm / 1000.0,
-                                   point.y_mm / 1000.0,
-                                   point.z_mm / 1000.0);
+    const auto rotated = displayPointMm(point);
+    const QPointF screen = project(rotated[0] / 1000.0,
+                                   rotated[1] / 1000.0,
+                                   rotated[2] / 1000.0);
     if (!rect().contains(screen.toPoint())) continue;
     point_pen.setColor(reflectivityColor(point.reflectivity));
     painter.setPen(point_pen);

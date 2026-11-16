@@ -1,0 +1,13 @@
+Test project /Users/xiangfuli/Documents/ChatGPT/RK3576/artifacts/21312-device-20261114/viewer-r1/build
+    Start  3: viewer-version
+1/4 Test  #3: viewer-version ...................   Passed    0.58 sec
+    Start 66: dataset-playback-ui
+2/4 Test #66: dataset-playback-ui ..............   Passed    0.36 sec
+    Start 78: lidar-point-cloud-widget
+3/4 Test #78: lidar-point-cloud-widget .........   Passed    0.55 sec
+    Start 79: lidar-rotation-controls
+4/4 Test #79: lidar-rotation-controls ..........   Passed    0.65 sec
+
+100% tests passed out of 4
+
+Total Test time (real) =   2.14 sec

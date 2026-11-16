@@ -1,0 +1,41 @@
+{
+  "task": "Remembered Roll/Pitch/Yaw display rotation in live and dataset LiDAR views",
+  "status": "Implemented, locally built and tested in Viewer1.4.0; not published",
+  "base_commit": "cefbfb88d0646e61d23579ee021b5b2ac4567bd5",
+  "ui": "Both LiDAR views have Point-cloud rotation entry. Degrees [-360,360] with0.01 precision; Apply and remember, Cancel, Zero angles. Both share one local preference restored at next start.",
+  "convention": "Active right-handed fixed-axis X thenY thenZ; column-vector output=Rz(yaw)*Ry(pitch)*Rx(roll)*sensorPoint. Grid axes remain in the display reference coordinates.",
+  "persistence": "QSettings DIBULI/PrismViewer key lidar/display_rotation_rpy_degrees_v1, one QVariantList [roll,pitch,yaw]. Invalid/NaN/out-of-range preferences fall back to identity; write failure explicitly warns.",
+  "scope": "Paint-only cached3x3 matrix. Original buffered points, timestamps, reflectivity, recording, export, IMU and device settings untouched. Existing drag/pan/top/reset remains independent.",
+  "tests": {
+    "tests-r1.log": "4/4 passed: viewer-version, dataset-playback-ui, lidar-point-cloud-widget, lidar-rotation-controls.",
+    "controls-final.log": "Passed after dialog width adjustment; both buttons/dialog apply/cancel/zero, second-process preference reload and malformed preferences.",
+    "math": "90deg per-axis and composed90/90/90 vectors verify direction/order; NaN/infinite/out-of-range rejected. Zero returns original point. Independent pre-rotated reference renders exactly the same image, grid unchanged.",
+    "persistence": "Test uses temporary INI and separate child process; does not overwrite user preferences.",
+    "gui": "Actual shared controls used by MainWindow tested in offscreen Qt. Screenshot inspected after final layout adjustment."
+  },
+  "source_sha256": {
+    "CMakeLists.txt": "8c69c6b2bd9cb69c8539589c5bfb0c98aec6004d07121cc1857a2eb97876378d",
+    "docs/manual/README.md": "7c4ac4a240c535e15eb597de0211dff9b9c177a730a54ec454fa0ebdb33417ed",
+    "src/ui/lidar_point_cloud_widget.cpp": "f1f9b2b4a3c04776c843efbcadaf8dc5950e909e46857eced31cbf85d6192bb8",
+    "src/ui/lidar_point_cloud_widget.hpp": "a8e7304264a238ec4594bd00dff8aec4455a1db9f1ff208c3ce1488e976d62e1",
+    "src/ui/main_window.cpp": "9928be4e890a72db54773124f8ddc7d14e1beefaaea3b49dd03cd564dff2542f",
+    "tests/lidar_point_cloud_widget_test.cpp": "f5fc58be14cf9aa0a129e330c072e3c141a5425b87f9a57adf41a9f5dbdb38a5",
+    "src/ui/lidar_rotation_controls.hpp": "2ce36a48f82b78a3dc9cff3be9f220c2044bc46d461a894f0ea11257aadd1620",
+    "src/ui/lidar_rotation_controls.cpp": "a6703e6407526ebdc2587c4efd245a09429c209fe36616a52b3f57902edfa521",
+    "tests/lidar_rotation_controls_test.cpp": "6cbfac0d8a03debd94c8fea641c06b93b4638fe4043bc8650343be68b75da25d"
+  },
+  "binary_sha256": "29dfd7c87495cdd8853613dfd3864bf22db139d19ba73f46b5f607036ba4f540",
+  "artifacts": "artifacts/viewer-lidar-rotation-20261117",
+  "screenshot": "rotation-dialog-final.png",
+  "limits": [
+    "macOS build/Qt UI tested; no new Windows/Linux build this turn.",
+    "No physical device or sensor stream needed/accessed; receiving/recording/export code unchanged.",
+    "No GitHub push, tag, Release or distribution package update in this task."
+  ],
+  "closed_sessions": [
+    63980,
+    38875,
+    9645,
+    50829
+  ]
+}

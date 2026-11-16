@@ -228,6 +228,7 @@ add_executable(prism-viewer
   src/ui/device_info_panel.cpp
   src/ui/image_view_label.cpp
   src/ui/lidar_point_cloud_widget.cpp
+  src/ui/lidar_rotation_controls.cpp
   src/ui/lidar_power_panel.cpp
   src/ui/main_window.cpp
   src/ui/viewer_update_dialog.cpp
@@ -1130,6 +1131,18 @@ if(BUILD_TESTING)
     ${QT_PACKAGE}::Widgets
   )
   add_test(NAME lidar-point-cloud-widget COMMAND lidar-point-cloud-widget-test)
+  add_executable(lidar-rotation-controls-test
+    src/ui/lidar_point_cloud_widget.cpp src/ui/lidar_rotation_controls.cpp
+    src/common/ui_text.cpp tests/lidar_rotation_controls_test.cpp)
+  target_include_directories(lidar-rotation-controls-test PRIVATE src)
+  target_compile_features(lidar-rotation-controls-test PRIVATE cxx_std_17)
+  target_link_libraries(lidar-rotation-controls-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Widgets)
+  if(MSVC)
+    target_compile_options(lidar-rotation-controls-test PRIVATE /utf-8)
+  endif()
+  add_test(NAME lidar-rotation-controls COMMAND lidar-rotation-controls-test)
+  set_tests_properties(lidar-rotation-controls PROPERTIES
+    TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   if(UNIX)
     set_tests_properties(lidar-point-cloud-widget PROPERTIES
       ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

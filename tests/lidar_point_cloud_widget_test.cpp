@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -161,6 +162,41 @@ int main(int argc, char** argv) {
 
   widget.clearPoints();
   require(widget.pointCount() == 0u, "point clear remains available");
+
+  const auto expect = [&](double x, double y, double z) {
+    const auto p = widget.displayPointMm(point);
+    require(std::abs(p[0]-x)<1e-8 && std::abs(p[1]-y)<1e-8 && std::abs(p[2]-z)<1e-8,
+            "right-handed display rotation result");
+  };
+  point.x_mm=1000; point.y_mm=2000; point.z_mm=3000;
+  widget.appendPoints({point});
+  widget.setDisplayRotation({90,0,0}); expect(1000,-3000,2000);
+  widget.setDisplayRotation({0,90,0}); expect(3000,2000,-1000);
+  widget.setDisplayRotation({0,0,90}); expect(-2000,1000,3000);
+  widget.setDisplayRotation({90,90,90}); expect(3000,2000,-1000);
+  widget.setTopView(); widget.resetView(); expect(3000,2000,-1000);
+  require(widget.displayRotation().roll_degrees==90 && widget.pointCount()==1,
+          "view reset preserves display rotation and point buffer");
+  require(!widget.setDisplayRotation({std::numeric_limits<double>::quiet_NaN(),0,0}) &&
+          !widget.setDisplayRotation({0,std::numeric_limits<double>::infinity(),0}) &&
+          !widget.setDisplayRotation({0,0,361}), "invalid rotation rejected");
+  expect(3000,2000,-1000);
+  widget.setDisplayRotation({0,0,0}); expect(1000,2000,3000);
+  require(point.x_mm==1000 && point.y_mm==2000 && point.z_mm==3000,
+          "source point coordinates unchanged");
+
+  // Render a rotated source point against an independently rotated input.
+  // The fixed grid/axes and all other drawing must remain identical.
+  prism_viewer::LidarPointCloudWidget rotated, reference;
+  rotated.resize(640,480); reference.resize(640,480);
+  rotated.setDisplayRotation({0,0,90}); rotated.appendPoints({point});
+  auto expected=point; expected.x_mm=-2000; expected.y_mm=1000;
+  reference.appendPoints({expected});
+  require(rotated.grab().toImage()==reference.grab().toImage(),
+          "painting applies rotation to points without rotating the reference grid");
+  rotated.setDisplayRotation({0,0,0});
+  require(rotated.grab().toImage()!=reference.grab().toImage(),
+          "rotation changes existing buffered points immediately");
 
   std::cout << "lidar point cloud widget tests passed\n";
   return 0;
