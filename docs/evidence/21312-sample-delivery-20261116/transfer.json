@@ -1,0 +1,56 @@
+[
+  {
+    "name": "camera0.jsonl",
+    "size": 73382,
+    "sha256": "dd3a0528621e1a1c99483c368397a2dcbd084ec1171264c69c4488ac9a205300",
+    "source_unchanged": true
+  },
+  {
+    "name": "camera0.mjpg-stream",
+    "size": 55386243,
+    "sha256": "ae9e5ed97727dde7140df31ec0ed5a54fafe764925ae9c734d94b5d0a56b7d4c",
+    "source_unchanged": true
+  },
+  {
+    "name": "camera1.jsonl",
+    "size": 12401,
+    "sha256": "10ba6a6220bee3e684b3bf89736013a689eb013e18c00d168d513a93044221da",
+    "source_unchanged": true
+  },
+  {
+    "name": "camera1.pr8-stream",
+    "size": 209739553,
+    "sha256": "ff7c0422422b2864ceb27ff29de441004f900807c6e21e88c2aee148cc761bbe",
+    "source_unchanged": true
+  },
+  {
+    "name": "camera2.jsonl",
+    "size": 12408,
+    "sha256": "df0e0f2e3edf890d5ea5e26d3658cc87046d4dcf35040822a09c71e48fdbd0ed",
+    "source_unchanged": true
+  },
+  {
+    "name": "camera2.pr8-stream",
+    "size": 246730666,
+    "sha256": "ee569e82d3c1f8690b80e920e71a391699f7496e4f0c6e995a3a479f6b9e7cd9",
+    "source_unchanged": true
+  },
+  {
+    "name": "camera3.jsonl",
+    "size": 73326,
+    "sha256": "ab4428d8d9b85b877e23d7d625bd95b0a5f8b4ef1f47f727820cfe6afbeb9913",
+    "source_unchanged": true
+  },
+  {
+    "name": "camera3.mjpg-stream",
+    "size": 57574275,
+    "sha256": "0d495f7cb287004ea81fee1176611add6dc60bf3b93034645453cd7a65de5ca4",
+    "source_unchanged": true
+  },
+  {
+    "name": "dataset.info",
+    "size": 3359,
+    "sha256": "c5145f854f402667764113c7ff7fe66e2b23dd2cb464d71a0c62978a763e2b12",
+    "source_unchanged": true
+  }
+]

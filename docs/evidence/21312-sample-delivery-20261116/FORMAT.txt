@@ -1,0 +1,20 @@
+DIBULIStudio 适配要点
+
+1. 识别 format=prism-mixed-dataset-v1 和 device_model=21312V0。
+   dataset.info 是 UTF-8 的 key=value；不要按“所有相机都同一种编码/尺寸”处理。
+2. 对每路读取 cameraN.jsonl。每行 JSON 的 offset、bytes 是对应二进制 stream
+   中的字节范围，使用 64 位整数处理范围和 timestamp_us。
+3. cam0/3 的 .mjpg-stream 是一幅幅 JPEG 拼接，按索引提取即可保存为 .jpg。
+   JPEG 内可能含 Prism APP15 元数据；标准 JPEG 解码器可解码，提取时保留原始字节。
+4. cam1/2 的 .pr8-stream 每帧为 80 字节 PRG8 头加无损 block/Rice 数据。
+   解压得到 width*height 字节，每像素一个 RAW8 Bayer 值。不得扩充为 RAW12，
+   不得把压缩数据直接展示为 RAW。reference_decoder 提供当前 SDK 的头解析和解码代码。
+   导出 native Bayer PNG 时保持 8 位灰度存储；彩色预览需另做 Bayer 转换，不能凭
+   “灰度 PNG”推断相机是黑白，也不要在没有型号定义的情况下猜 Bayer 编号的排列。
+5. 保留各路 timestamp_us、frame_id、trigger_sequence、timing_mode 以及原始头中的
+   exposure_us/gain_x1024。不要跨相机按数组下标配对，不要把 frame_id 非 +1 直接判为丢帧。
+   此样例声明 independent-camera-timestamps-not-a-synchronized-set；时间值不能当 UTC。
+   数据集名中的 19700102 也不能当作真实采集日期。显示/对齐时使用原始时间字段及声明。
+6. recording_scope=camera-only，缺少其他传感器文件属于此样例的正常组成。
+7. reference/index.json 记录首末对照图在完整原始文件中的真实 offset/bytes 和行号，
+   不是重新打包的子集索引。JPEG 可直接比字节；RAW 可解压后逐像素比对。

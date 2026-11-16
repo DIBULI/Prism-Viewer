@@ -1,0 +1,73 @@
+{
+  "model": "21312V0",
+  "former_name": "21315",
+  "device_serial": "1b78953e9fc85455",
+  "source_boot": "9df238ef-a7f9-493c-b986-28df92932d9b",
+  "capture": "capture-19700102-001803-0b034161cdbc",
+  "original_files": 9,
+  "original_bytes": 569605613,
+  "recording_scope": "camera-only",
+  "cameras": [
+    {
+      "camera": 0,
+      "width": 1280,
+      "height": 1024,
+      "stored_fps": 12,
+      "frames": 369,
+      "bytes": 55386243,
+      "first_timestamp_us": 1083983807,
+      "last_timestamp_us": 1114650473,
+      "codec": "JPEG",
+      "all_index_ranges_headers_and_cadence_valid": true
+    },
+    {
+      "camera": 1,
+      "width": 4096,
+      "height": 3072,
+      "stored_fps": 2,
+      "frames": 62,
+      "bytes": 209739553,
+      "first_timestamp_us": 1083817140,
+      "last_timestamp_us": 1114317140,
+      "codec": "PRG8 lossless native RAW8",
+      "all_index_ranges_headers_and_cadence_valid": true
+    },
+    {
+      "camera": 2,
+      "width": 4096,
+      "height": 3072,
+      "stored_fps": 2,
+      "frames": 62,
+      "bytes": 246730666,
+      "first_timestamp_us": 1083817140,
+      "last_timestamp_us": 1114317140,
+      "codec": "PRG8 lossless native RAW8",
+      "all_index_ranges_headers_and_cadence_valid": true
+    },
+    {
+      "camera": 3,
+      "width": 1280,
+      "height": 1024,
+      "stored_fps": 12,
+      "frames": 369,
+      "bytes": 57574275,
+      "first_timestamp_us": 1083983807,
+      "last_timestamp_us": 1114650473,
+      "codec": "JPEG",
+      "all_index_ranges_headers_and_cadence_valid": true
+    }
+  ],
+  "reference_images": 8,
+  "reference_raw_all_pixels_compared": 4,
+  "reference_jpeg_byte_exact": 4,
+  "full_recording_pixel_decode": false,
+  "archive_files": 26,
+  "archive": "/Users/xiangfuli/Documents/ChatGPT/RK3576/deliverables/21312V0-dataset-sample-20261116/Prism-21312V0-camera-sample-20261116.zip",
+  "archive_bytes": 530487138,
+  "archive_sha256": "08d63593ac6efe08a165bfcb46177fe7915e0b329e696f2ba8320075fb7c9b77",
+  "archive_all_files_readback_hash_match": true,
+  "original_files_unchanged": true,
+  "remote_actions": "read-only download; no acquisition, service, power or firmware changes",
+  "download_session": "5400 exit0 closed",
+  "publication": "none"
+}

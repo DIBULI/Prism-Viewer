@@ -1,0 +1,174 @@
+{
+  "dataset": "capture-19700102-001803-0b034161cdbc",
+  "model": "21312V0",
+  "references": [
+    {
+      "camera": 0,
+      "row_index": 0,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera0.mjpg-stream",
+      "source_record": {
+        "bytes": 149189,
+        "dropped_before": 0,
+        "encoded_crc32": 3194199601,
+        "frame_id": 15,
+        "offset": 0,
+        "raw_crc32": 1564928539,
+        "source_bits": 8,
+        "timestamp_us": 1083983807,
+        "timing_mode": 4,
+        "trigger_sequence": 15
+      },
+      "reference_image": "reference/camera0/first_1083983807.jpg",
+      "reference_sha256": "0564409ccca31d0db98d00fcd311849398dfdd246c1aec0f8fc1eeefb9474a71",
+      "reference_is_byte_exact_original_jpeg": true
+    },
+    {
+      "camera": 0,
+      "row_index": 368,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera0.mjpg-stream",
+      "source_record": {
+        "bytes": 148051,
+        "dropped_before": 0,
+        "encoded_crc32": 330020128,
+        "frame_id": 383,
+        "offset": 55238192,
+        "raw_crc32": 3772768103,
+        "source_bits": 8,
+        "timestamp_us": 1114650473,
+        "timing_mode": 4,
+        "trigger_sequence": 383
+      },
+      "reference_image": "reference/camera0/last_1114650473.jpg",
+      "reference_sha256": "c762529e76c18215af346dd1008864bccad0d9e8a28dbfa999a3a1a81b8edb5f",
+      "reference_is_byte_exact_original_jpeg": true
+    },
+    {
+      "camera": 1,
+      "row_index": 0,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera1.pr8-stream",
+      "source_record": {
+        "bytes": 2211550,
+        "dropped_before": 0,
+        "encoded_crc32": 3581710502,
+        "frame_id": 7,
+        "offset": 0,
+        "raw_crc32": 4145190767,
+        "source_bits": 8,
+        "timestamp_us": 1083817140,
+        "timing_mode": 4,
+        "trigger_sequence": 13
+      },
+      "reference_image": "reference/camera1/first_1083817140.png",
+      "reference_sha256": "91c0305b3bda93216199c08a86e8e3e57786993541f21fd19360ede94f04ddc8",
+      "native_pixel_sha256": "8835828222a9744ba9d7b2f1006aef1ed99725700f0a75cfad771d9778992663",
+      "decoder_result": "camera=1 width=4096 height=3072 frame_id=7 timestamp_us=1083817140",
+      "all_reference_pixels_match": true
+    },
+    {
+      "camera": 1,
+      "row_index": 61,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera1.pr8-stream",
+      "source_record": {
+        "bytes": 3656966,
+        "dropped_before": 0,
+        "encoded_crc32": 3791801955,
+        "frame_id": 190,
+        "offset": 206082587,
+        "raw_crc32": 4289225221,
+        "source_bits": 8,
+        "timestamp_us": 1114317140,
+        "timing_mode": 4,
+        "trigger_sequence": 379
+      },
+      "reference_image": "reference/camera1/last_1114317140.png",
+      "reference_sha256": "01484362fe7634840c1c59ddf1331c07b33745a096ba37eee1dae3338685e010",
+      "native_pixel_sha256": "13997411bf72aca054719c19ae24448ae1611779cdfbe75a634d9f3f051923dd",
+      "decoder_result": "camera=1 width=4096 height=3072 frame_id=190 timestamp_us=1114317140",
+      "all_reference_pixels_match": true
+    },
+    {
+      "camera": 2,
+      "row_index": 0,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera2.pr8-stream",
+      "source_record": {
+        "bytes": 2655021,
+        "dropped_before": 0,
+        "encoded_crc32": 341316056,
+        "frame_id": 7,
+        "offset": 0,
+        "raw_crc32": 1952365682,
+        "source_bits": 8,
+        "timestamp_us": 1083817140,
+        "timing_mode": 4,
+        "trigger_sequence": 13
+      },
+      "reference_image": "reference/camera2/first_1083817140.png",
+      "reference_sha256": "ffd96b1fb2eaa8e4e3f563280637315192786126e5ca95a1acf7533fb5069cd0",
+      "native_pixel_sha256": "a90be1c64bca6931a8dd68a46ef99338ca32598c8cd8e376d6a3d604434fcb63",
+      "decoder_result": "camera=2 width=4096 height=3072 frame_id=7 timestamp_us=1083817140",
+      "all_reference_pixels_match": true
+    },
+    {
+      "camera": 2,
+      "row_index": 61,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera2.pr8-stream",
+      "source_record": {
+        "bytes": 4942754,
+        "dropped_before": 0,
+        "encoded_crc32": 1886552520,
+        "frame_id": 190,
+        "offset": 241787912,
+        "raw_crc32": 66881043,
+        "source_bits": 8,
+        "timestamp_us": 1114317140,
+        "timing_mode": 4,
+        "trigger_sequence": 379
+      },
+      "reference_image": "reference/camera2/last_1114317140.png",
+      "reference_sha256": "bf08fc8bf1e5c60d9f2fd42a16c005c1b0dd8d7016bf413de6d2c7394d80b797",
+      "native_pixel_sha256": "d0eca51606b013f04ac242b03d2f1c0d9737940b5f418369c1d74a46728fe64f",
+      "decoder_result": "camera=2 width=4096 height=3072 frame_id=190 timestamp_us=1114317140",
+      "all_reference_pixels_match": true
+    },
+    {
+      "camera": 3,
+      "row_index": 0,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera3.mjpg-stream",
+      "source_record": {
+        "bytes": 155733,
+        "dropped_before": 0,
+        "encoded_crc32": 2439519239,
+        "frame_id": 15,
+        "offset": 0,
+        "raw_crc32": 954360668,
+        "source_bits": 8,
+        "timestamp_us": 1083983807,
+        "timing_mode": 4,
+        "trigger_sequence": 15
+      },
+      "reference_image": "reference/camera3/first_1083983807.jpg",
+      "reference_sha256": "feb23bae7e3a9e8a4da2e678251fb23015a34ce696bced38b4a3bca86d7d538a",
+      "reference_is_byte_exact_original_jpeg": true
+    },
+    {
+      "camera": 3,
+      "row_index": 368,
+      "source_stream": "dataset/capture-19700102-001803-0b034161cdbc/camera3.mjpg-stream",
+      "source_record": {
+        "bytes": 155376,
+        "dropped_before": 0,
+        "encoded_crc32": 4172817611,
+        "frame_id": 383,
+        "offset": 57418899,
+        "raw_crc32": 2572471678,
+        "source_bits": 8,
+        "timestamp_us": 1114650473,
+        "timing_mode": 4,
+        "trigger_sequence": 383
+      },
+      "reference_image": "reference/camera3/last_1114650473.jpg",
+      "reference_sha256": "38cc8064d2974fb7c71d81a03b980b90bd162530092d1fed5cab92e25ade9c25",
+      "reference_is_byte_exact_original_jpeg": true
+    }
+  ]
+}
