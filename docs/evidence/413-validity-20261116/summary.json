@@ -1,0 +1,91 @@
+{
+  "request": "Find previous 413 server recordings and test latest Viewer Check Validity",
+  "status": "Check completed; compatibility failures reproduced; no source fix or publication performed in this task",
+  "viewer_source": "d006f8597d61e1f7425b5128fcb86011fddf1a9b local development; published1.3.1 6f4b409 has byte-identical dataset_browser.cpp",
+  "validator_sha256": "cc9dd947b31065de216daaa287a599b4bebd0e34029a7a1117faadc810c43be9",
+  "method": "Same validatePrismDataset used by the Viewer button. On Linux compile exact latest source with existing Qt5/SDK dependencies in an isolated directory; four full originals read. On macOS link the current Viewer validator object; two complete local copies yield identical issue lists and stream summaries. GUI dialog itself was not automated in this turn.",
+  "server": {
+    "host": "xiangfuli@10.42.100.4",
+    "uid": 1000,
+    "boot": "7e66ee34-1f8b-4c04-bb07-d9df6256a8e4",
+    "test_dir": "/work/builds/prism-415rsv0-record2-QdI9Ef89/413-viewer-validity-20261116-r1"
+  },
+  "results": [
+    {
+      "name": "imu-only",
+      "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/dataset-r1",
+      "images": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "errors": 3,
+      "warnings": 0,
+      "checked_records": 21385,
+      "source_unchanged": true
+    },
+    {
+      "name": "camera",
+      "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/reconnected-r2/dataset",
+      "images": [
+        849,
+        849,
+        849,
+        849
+      ],
+      "errors": 3,
+      "warnings": 0,
+      "checked_records": 24884,
+      "source_unchanged": true
+    },
+    {
+      "name": "camera-lidar-imu",
+      "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/lidar-r4/dataset",
+      "images": [
+        881,
+        881,
+        881,
+        881
+      ],
+      "errors": 9,
+      "warnings": 0,
+      "checked_records": 32267,
+      "source_unchanged": true
+    },
+    {
+      "name": "camera-lidar-full",
+      "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/lidar-viewer-r6/dataset",
+      "images": [
+        880,
+        880,
+        880,
+        880
+      ],
+      "errors": 2,
+      "warnings": 0,
+      "checked_records": 37097,
+      "source_unchanged": true
+    }
+  ],
+  "total_jpeg_images": 10440,
+  "total_checked_records": 115633,
+  "findings": [
+    "All four datasets are declared complete 413GSV0 v6 all-received recordings, source-preserved flags and alignment=not-asserted. Check Validity still requires alignment=common-device-time-domain; ROS Bag exporter already accepts the new policy.",
+    "The checker treats empty declared LiDAR/IMU streams as errors even when manifest counts are zero. These are optional absent streams under the recorded policy.",
+    "Seven early unsynchronized LiDAR IMU records in lidar-r4 and one initial unsynchronized LiDAR batch in lidar-viewer-r6 are explicitly marked in source. They are real synchronization limitations to retain/report, not evidence of corrupt payloads. The all-received policy intentionally permits saving them.",
+    "All10440 indexed camera images decode; no image payload, range, manifest count or timestamp-discontinuity errors were emitted for these samples. This is not a claim of global synchronization or absence of every possible recording fault."
+  ],
+  "root_locations": {
+    "manifest": "src/dataset/dataset_browser.cpp:638",
+    "empty_lidar": "src/dataset/dataset_browser.cpp:880",
+    "lidar_sync": "src/dataset/dataset_browser.cpp:852",
+    "lidar_imu_sync": "src/dataset/dataset_browser.cpp:962",
+    "empty_lidar_imu": "src/dataset/dataset_browser.cpp:982",
+    "already_supported_export_policy": "src/dataset/rosbag_exporter.cpp:1058"
+  },
+  "copy": "Full copies of dataset-r1 and lidar-r4 retained locally. Copy of remaining files interrupted intentionally after full server-side tests completed; partial local directories must not be used as complete datasets. rsync95976/start2026-11-16 20:09:02/uid501/full argv checked, one SIGTERM; session7956exit20. Original server files unchanged.",
+  "cursor": "Search52251exit0; local checker94450exit0; server build60194exit0; server test74449exit0; local comparison3072 checker produced expectedinvalid rc1; report fetch12423exit0; copy7956 closedexit20. No active hardware/control session.",
+  "failures": "Server has no rg, so bounded find used. Non-escalated ps denied, then own copy identity read and verified under approved process access. No credential output, device access, capture, service restart or dataset deletion.",
+  "next": "Align Check Validity with all-received optional sensor/time-source semantics using targeted regressions; keep malformed data, bounds/count corruption and unsupported declarations as errors. Not implemented during this inspection."
+}

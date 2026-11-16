@@ -1,0 +1,146 @@
+{
+    "cameras": [
+        {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+        },
+        {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+        },
+        {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+        },
+        {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+        }
+    ],
+    "cancelled": false,
+    "checked_records": 32267,
+    "elapsed_seconds": 16.4363095,
+    "errors": 9,
+    "imus": [
+        {
+            "discontinuities": 0,
+            "first_us": "563000625",
+            "last_us": "591847379",
+            "max_us": 1245,
+            "median_us": 1243,
+            "min_us": 1242,
+            "rows": 23204
+        },
+        {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+        }
+    ],
+    "issues": [
+        {
+            "file": "dataset.info",
+            "line": 0,
+            "message": "v6 time-domain declaration is missing or unsupported",
+            "severity": "error"
+        },
+        {
+            "file": "lidar.tum",
+            "line": 0,
+            "message": "declared LiDAR point stream is empty",
+            "severity": "error"
+        },
+        {
+            "file": "lidar_imu.tum",
+            "line": 3,
+            "message": "v6 LiDAR IMU timestamp is not synchronized",
+            "severity": "error"
+        },
+        {
+            "file": "lidar_imu.tum",
+            "line": 4,
+            "message": "v6 LiDAR IMU timestamp is not synchronized",
+            "severity": "error"
+        },
+        {
+            "file": "lidar_imu.tum",
+            "line": 5,
+            "message": "v6 LiDAR IMU timestamp is not synchronized",
+            "severity": "error"
+        },
+        {
+            "file": "lidar_imu.tum",
+            "line": 6,
+            "message": "v6 LiDAR IMU timestamp is not synchronized",
+            "severity": "error"
+        },
+        {
+            "file": "lidar_imu.tum",
+            "line": 7,
+            "message": "v6 LiDAR IMU timestamp is not synchronized",
+            "severity": "error"
+        },
+        {
+            "file": "lidar_imu.tum",
+            "line": 8,
+            "message": "v6 LiDAR IMU timestamp is not synchronized",
+            "severity": "error"
+        },
+        {
+            "file": "lidar_imu.tum",
+            "line": 9,
+            "message": "v6 LiDAR IMU timestamp is not synchronized",
+            "severity": "error"
+        }
+    ],
+    "lidar": {
+        "discontinuities": 0,
+        "first_us": "0",
+        "last_us": "0",
+        "max_us": 0,
+        "median_us": 0,
+        "min_us": 0,
+        "rows": 0
+    },
+    "lidar_imu": {
+        "discontinuities": 0,
+        "first_us": "564307235",
+        "last_us": "591847224",
+        "max_us": 5815,
+        "median_us": 4838,
+        "min_us": 4190,
+        "rows": 5509
+    },
+    "model": "413GSV0",
+    "path": "artifacts/413-viewer-validity-20261116/datasets/lidar-r4/dataset",
+    "time_domain": "sensor-board-clock",
+    "time_sync_samples": 30,
+    "timestamp_epoch": "boot",
+    "valid": false,
+    "version": 6,
+    "warnings": 0
+}

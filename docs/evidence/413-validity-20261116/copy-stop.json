@@ -1,0 +1,9 @@
+{
+  "action": "Stop only this turn's unneeded local read-only rsync; original server datasets untouched",
+  "pid": 95976,
+  "ppid": 42058,
+  "uid": 501,
+  "start": "Mon Nov 16 20:09:02 2026",
+  "argv": "rsync -a --relative -e ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 xiangfuli@10.42.100.4:/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/./dataset-r1 xiangfuli@10.42.100.4:/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/./reconnected-r2/dataset xiangfuli@10.42.100.4:/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/./lidar-r4/dataset xiangfuli@10.42.100.4:/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/./lidar-viewer-r6/dataset artifacts/413-viewer-validity-20261116/datasets/",
+  "signal": "SIGTERM once"
+}
