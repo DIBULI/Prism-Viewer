@@ -1,0 +1,23 @@
+[  0%] Built target prism-viewer-imu-traces_autogen_timestamp_deps
+[  4%] Built target prism-viewer-imu-units
+[  9%] Built target prism-viewer-app-theme
+[ 19%] Built target prism-viewer-raw-dataset
+[ 19%] Built target prism-viewer-imu-traces_autogen
+[ 19%] Built target prism-viewer-image-export
+[ 28%] Built target prism-viewer-imu-traces
+[ 33%] Building CXX object CMakeFiles/prism-viewer.dir/src/ui/main_window.cpp.o
+/Users/xiangfuli/Documents/ChatGPT/RK3576/remote-work/415rsv0-record2.QdI9Ef89/viewer/src/ui/main_window.cpp:6331:70: warning: missing field 'device_serial' initializer [-Wmissing-field-initializers]
+    DatasetRecorder::ReceivedStreamsPolicy policy{true,true,"415RSV0"};
+                                                                     ^
+/Users/xiangfuli/Documents/ChatGPT/RK3576/remote-work/415rsv0-record2.QdI9Ef89/viewer/src/ui/main_window.cpp:11232:75: warning: missing field 'device_serial' initializer [-Wmissing-field-initializers]
+      DatasetRecorder::ReceivedStreamsPolicy policy{true, false, "413GSV0"};
+                                                                          ^
+2 warnings generated.
+[ 38%] Linking CXX executable Prism-Viewer.app/Contents/MacOS/Prism-Viewer
+ld: warning: ignoring duplicate libraries: 'libprism-viewer-raw-dataset.a'
+[100%] Built target prism-viewer
+[ 66%] Built target prism-viewer-raw-dataset
+[ 66%] Built target prism-viewer-image-export
+[ 66%] Building CXX object CMakeFiles/image-sequence-export-test.dir/tests/image_sequence_export_test.cpp.o
+[ 66%] Linking CXX executable image-sequence-export-test
+[100%] Built target image-sequence-export-test

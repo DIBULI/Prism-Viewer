@@ -1,0 +1,52 @@
+{
+  "task": "Viewer one-click image sequence export for 413GSV0,415RSV0,21312V0",
+  "status": "Implemented and locally tested; not published or packaged for distribution",
+  "base_commit": "9875132e9fd4d6e9dfcd85a4696f1eb8a455ca0a",
+  "formats": {
+    "413GSV0": "Original per-frame JPEG bytes",
+    "415RSV0": "5120x3072 native RAW8 Bayer samples as lossless grayscale PNG",
+    "21312V0": "cam0/3 original JPEG; cam1/2 4096x3072 native RAW8 PNG"
+  },
+  "metadata": "Per-camera CSV: timestamp_us, exposure_us, gain_x1024, frame_id, trigger_sequence, timing_mode, dropped_before, geometry, Bayer code, source relative container/range; missing fields blank. Explicit source zeros retained. export.json preserves recorded model/serial and source metadata. No UTC or synchronization inference.",
+  "ui": "Local dataset > Export Images; new destination folder, per-frame progress and cancellation. Actual Qt button/folder chooser/completion dialog tested for all three models, including partial-camera 413. Independent export does not require playback cadence compatibility.",
+  "validation": {
+    "final_export_tests": "2/2 passed: core7.20s, actual GUI7.25s",
+    "reader_regression": "4/4 passed35.05s: image export, UI, raw-dataset, dataset-browser before final UI fallback extension",
+    "synthetic": "413 JPEG exact bytes;415 and21312 every PNG pixel checked; metadata, cancellation/staging cleanup, source/overwrite protection, offsets, incomplete recordings and corrupt RAW checks passed",
+    "real21312": "First and last frame per camera from completed capture-19700102-001803-0b034161cdbc:2/2/2/2 images. Original JPEG bytes and every decoded RAW8 PNG pixel equal source. This is an eight-frame sample, not full dataset readback or a new recording."
+  },
+  "source_files_sha256": {
+    "CMakeLists.txt": "11aa5131433e1f65e80c9ea5a7a06d93dfddf8664821436b1fb00f4f7924403c",
+    "src/dataset/dataset_identity.hpp": "42e6c9d15a4f000956cbcd9ac3e354939ed2dac38728c2d68d9d7ee314795109",
+    "src/dataset/image_sequence_exporter.hpp": "b37ba06c579c381af75a81ed7e9c54d84df8a42382792b4d537d41b344088558",
+    "src/dataset/image_sequence_exporter.cpp": "70c81267db0713e9995b93f57ad36107fe1b97ccdbd4e218d52670e141c96be3",
+    "src/ui/main_window.cpp": "12ef25bcd0d61da3554197a39dce22f98cac43ac7e293f24978e6dce9b23d25f",
+    "tests/image_sequence_export_test.cpp": "d95864fa697536d99a2308259dc9e0118407feea0186d1862420cdd3687cd81a",
+    "docs/image-sequence-export.md": "3fdaa24aa38f5f6fc421f2a1edff85fad071ab79b93c485dbe96bc12771d51e1"
+  },
+  "app_sha256": "ad23a26df0b2311035820abc4aef8cf3da7a484e4e49624ffab7be33ac36e357",
+  "real_input_hashes": {
+    "camera0.mjpg-stream": "fdbaa23b647a4bf113a0b56d428e957883706962f01734d91696ae10b0d3fce6",
+    "camera2.pr8-stream": "8ae1e801cfbdfe8fed1f5e533631a82719961a1c346e62bf708a15b882fb2fbf",
+    "camera3.mjpg-stream": "d332750b483ecb3db0043853016d9f1d4a7bedd120a30011570f999a654088c1",
+    "camera0.jsonl": "a6e3e03c0223f87ac98bbe171c7d51c9dc696bef5dd73c0deec6485f66d52f6b",
+    "camera2.jsonl": "5c1a39f6ba636f754da999e540597725149778d464b8664f0b06ee91f0fc5653",
+    "camera1.pr8-stream": "769f0fc5639b5e1ed635152083a216baa528cac69b316b9750c1c98342a0c60d",
+    "camera3.jsonl": "4b3635f161bcfaf494f11ed051ba8643551300fff60a60e2a5fbac07e847d8a2",
+    "dataset.info": "11f5138c1aa798d228ca55e17cd3cdce90b2dcb17bda8b832228a41f08769be0",
+    "camera1.jsonl": "8af69ec81d81ede43deabe8c46ac881b845a76214ee2cfcfc6b96ba0b6a56719"
+  },
+  "sample_artifacts": "/Users/xiangfuli/Documents/ChatGPT/RK3576/artifacts/viewer-image-export-20261116",
+  "sample_transfer": "Read-only existing pinned SSH wrapper; bounded first/last frames from owned completed dataset. No capture, service, firmware, power-policy, or source dataset change.",
+  "preserved_failures": [
+    "Initial SFTP reader denied root-owned files without mutation.",
+    "Second text/base64 wrapper hit its output limit and timed out; original evidence retained. Third bounded binary read succeeded."
+  ],
+  "limits": [
+    "Only macOS build and Qt offscreen GUI executed this turn; Windows/Linux need release CI before publishing.",
+    "RAW8 PNG is native Bayer in a grayscale file, not a demosaiced color preview.",
+    "This feature exports camera images; no new IMU/GNSS/LiDAR conversion or21312 ROS Bag/timeline support.",
+    "No GitHub push, release/tag change, device installation or distribution package update."
+  ],
+  "closed_sessions": "Final build/test32571 exit0; previous84808/85967/17058/84440/78511/81298 exit0. Sample read1199 exit1 and80654 exit0; no active owned controller."
+}

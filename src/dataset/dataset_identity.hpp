@@ -17,6 +17,7 @@ struct DatasetIdentity {
   std::string model = "413GSV0";
   bool defaulted = true;
   bool raw8_recording = false;
+  bool mixed_recording = false;
 };
 
 // Additive metadata: never infer a model from directory names or image sizes.
@@ -64,6 +65,8 @@ inline DatasetIdentity readDatasetIdentity(const std::filesystem::path& root) {
       const auto separator = value.indexOf('=');
       if (separator < 0) continue;  // Full format validation is separate.
       const auto key = value.left(separator).trimmed().toStdString();
+      if (key == "format") result.mixed_recording =
+          value.mid(separator + 1).trimmed() == QStringLiteral("prism-mixed-dataset-v1");
       if (key == "codec") result.raw8_recording =
           value.mid(separator + 1).trimmed() == QStringLiteral("raw8-rice-lossless");
       if (key != "device_model" && key != "model") continue;

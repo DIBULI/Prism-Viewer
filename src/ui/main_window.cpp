@@ -13,6 +13,7 @@
 #include "dataset/dataset_playback.hpp"
 #include "dataset/dataset_playback_timing.hpp"
 #include "dataset/rosbag_exporter.hpp"
+#include "dataset/image_sequence_exporter.hpp"
 #include "dataset/recording_startup_gate.hpp"
 #include "dataset/recording_usb_gate.hpp"
 #include "imu_units.hpp"
@@ -3143,6 +3144,11 @@ class MainWindow : public QMainWindow {
     dataset_export_rosbag_button_ = new QPushButton(
         uiText("Export ROS Bag...", "导出 ROS Bag..."), dataset_page_);
     dataset_export_rosbag_button_->setEnabled(false);
+    dataset_export_images_button_ = new QPushButton(uiText("Export Images...", "导出图片序列……"), dataset_page_);
+    dataset_export_images_button_->setObjectName(QStringLiteral("datasetExportImagesButton"));
+    dataset_export_images_button_->setEnabled(false);
+    dataset_export_images_button_->setToolTip(uiText("Original JPEG / lossless RAW8 PNG with per-camera CSV indexes", "原始 JPEG／无损 RAW8 PNG，附各相机 CSV 索引"));
+    connect(dataset_export_images_button_, &QPushButton::clicked, this, [this] { exportLoadedDatasetImages(); });
     dataset_metadata_toggle_button_ = new QPushButton(
         uiText("Show Metadata", "显示 Metadata"), dataset_page_);
     dataset_metadata_toggle_button_->setObjectName(
@@ -3188,6 +3194,7 @@ class MainWindow : public QMainWindow {
     dataset_controls->addWidget(rk_download);
     dataset_controls->addWidget(dataset_validate_button_);
     dataset_controls->addWidget(dataset_export_rosbag_button_);
+    dataset_controls->addWidget(dataset_export_images_button_);
     dataset_controls->addWidget(dataset_metadata_toggle_button_);
     dataset_controls->addWidget(dataset_path_label_, 1);
     dataset_layout->addLayout(dataset_controls);
@@ -4058,6 +4065,24 @@ class MainWindow : public QMainWindow {
     }
     refreshControls();
     return rejected == 2;
+  }
+
+  bool runImageExportSelfTest(const QString& directory, const QString& parent) {
+    loadRecordedDataset(directory, false);
+    if (!dataset_export_images_button_->isEnabled()) return false;
+    const auto destination=QDir(parent).filePath(QFileInfo(directory).fileName()+QStringLiteral("-images"));
+    if(QFileInfo::exists(destination))return false;
+    bool chose=false,reported=false;
+    QTimer dialogs;
+    connect(&dialogs,&QTimer::timeout,this,[&] {
+      if(auto* chooser=qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+        if(!chose){chose=true;chooser->setDirectory(parent);QMetaObject::invokeMethod(chooser,"accept",Qt::QueuedConnection);}
+      } else if(auto* message=qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+        reported=message->icon()==QMessageBox::Information;message->accept();
+      }
+    });
+    dialogs.start(30);dataset_export_images_button_->click();dialogs.stop();
+    return chose&&reported&&QFileInfo::exists(QDir(destination).filePath(QStringLiteral("export.json")));
   }
 
   bool runDatasetPlaybackSelfTest(const QString& directory,
@@ -7097,6 +7122,9 @@ class MainWindow : public QMainWindow {
           !worker_running_ && !rosbag_export_running_);
     }
     if (dataset_validate_button_ != nullptr) {
+      if (dataset_export_images_button_ != nullptr)
+        dataset_export_images_button_->setEnabled(dataset_image_export_available_ && !loaded_dataset_root_.isEmpty() &&
+            !imu_recording && !worker_running_ && !rosbag_export_running_);
       dataset_validate_button_->setEnabled(
           !dataset_recorder_.isActive() && !worker_running_ &&
           !rosbag_export_running_);
@@ -8350,6 +8378,33 @@ class MainWindow : public QMainWindow {
     message.exec();
   }
 
+  void exportLoadedDatasetImages() {
+    if (!dataset_image_export_available_ || loaded_dataset_root_.isEmpty() || worker_running_ || rosbag_export_running_ ||
+        dataset_recorder_.isActive() || rawRecordingActive()) return;
+    setDatasetPlaybackActive(false);
+    const auto parent = QFileDialog::getExistingDirectory(this,
+        uiText("Choose where to save the image sequence", "选择图片序列的保存位置"), QFileInfo(loaded_dataset_root_).absolutePath(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
+    if (parent.isEmpty()) return;
+    if (worker_running_ || rosbag_export_running_ || dataset_recorder_.isActive() || rawRecordingActive()) return;
+    const auto base = QDir(parent).filePath(QFileInfo(loaded_dataset_root_).fileName() + QStringLiteral("-images"));
+    QString output=base;for(unsigned n=2;QFileInfo::exists(output);++n)output=base+QStringLiteral("-%1").arg(n);
+    const auto source=toFilesystemPath(loaded_dataset_root_);
+    QProgressDialog progress(uiText("Preparing images...", "正在准备图片……"),uiText("Cancel", "取消"),0,0,this);
+    progress.setWindowTitle(uiText("Export Images", "导出图片序列"));progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);progress.setAutoClose(false);progress.show();
+    rosbag_export_running_=true;refreshControls();
+    const auto result=prism_viewer::dataset::exportImageSequence(source,toFilesystemPath(output),
+        [&progress](uint64_t count,const std::string& camera){progress.setLabelText(uiText("Exported %1 images · %2", "已导出 %1 张 · %2").arg(count).arg(toQString(camera)));QApplication::processEvents();},
+        [&progress]{QApplication::processEvents();return progress.wasCanceled();});
+    rosbag_export_running_=false;progress.close();refreshControls();
+    if(result.success)QMessageBox::information(this,uiText("Images exported", "图片序列已导出"),
+        uiText("Saved to:\n%1\n\nCamera 0/1/2/3: %2 / %3 / %4 / %5\nJPEG is unchanged. RAW8 PNG preserves native Bayer pixels. Each folder includes frames.csv.",
+               "已保存到：\n%1\n\n相机 0/1/2/3：%2 / %3 / %4 / %5 张\nJPEG 保留原始内容；RAW8 PNG 保留原生 Bayer 像素。各目录包含 frames.csv。")
+        .arg(output).arg(result.images[0]).arg(result.images[1]).arg(result.images[2]).arg(result.images[3]));
+    else if(!result.cancelled)QMessageBox::warning(this,uiText("Image export failed", "图片导出失败"),toQString(result.error));
+  }
+
   void exportLoadedDatasetRosbag(RosbagFormat format) {
     if (loaded_dataset_root_.isEmpty() || dataset_metadata_only_ || dataset_raw8_ || worker_running_ ||
         rosbag_export_running_ ||
@@ -8505,6 +8560,8 @@ class MainWindow : public QMainWindow {
 
   void loadRecordedDataset(const QString& directory, bool show_errors) {
     setDatasetPlaybackActive(false);
+    dataset_image_export_available_=false;
+    refreshControls();
     const auto root = toFilesystemPath(directory);
     prism_viewer::dataset::DatasetIdentity identity;
     try {
@@ -8512,6 +8569,35 @@ class MainWindow : public QMainWindow {
     } catch (const std::exception& error) {
       if (show_errors) QMessageBox::warning(this,
           uiText("Invalid dataset metadata", "数据集元数据无效"), toQString(error.what()));
+      return;
+    }
+    const auto openImagesWithoutPlayback = [&]() {
+      prism_viewer::dataset::ImageSequenceIndex index;
+      try {
+        index = prism_viewer::dataset::inspectImageSequence(root);
+      } catch (const std::exception&) {
+        return false;
+      }
+      ++raw_dataset_generation_;dataset_raw8_=false;raw_dataset_={};dataset_metadata_only_=true;
+      dataset_camera_entries_={};dataset_playback_data_={};dataset_frame_count_=0;dataset_current_frame_=0;dataset_playback_cursor_=0;
+      dataset_images_={};loaded_dataset_root_=directory;dataset_path_label_->setText(directory);dataset_path_label_->setToolTip(directory);
+      dataset_camera_zoom_dialog_->hide();resetDatasetPlaybackVisualization();
+      {const QSignalBlocker blocker(dataset_frame_slider_);dataset_frame_slider_->setRange(0,0);dataset_frame_slider_->setValue(0);}
+      dataset_frame_slider_->setEnabled(false);dataset_frame_jump_spin_->setEnabled(false);dataset_frame_jump_button_->setEnabled(false);
+      for(auto* label:dataset_image_labels_)label->clearImage(uiText("Use Export Images to extract this recording", "使用“导出图片序列”提取本段录制"));
+      dataset_image_export_available_=true;
+      dataset_summary_label_->setText(uiText("%5 · Images %1 / %2 / %3 / %4 · Image sequence export available",
+          "%5 · 帧数 %1 / %2 / %3 / %4 · 可导出图片序列")
+          .arg(index.cameras[0].size()).arg(index.cameras[1].size()).arg(index.cameras[2].size()).arg(index.cameras[3].size())
+          .arg(toQString(identity.model)));
+      dataset_details_->setPlainText(uiText("Original JPEG / native RAW8 PNG. Per-camera timestamps are preserved in CSV; no synchronized grouping is inferred. Timeline playback is unavailable for this recording.",
+          "导出原始 JPEG／原生 RAW8 PNG。各相机时间戳保存在 CSV 中，不推定为同步帧组。本段录制不支持时间轴回放。"));
+      updateDatasetPlaybackControls();refreshControls();return true;
+    };
+    if (identity.mixed_recording) {
+      if (!openImagesWithoutPlayback() && show_errors)
+        QMessageBox::warning(this, uiText("Unable to open dataset", "无法打开数据集"),
+            uiText("Cannot read completed camera indexes.", "无法读取已完成录制的相机索引。"));
       return;
     }
     if (identity.raw8_recording) {
@@ -8556,6 +8642,7 @@ class MainWindow : public QMainWindow {
       try {
         raw_dataset_ = prism_viewer::dataset::loadRaw8Dataset(root);
         if (raw_dataset_.timestamps.empty()) throw std::runtime_error("No recorded RAW8 images");
+        dataset_image_export_available_=true;
         dataset_camera_entries_ = raw_dataset_.cameras;
         dataset_frame_count_ = raw_dataset_.timestamps.size();
         if(!raw_dataset_.ordinal_only)for (size_t i = 0; i < dataset_frame_count_; ++i)
@@ -8585,6 +8672,14 @@ class MainWindow : public QMainWindow {
       } catch (const std::exception& error) {
         raw_dataset_ = {};
         dataset_summary_label_->setText(uiText("Model: %1 | RAW8 dataset could not be opened: %2", "机型：%1 | 无法打开 RAW8 数据集：%2").arg(toQString(identity.model), toQString(error.what())));
+        // Image extraction preserves independent source rows and does not need
+        // the older playback reader's synchronized cadence assumptions.
+        try {
+          (void)prism_viewer::dataset::inspectImageSequence(root);
+          dataset_image_export_available_=true;
+          dataset_summary_label_->setText(dataset_summary_label_->text()+uiText(" | Image export is available", " | 仍可导出图片序列"));
+        } catch(const std::exception&) {dataset_image_export_available_=false;}
+        refreshControls();
         if (show_errors) QMessageBox::warning(this, uiText("Unable to open dataset", "无法打开数据集"), toQString(error.what()));
       }
       return;
@@ -8611,6 +8706,7 @@ class MainWindow : public QMainWindow {
     }
     if (camera_index_count != 0 &&
         camera_index_count != camera_entries.size()) {
+      if (openImagesWithoutPlayback()) return;
       if (show_errors) {
         QMessageBox::critical(
             this, uiText("Unable to open dataset", "无法打开数据集"),
@@ -8630,6 +8726,7 @@ class MainWindow : public QMainWindow {
       for (size_t camera = 0; camera < camera_entries.size(); ++camera) {
         if (!loadDatasetImageIndex(root, camera, &camera_entries[camera],
                                    &error)) {
+          if (openImagesWithoutPlayback()) return;
           if (show_errors) {
             QMessageBox::critical(
                 this, uiText("Unable to open dataset", "无法打开数据集"),
@@ -8647,6 +8744,7 @@ class MainWindow : public QMainWindow {
 
     if (complete_frames == 0 && imu0.rows == 0 && imu1.rows == 0 &&
         lidar.rows == 0 && lidar_imu.rows == 0) {
+      if (openImagesWithoutPlayback()) return;
       if (show_errors) {
         QMessageBox::warning(
             this, uiText("Empty dataset", "空数据集"),
@@ -8666,6 +8764,7 @@ class MainWindow : public QMainWindow {
     DatasetPlaybackData playback_data;
     if (!loadDatasetPlaybackData(root, camera_timestamps, &playback_data,
                                  &error)) {
+      if (openImagesWithoutPlayback()) return;
       if (show_errors) {
         QMessageBox::critical(
             this, uiText("Unable to open dataset", "无法打开数据集"),
@@ -8685,6 +8784,7 @@ class MainWindow : public QMainWindow {
     dataset_camera_entries_ = std::move(camera_entries);
     dataset_playback_data_ = std::move(playback_data);
     dataset_frame_count_ = complete_frames;
+    dataset_image_export_available_=has_cameras&&complete_frames>0;
     dataset_playback_cursor_ = 0u;
     loaded_dataset_root_ = directory;
     dataset_path_label_->setText(directory);
@@ -10646,6 +10746,8 @@ class MainWindow : public QMainWindow {
   QPushButton* dataset_open_button_ = nullptr;
   QPushButton* dataset_validate_button_ = nullptr;
   QPushButton* dataset_export_rosbag_button_ = nullptr;
+  QPushButton* dataset_export_images_button_ = nullptr;
+  bool dataset_image_export_available_ = false;
   QPushButton* dataset_metadata_toggle_button_ = nullptr;
   QLabel* dataset_path_label_ = nullptr;
   QLabel* dataset_summary_label_ = nullptr;
@@ -11793,6 +11895,11 @@ int runViewerApplication(int argc, char** argv) {
         language.startsWith(QStringLiteral("zh"), Qt::CaseInsensitive));
   }
   MainWindow window;
+  const int image_export_test=command_line.indexOf(QStringLiteral("--image-export-self-test"));
+  if(image_export_test>=0&&image_export_test+2<command_line.size()) {
+    const bool ok=window.runImageExportSelfTest(command_line[image_export_test+1],command_line[image_export_test+2]);
+    std::cout<<"image_export_ui_self_test="<<(ok?"PASS":"FAIL")<<'\n';return ok?0:27;
+  }
   if (command_line.contains(QStringLiteral("--recording-usb-self-test"))) {
     const bool success = window.runRecordingUsbSelfTest();
     std::cout << "recording_usb_ui_self_test=" << (success ? "PASS" : "FAIL") << '\n';

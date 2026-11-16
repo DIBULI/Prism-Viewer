@@ -1,0 +1,9 @@
+Test project /Users/xiangfuli/Documents/ChatGPT/RK3576/artifacts/21312-device-20261114/viewer-r1/build
+    Start 47: image-sequence-export
+1/2 Test #47: image-sequence-export ............   Passed    7.20 sec
+    Start 48: image-sequence-export-ui
+2/2 Test #48: image-sequence-export-ui .........   Passed    7.25 sec
+
+100% tests passed out of 2
+
+Total Test time (real) =  14.46 sec
