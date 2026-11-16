@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-16",
+  "scope": "Viewer and matching SDK 1.4.0 master source update; no Release or tag publication.",
+  "sdk": {
+    "version": "1.4.0",
+    "commit": "e3ee47360e96bf7771ec830b0ececa7fcca32185",
+    "runtime_source": "058345de30f1317f187d7db2a5d2c0d18dfa1469",
+    "matched_ci_run": 43872601592,
+    "platforms": [
+      "Windows x64",
+      "macOS arm64",
+      "Linux x64",
+      "Linux arm64"
+    ],
+    "all_platforms_passed": true,
+    "download_sha256_and_zip_crc_verified": true,
+    "exported_headers_identical": true,
+    "public_manifest_files": 227,
+    "example_tests_passed": 19
+  },
+  "viewer": {
+    "version": "1.4.0",
+    "feature_scope": [
+      "21312V0 mixed JPEG and 4096x3072 RAW8 support",
+      "Camera image sequence export",
+      "All-received dataset CheckValidity policy correction",
+      "Preserved HELLO network and USB compatibility and online updater fixes"
+    ],
+    "build": "macOS arm64 passed",
+    "offline_tests": {
+      "passed": 75,
+      "failed": 0,
+      "duration_seconds": 129.69,
+      "excluded": [
+        "bounded-audit-sanitized"
+      ]
+    },
+    "sanitizer_limitation": "Local AppleClang sanitizer aborts during initialization before main; an empty instrumented executable reproduces the same failure. CI retains the sanitizer test; no product code workaround."
+  },
+  "failures_preserved": [
+    "First SDK CI43871524260 rejected new SDK1.4.0 in the Linux network test fixture hardcoded to1.3.1. Expected client version was parameterized while retaining explicit Agent1.3.1 compatibility coverage; matched CI43872601592 passed."
+  ],
+  "hardware": "No device connection, capture, firmware, or image update performed in this publishing task."
+}
