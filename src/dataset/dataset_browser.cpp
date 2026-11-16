@@ -604,6 +604,15 @@ DatasetValidationResult validatePrismDatasetImpl(
   const bool sensor_board_boot_time_v6 =
       strict_v6 && result.time_domain == "sensor-board-clock" &&
       result.timestamp_epoch == "boot";
+  // Match the recorder/exporter contract exactly. This policy preserves each
+  // received stream; it does not promise that optional sensors are present or
+  // that records from different sensors share a synchronized clock.
+  const bool all_received = strict_v6 &&
+      field("recording_stream_policy") == "all-received" &&
+      field("timestamp_policy") == "source-preserved-see-per-stream-flags" &&
+      field("alignment") == "not-asserted";
+  const auto availability_severity = all_received
+      ? DatasetValidationSeverity::Warning : DatasetValidationSeverity::Error;
   if (strict_v6) {
     const std::array<const char*, 8> required = {
         "complete",       "recording_mode", "image_storage",
@@ -625,9 +634,13 @@ DatasetValidationResult validatePrismDatasetImpl(
                "recording_mode must be full or imu-only");
     }
     if ((!unix_time_v6 && !sensor_board_boot_time_v6) ||
-        field("alignment") != "common-device-time-domain") {
+        (!all_received && field("alignment") != "common-device-time-domain")) {
       addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
                "v6 time-domain declaration is missing or unsupported");
+    }
+    if (all_received) {
+      addIssue(&result, DatasetValidationSeverity::Warning, "dataset.info", 0,
+               "all-received recording preserves source timestamps; synchronization between streams is not asserted");
     }
   }
 
@@ -715,11 +728,15 @@ DatasetValidationResult validatePrismDatasetImpl(
                         &result.cameras[camera], &result);
       checkManifestCount("camera" + std::to_string(camera) + "_images",
                          result.cameras[camera].rows);
+      if (all_received && camera_timestamps[camera].empty()) {
+        addIssue(&result, DatasetValidationSeverity::Warning, filename, 0,
+                 "camera stream contains no received images");
+      }
     }
     const size_t expected_rows = camera_timestamps.front().size();
     for (size_t camera = 1; camera < camera_timestamps.size(); ++camera) {
       if (camera_timestamps[camera].size() != expected_rows) {
-        addIssue(&result, DatasetValidationSeverity::Error,
+        addIssue(&result, availability_severity,
                  "cam" + std::to_string(camera) + ".tum", 0,
                  "camera indexes contain different frame counts");
         continue;
@@ -727,7 +744,7 @@ DatasetValidationResult validatePrismDatasetImpl(
       for (size_t row = 0; row < expected_rows; ++row) {
         if (camera_timestamps[camera][row].timestamp_us !=
             camera_timestamps[0][row].timestamp_us) {
-          addIssue(&result, DatasetValidationSeverity::Error,
+          addIssue(&result, availability_severity,
                    "cam" + std::to_string(camera) + ".tum",
                    camera_timestamps[camera][row].line,
                    "four-camera frame timestamps are not identical");
@@ -784,7 +801,7 @@ DatasetValidationResult validatePrismDatasetImpl(
   }
   if (std::none_of(result.onboard_imus.begin(), result.onboard_imus.end(),
                    [](const auto& stream) { return stream.rows != 0u; })) {
-    addIssue(&result, DatasetValidationSeverity::Error, "imu0.tum", 0,
+    addIssue(&result, availability_severity, "imu0.tum", 0,
              "all onboard IMU streams are empty");
   }
 
@@ -807,6 +824,8 @@ DatasetValidationResult validatePrismDatasetImpl(
     std::vector<TimestampRow> timestamps;
     uint64_t line_number = 0;
     uint64_t total_points = 0;
+    uint64_t unsynced_records = 0;
+    uint64_t first_unsynced_line = 0;
     for (std::string line; std::getline(input, line);) {
       ++line_number;
       if (line.empty() || line.front() == '#') continue;
@@ -849,13 +868,19 @@ DatasetValidationResult validatePrismDatasetImpl(
         }
         has_time_source = true;
       }
-      if (strict_v6 && (!has_time_source || synced != 1u)) {
+      if (strict_v6 && !has_time_source) {
+        addIssue(&result, DatasetValidationSeverity::Error, "lidar.tum",
+                 line_number, "v6 LiDAR time-source fields are missing");
+      } else if (strict_v6 && synced != 1u && !all_received) {
         addIssue(&result, DatasetValidationSeverity::Error, "lidar.tum",
                  line_number, "v6 LiDAR timestamp is not synchronized");
+      } else if (all_received && synced != 1u) {
+        if (unsynced_records++ == 0u) first_unsynced_line = line_number;
       }
       try {
         const uint64_t timestamp_us = strictTimestampUs(timestamp_text);
-        if (unix_time_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
+        if (unix_time_v6 && !(all_received && has_time_source && synced == 0u) &&
+            timestamp_us < kMinimumRkClockRealtimeUs) {
           throw std::runtime_error(
               "timestamp is outside the declared RK CLOCK_REALTIME epoch");
         }
@@ -877,8 +902,13 @@ DatasetValidationResult validatePrismDatasetImpl(
     }
     analyzeTimestamps("lidar.tum", timestamps, false, &result.lidar,
                       &result);
+    if (unsynced_records != 0u) {
+      addIssue(&result, DatasetValidationSeverity::Warning, "lidar.tum",
+               first_unsynced_line, std::to_string(unsynced_records) +
+               " LiDAR records are explicitly marked unsynchronized; source timestamps retained");
+    }
     if (strict_v6 && timestamps.empty()) {
-      addIssue(&result, DatasetValidationSeverity::Error, "lidar.tum", 0,
+      addIssue(&result, availability_severity, "lidar.tum", 0,
                "declared LiDAR point stream is empty");
     }
     checkManifestCount("lidar_batches", result.lidar.rows);
@@ -897,7 +927,7 @@ DatasetValidationResult validatePrismDatasetImpl(
       addIssue(&result, DatasetValidationSeverity::Error, "dataset.info", 0,
                "LiDAR IMU file does not match the v6 declaration");
     }
-    if (result.recording_mode == "full" &&
+    if (!all_received && result.recording_mode == "full" &&
         result.lidar_present != result.lidar_imu_present &&
         !(result.lidar_present && result.lidar.rows > 0 && lidar_only_xt32 &&
           field("lidar_storage") == "cartesian-mm-chunk-v3-with-point-time")) {
@@ -909,6 +939,8 @@ DatasetValidationResult validatePrismDatasetImpl(
     std::ifstream input(lidar_imu_path);
     std::vector<TimestampRow> timestamps;
     uint64_t line_number = 0;
+    uint64_t unsynced_records = 0;
+    uint64_t first_unsynced_line = 0;
     for (std::string line; std::getline(input, line);) {
       ++line_number;
       if (line.empty() || line.front() == '#') continue;
@@ -959,14 +991,21 @@ DatasetValidationResult validatePrismDatasetImpl(
           has_tai = true;
         }
       }
-      if (strict_v6 && (!has_source || !has_tai || synced != 1u)) {
+      if (strict_v6 && (!has_source || !has_tai)) {
+        addIssue(&result, DatasetValidationSeverity::Error,
+                 "lidar_imu.tum", line_number,
+                 "v6 LiDAR IMU time-source fields are missing");
+      } else if (strict_v6 && synced != 1u && !all_received) {
         addIssue(&result, DatasetValidationSeverity::Error,
                  "lidar_imu.tum", line_number,
                  "v6 LiDAR IMU timestamp is not synchronized");
+      } else if (all_received && synced != 1u) {
+        if (unsynced_records++ == 0u) first_unsynced_line = line_number;
       }
       try {
         const uint64_t timestamp_us = strictTimestampUs(timestamp_text);
-        if (unix_time_v6 && timestamp_us < kMinimumRkClockRealtimeUs) {
+        if (unix_time_v6 && !(all_received && has_source && has_tai && synced == 0u) &&
+            timestamp_us < kMinimumRkClockRealtimeUs) {
           throw std::runtime_error(
               "timestamp is outside the declared RK CLOCK_REALTIME epoch");
         }
@@ -979,8 +1018,13 @@ DatasetValidationResult validatePrismDatasetImpl(
     }
     analyzeTimestamps("lidar_imu.tum", timestamps, true, &result.lidar_imu,
                       &result);
+    if (unsynced_records != 0u) {
+      addIssue(&result, DatasetValidationSeverity::Warning, "lidar_imu.tum",
+               first_unsynced_line, std::to_string(unsynced_records) +
+               " LiDAR IMU records are explicitly marked unsynchronized; source timestamps retained");
+    }
     if (strict_v6 && timestamps.empty()) {
-      addIssue(&result, DatasetValidationSeverity::Error, "lidar_imu.tum", 0,
+      addIssue(&result, availability_severity, "lidar_imu.tum", 0,
                "declared LiDAR IMU stream is empty");
     }
     checkManifestCount("lidar_imu_samples", result.lidar_imu.rows);
@@ -1155,6 +1199,7 @@ DatasetValidationResult validatePrismDatasetImpl(
     uint64_t previous_provider = 0u;
     bool have_previous = false;
     bool header_seen = false;
+    uint64_t unaligned_status_samples = 0;
     for (std::string line; std::getline(input, line);) {
       ++line_number;
       if (line.empty() || line.front() == '#') continue;
@@ -1224,8 +1269,8 @@ DatasetValidationResult validatePrismDatasetImpl(
           info_version == 0u ||
           info_version > std::numeric_limits<uint16_t>::max() ||
           board_online > 1u || board_synced > 1u || !provider_valid ||
-          !provider_matches_domain || columns[8] != expected_name ||
-          !provider_sync_matches ||
+          (!all_received && !provider_matches_domain) || columns[8] != expected_name ||
+          (!all_received && !provider_sync_matches) ||
           (board_synced != 0u && board_online == 0u) ||
           imu_sync_mask > 0x03u ||
           error_flags > std::numeric_limits<uint32_t>::max()) {
@@ -1234,6 +1279,8 @@ DatasetValidationResult validatePrismDatasetImpl(
                  "time-sync sequence, timestamp, flag, or provider is invalid");
         continue;
       }
+      if (all_received && (!provider_matches_domain || !provider_sync_matches))
+        ++unaligned_status_samples;
       if (have_previous && provider != previous_provider) {
         ++result.time_sync_provider_transitions;
       }
@@ -1254,9 +1301,14 @@ DatasetValidationResult validatePrismDatasetImpl(
                "time-sync CSV header is missing");
     }
     if (time_sync_manifest_present && result.time_sync_samples == 0u) {
-      addIssue(&result, DatasetValidationSeverity::Error,
+      addIssue(&result, availability_severity,
                "time_sync.csv", 0,
                "declared time-sync status stream is empty");
+    }
+    if (unaligned_status_samples != 0u) {
+      addIssue(&result, DatasetValidationSeverity::Warning, "time_sync.csv", 0,
+               std::to_string(unaligned_status_samples) +
+               " status snapshots report unsynchronized or changing clock sources");
     }
     checkOptionalManifestCount("time_sync_samples",
                                result.time_sync_samples);
@@ -1268,7 +1320,9 @@ DatasetValidationResult validatePrismDatasetImpl(
   }
 
   checkOverlappingRanges(&ranges, &result);
-  if (!result.cameras_present && result.onboard_imus[0].rows == 0u &&
+  const bool has_camera_records = std::any_of(result.cameras.begin(), result.cameras.end(),
+      [](const auto& camera) { return camera.rows != 0u; });
+  if (!has_camera_records && result.onboard_imus[0].rows == 0u &&
       result.onboard_imus[1].rows == 0u && result.lidar.rows == 0u &&
       result.lidar_imu.rows == 0u) {
     addIssue(&result, DatasetValidationSeverity::Error, {}, 0,

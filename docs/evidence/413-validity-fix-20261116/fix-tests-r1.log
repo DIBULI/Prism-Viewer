@@ -1,0 +1,19 @@
+Test project /Users/xiangfuli/Documents/ChatGPT/RK3576/artifacts/21312-device-20261114/viewer-r1/build
+    Start 47: image-sequence-export
+1/7 Test #47: image-sequence-export ............   Passed    7.13 sec
+    Start 48: image-sequence-export-ui
+2/7 Test #48: image-sequence-export-ui .........   Passed    7.71 sec
+    Start 53: dataset-browser
+3/7 Test #53: dataset-browser ..................   Passed    1.47 sec
+    Start 60: xt32-dataset
+4/7 Test #60: xt32-dataset .....................   Passed    0.46 sec
+    Start 61: mid-line-dataset
+5/7 Test #61: mid-line-dataset .................   Passed    0.64 sec
+    Start 62: dataset-recorder-full
+6/7 Test #62: dataset-recorder-full ............   Passed    2.30 sec
+    Start 63: dataset-recorder-imu-only
+7/7 Test #63: dataset-recorder-imu-only ........   Passed    2.19 sec
+
+100% tests passed out of 7
+
+Total Test time (real) =  21.89 sec

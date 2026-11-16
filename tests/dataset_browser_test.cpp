@@ -1,4 +1,7 @@
 #include "dataset/dataset_browser.hpp"
+#include <QBuffer>
+#include <QCoreApplication>
+#include <QImage>
 
 #include <chrono>
 #include <array>
@@ -94,9 +97,204 @@ bool hasIssue(const prism_viewer::dataset::DatasetValidationResult& result,
   return false;
 }
 
+void changeField(const std::filesystem::path& root, const std::string& before,
+                 const std::string& after) {
+  std::ifstream input(root / "dataset.info");
+  std::string text((std::istreambuf_iterator<char>(input)), {});
+  const auto at = text.find(before);
+  if (at == std::string::npos) throw std::runtime_error("fixture field missing");
+  text.replace(at, before.size(), after);
+  writeText(root / "dataset.info", text);
+}
+
+const std::string time_sync_header =
+    "sample_index,recording_elapsed_us,host_receive_unix_us,rk_system_time_us,"
+    "device_info_version,sensor_board_online,sensor_board_time_synced,"
+    "time_sync_provider,time_sync_provider_name,imu_time_synced_mask,"
+    "sensor_board_error_flags\n";
+
+void createReceivedDataset(const std::filesystem::path& root,
+                           bool lidar_samples = false) {
+  std::filesystem::create_directories(root);
+  QImage image(8, 8, QImage::Format_RGB32);
+  image.fill(Qt::green);
+  QByteArray jpeg;
+  QBuffer buffer(&jpeg);
+  buffer.open(QIODevice::WriteOnly);
+  if (!image.save(&buffer, "JPEG")) throw std::runtime_error("JPEG fixture");
+  std::vector<uint8_t> payload;
+  const std::array<unsigned, 4> counts{2, 2, 0, 1};
+  std::string info =
+      "format=prism-dataset-v6\ndevice_model=413GSV0\ncomplete=1\n"
+      "recording_mode=full\nimage_storage=chunk-v1\n"
+      "camera_index=chunk-v2-with-actual-exposure\n"
+      "time_domain=sensor-board-clock\ntimestamp_epoch=boot\n"
+      "recording_stream_policy=all-received\n"
+      "timestamp_policy=source-preserved-see-per-stream-flags\n"
+      "alignment=not-asserted\nimu0_samples=0\nimu1_samples=0\n"
+      "lidar_storage=cartesian-mm-chunk-v3-with-point-time\n"
+      "lidar_imu_storage=tum-si-v2-with-time-source\n"
+      "time_sync_storage=csv-v1\ntime_sync_samples=0\n"
+      "time_sync_provider_transitions=0\n";
+  for (unsigned c = 0; c < 4; ++c) {
+    std::ostringstream index;
+    index << "# recorded image index\n";
+    for (unsigned f = 0; f < counts[c]; ++f) {
+      index << (c == 1 ? "2." : "1.") << (f ? "033000" : "000000")
+            << " camera.bin " << payload.size() << ' ' << jpeg.size() << " 1000\n";
+      payload.insert(payload.end(), jpeg.begin(), jpeg.end());
+    }
+    writeText(root / ("cam" + std::to_string(c) + ".tum"), index.str());
+    info += "camera" + std::to_string(c) + "_images=" + std::to_string(counts[c]) + "\n";
+  }
+  writeBytes(root / "camera.bin", payload);
+  writeText(root / "imu0.tum", "# no samples received\n");
+  writeText(root / "imu1.tum", "# no samples received\n");
+  writeText(root / "time_sync.csv", time_sync_header);
+  if (lidar_samples) {
+    writeBytes(root / "points.bin", std::vector<uint8_t>(16, 0));
+    writeText(root / "lidar.tum", "3.000000 points.bin 0 16 1 1 8 0 1 3000000 100 0 0\n");
+    writeText(root / "lidar_imu.tum", "3.000000 0 0 9.8 0 0 0 1 8 0 1 3000000 0 0\n");
+  } else {
+    writeText(root / "lidar.tum", "# no point batches received\n");
+    writeText(root / "lidar_imu.tum", "# no LiDAR IMU received\n");
+  }
+  info += std::string("lidar_batches=") + (lidar_samples ? "1" : "0") +
+      "\nlidar_points=" + (lidar_samples ? "1" : "0") +
+      "\nlidar_imu_samples=" + (lidar_samples ? "1" : "0") + "\n";
+  writeText(root / "dataset.info", info);
+}
+
+void testReceivedPolicy(const std::filesystem::path& base) {
+  using namespace prism_viewer::dataset;
+  const auto verify = [&](const char* name, bool expected, const char* message = "") {
+    const auto result = validatePrismDataset(base / name);
+    if (result.valid != expected || (expected && result.warningCount() == 0) ||
+        (*message && !hasIssue(result, expected ? DatasetValidationSeverity::Warning :
+                              DatasetValidationSeverity::Error, message))) {
+      std::ostringstream reason;
+      reason << name << ": unexpected validity " << result.valid;
+      for (const auto& i : result.issues) reason << "\n" << i.file << ": " << i.message;
+      throw std::runtime_error(reason.str());
+    }
+  };
+  auto p = base / "optional";
+  createReceivedDataset(p);
+  verify("optional", true, "all onboard IMU streams are empty");
+  verify("optional", true, "timestamps are not identical");
+
+  p = base / "unsynced";
+  createReceivedDataset(p, true);
+  verify("unsynced", true, "LiDAR records are explicitly marked unsynchronized");
+  verify("unsynced", true, "LiDAR IMU records are explicitly marked unsynchronized");
+
+  p = base / "unix-with-relative-lidar";
+  createReceivedDataset(p, true);
+  changeField(p, "time_domain=sensor-board-clock", "time_domain=rk-clock-realtime");
+  changeField(p, "timestamp_epoch=boot", "timestamp_epoch=unix");
+  for (unsigned c = 0; c < 4; ++c) {
+    const auto path = p / ("cam" + std::to_string(c) + ".tum");
+    std::ifstream input(path);
+    std::string rows, line;
+    while (std::getline(input, line))
+      rows += (line.empty() || line.front() == '#' ? line : "178000000" + line) + "\n";
+    input.close();
+    writeText(path, rows);
+  }
+  verify("unix-with-relative-lidar", true, "explicitly marked unsynchronized");
+  writeText(p / "lidar.tum", "3.000000 points.bin 0 16 1 1 8 0 1 3000000 100 1 0\n");
+  verify("unix-with-relative-lidar", false, "outside the declared RK CLOCK_REALTIME epoch");
+
+  p = base / "strict";
+  createReceivedDataset(p, true);
+  changeField(p, "alignment=not-asserted", "alignment=common-device-time-domain");
+  verify("strict", false, "timestamp is not synchronized");
+
+  p = base / "partial-policy";
+  createReceivedDataset(p);
+  changeField(p, "timestamp_policy=source-preserved-see-per-stream-flags",
+                 "timestamp_policy=unknown");
+  verify("partial-policy", false, "time-domain declaration");
+
+  p = base / "future-domain";
+  createReceivedDataset(p);
+  changeField(p, "time_domain=sensor-board-clock", "time_domain=unknown");
+  verify("future-domain", false, "time-domain declaration");
+
+  p = base / "incomplete";
+  createReceivedDataset(p);
+  changeField(p, "complete=1", "complete=0");
+  verify("incomplete", false, "recording is incomplete");
+
+  p = base / "bad-count";
+  createReceivedDataset(p);
+  changeField(p, "camera0_images=2", "camera0_images=9");
+  verify("bad-count", false, "declares 9");
+
+  p = base / "bad-lidar-count";
+  createReceivedDataset(p);
+  changeField(p, "lidar_batches=0", "lidar_batches=1");
+  verify("bad-lidar-count", false, "declares 1");
+
+  p = base / "bounds";
+  createReceivedDataset(p);
+  writeBytes(p / "camera.bin", {0});
+  verify("bounds", false, "exceeds");
+
+  p = base / "bad-jpeg";
+  createReceivedDataset(p);
+  writeBytes(p / "camera.bin", std::vector<uint8_t>(
+      std::filesystem::file_size(p / "camera.bin"), 0));
+  verify("bad-jpeg", false, "decodable JPEG");
+
+  p = base / "missing-index";
+  createReceivedDataset(p);
+  std::filesystem::remove(p / "cam2.tum");
+  verify("missing-index", false, "camera indexes are incomplete");
+
+  p = base / "bad-flags";
+  createReceivedDataset(p, true);
+  writeText(p / "lidar.tum", "3.000000 points.bin 0 16 1 1 8 0 1 3000000 100 2 0\n");
+  verify("bad-flags", false, "invalid LiDAR time-source fields");
+
+  p = base / "missing-flags";
+  createReceivedDataset(p, true);
+  writeText(p / "lidar.tum", "3.000000 points.bin 0 16 1 1 8 0 1 3000000\n");
+  writeText(p / "lidar_imu.tum", "3.000000 0 0 9.8 0 0 0\n");
+  verify("missing-flags", false, "time-source fields are missing");
+
+  p = base / "clock-status";
+  createReceivedDataset(p);
+  changeField(p, "time_sync_samples=0", "time_sync_samples=1");
+  writeText(p / "time_sync.csv", time_sync_header +
+      "0,0,1780000000000000,0,3,1,0,0,Sensor Board internal,0,0\n");
+  verify("clock-status", true, "status snapshots");
+  writeText(p / "time_sync.csv", time_sync_header +
+      "0,0,1780000000000000,0,3,0,1,0,Sensor Board internal,0,0\n");
+  verify("clock-status", false, "time-sync sequence");
+
+  p = base / "point-only";
+  createReceivedDataset(p, true);
+  changeField(p, "lidar_imu_storage=tum-si-v2-with-time-source", "lidar_imu_storage=none");
+  changeField(p, "lidar_imu_samples=1", "lidar_imu_samples=0");
+  std::filesystem::remove(p / "lidar_imu.tum");
+  verify("point-only", true);
+
+  p = base / "empty";
+  createReceivedDataset(p);
+  for (unsigned c = 0; c < 4; ++c) {
+    writeText(p / ("cam" + std::to_string(c) + ".tum"), "# empty\n");
+    const auto before = c < 2 ? "2" : c == 2 ? "0" : "1";
+    changeField(p, "camera" + std::to_string(c) + "_images=" + before,
+                   "camera" + std::to_string(c) + "_images=0");
+  }
+  verify("empty", false, "contains no sensor records");
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  QCoreApplication app(argc, argv);
   const auto nonce =
       std::chrono::steady_clock::now().time_since_epoch().count();
   const std::filesystem::path root =
@@ -104,6 +302,7 @@ int main() {
       ("prism-dataset-browser-test-" + std::to_string(nonce));
   std::filesystem::create_directories(root);
   try {
+    testReceivedPolicy(root / "received-policy");
     const auto models = root / "model-cases";
     std::filesystem::create_directories(models);
     const auto identity = [&](const std::string& manifest, const char* model,

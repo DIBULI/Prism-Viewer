@@ -1,0 +1,76 @@
+{
+  "status": "Fixed in latest local Viewer development source; macOS application rebuilt. No release/tag/push/package/device update.",
+  "baseline_commit": "652de9526a7cf81d422ee788090c91efbe13fbee (inspection evidence); prior source d006f85",
+  "cause": "Check Validity still enforced synchronized/present streams even for explicit all-received/source-preserved/not-asserted v6 recordings. Recorder and ROS Bag exporter already support that policy.",
+  "repair": "Recognize only the exact policy tuple. Optional empty streams and cross-camera independent frame counts/timestamps become warnings. Explicit unsynchronized LiDAR/IMU samples produce per-stream aggregate warnings; valid relative timestamps remain relative. Clock-status snapshots may report unsynchronized/changing sources. No source metadata/data rewriting.",
+  "hard_errors_retained": "Incomplete recording, unsupported declarations, missing declared indexes/source fields, invalid flags, unsafe or overlapping byte ranges, corrupt JPEG, manifest count mismatch, repeated/backwards or severe stream timing discontinuities. A wholly empty dataset is rejected even if empty camera indexes exist. Legacy synchronized policy remains strict.",
+  "tests": {
+    "macos": "Application build passed;7 targeted CTests passed21.89s (dataset-browser,xt32,mid-line,recorder full/IMU-only,image export/core/UI). Added Unix-relative LiDAR boundary case then final dataset-browser test passed0.64s.",
+    "linux": "Exact patched validator and targeted regression compiled in isolated r2; dataset-browser regression passed. Full GUI application not rebuilt on Linux this turn. Windows not run.",
+    "negative_cases": "Corrupt JPEG, truncation/bounds, missing camera index, camera/LiDAR count mismatch, malformed source flags, absent source fields, incomplete/unknown declarations, contradictory clock status, strict policy and wholly empty dataset remain invalid.",
+    "real_recordings": "All4 server originals now valid with warnings.10440 JPEG frames/115633 checked records; counts/time summaries identical to pre-fix; original file size/mtime and manifest hash unchanged. Two Mac complete local copies match Linux results."
+  },
+  "results": [
+    {
+      "name": "imu-only",
+      "before_errors": 3,
+      "after_errors": 0,
+      "warnings": 7,
+      "images": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "camera",
+      "before_errors": 3,
+      "after_errors": 0,
+      "warnings": 3,
+      "images": [
+        849,
+        849,
+        849,
+        849
+      ]
+    },
+    {
+      "name": "camera-lidar-imu",
+      "before_errors": 9,
+      "after_errors": 0,
+      "warnings": 3,
+      "images": [
+        881,
+        881,
+        881,
+        881
+      ]
+    },
+    {
+      "name": "camera-lidar-full",
+      "before_errors": 2,
+      "after_errors": 0,
+      "warnings": 2,
+      "images": [
+        880,
+        880,
+        880,
+        880
+      ]
+    }
+  ],
+  "source_hashes": {
+    "src/dataset/dataset_browser.cpp": "e86c5e6dac9732225c35d3bfedee9d59120d6fd7c393ed0546fb99c80d0d12a7",
+    "tests/dataset_browser_test.cpp": "8aa853067136c2120da33f9e0e9f2ddb8831cd242b9fd2f1233a79e2fbbd02de",
+    "docs/dataset-format.md": "3fa843a025ed863f1865ab1d240d4d0910fb48ec9e467b73a9fcf597dbf8ffdb"
+  },
+  "mac_app_sha256": "17bdb2cd78d0ecc7c1343784172ef347a9ac315f99b938194a36fc0d73f63c2b",
+  "server": {
+    "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/413-viewer-validity-20261116-r2",
+    "boot": "7e66ee34-1f8b-4c04-bb07-d9df6256a8e4",
+    "uid": 1000
+  },
+  "cursor": "28690Macbuild/7tests exit0;70905Linuxbuild/test exit0;85900Macoriginals exit0;83658fourserveroriginals exit0;66619finalpolicytest exit0;31865fetch exit0. No active owned control/capture session.",
+  "constraints": "No source dataset edits/deletion, physical sensor test, service restart, firmware OTA, power changes or publication. Prior image export retained. Original inspection evidence preserved in413-validity-20261116/."
+}

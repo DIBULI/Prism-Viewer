@@ -1,0 +1,49 @@
+[  0%] Built target prism-viewer-imu-traces_autogen_timestamp_deps
+[  4%] Built target prism-viewer-imu-units
+[  9%] Built target prism-viewer-app-theme
+[ 19%] Built target prism-viewer-raw-dataset
+[ 19%] Built target prism-viewer-imu-traces_autogen
+[ 19%] Built target prism-viewer-image-export
+[ 28%] Built target prism-viewer-imu-traces
+[ 33%] Building CXX object CMakeFiles/prism-viewer.dir/src/dataset/dataset_browser.cpp.o
+/Users/xiangfuli/Documents/ChatGPT/RK3576/remote-work/415rsv0-record2.QdI9Ef89/viewer/src/dataset/dataset_browser.cpp:124:6: warning: unused function 'signedDecimalValue' [-Wunused-function]
+bool signedDecimalValue(const std::string& text, int64_t* value) {
+     ^
+/Users/xiangfuli/Documents/ChatGPT/RK3576/remote-work/415rsv0-record2.QdI9Ef89/viewer/src/dataset/dataset_browser.cpp:137:6: warning: unused function 'finiteDecimalValue' [-Wunused-function]
+bool finiteDecimalValue(const std::string& text, double* value) {
+     ^
+2 warnings generated.
+[ 38%] Linking CXX executable Prism-Viewer.app/Contents/MacOS/Prism-Viewer
+ld: warning: ignoring duplicate libraries: 'libprism-viewer-raw-dataset.a'
+[100%] Built target prism-viewer
+[ 50%] Built target prism-viewer-raw-dataset
+[ 50%] Building CXX object CMakeFiles/dataset-browser-test.dir/src/dataset/dataset_browser.cpp.o
+[ 50%] Building CXX object CMakeFiles/dataset-browser-test.dir/tests/dataset_browser_test.cpp.o
+/Users/xiangfuli/Documents/ChatGPT/RK3576/remote-work/415rsv0-record2.QdI9Ef89/viewer/src/dataset/dataset_browser.cpp:124:6: warning: unused function 'signedDecimalValue' [-Wunused-function]
+bool signedDecimalValue(const std::string& text, int64_t* value) {
+     ^
+/Users/xiangfuli/Documents/ChatGPT/RK3576/remote-work/415rsv0-record2.QdI9Ef89/viewer/src/dataset/dataset_browser.cpp:137:6: warning: unused function 'finiteDecimalValue' [-Wunused-function]
+bool finiteDecimalValue(const std::string& text, double* value) {
+     ^
+2 warnings generated.
+[ 75%] Linking CXX executable dataset-browser-test
+[100%] Built target dataset-browser-test
+[ 40%] Built target prism-viewer-raw-dataset
+[ 40%] Building CXX object CMakeFiles/xt32-dataset-test.dir/src/dataset/dataset_playback.cpp.o
+[ 40%] Building CXX object CMakeFiles/xt32-dataset-test.dir/src/common/ui_text.cpp.o
+[ 80%] Building CXX object CMakeFiles/xt32-dataset-test.dir/tests/xt32_dataset_test.cpp.o
+[ 80%] Building CXX object CMakeFiles/xt32-dataset-test.dir/src/dataset/dataset_browser.cpp.o
+[100%] Linking CXX executable xt32-dataset-test
+[100%] Built target xt32-dataset-test
+[ 50%] Built target prism-viewer-raw-dataset
+[100%] Building CXX object CMakeFiles/mid-line-dataset-test.dir/src/dataset/dataset_browser.cpp.o
+[100%] Building CXX object CMakeFiles/mid-line-dataset-test.dir/tests/mid_line_dataset_test.cpp.o
+[100%] Building CXX object CMakeFiles/mid-line-dataset-test.dir/src/common/ui_text.cpp.o
+[100%] Building CXX object CMakeFiles/mid-line-dataset-test.dir/src/dataset/dataset_playback.cpp.o
+[100%] Linking CXX executable mid-line-dataset-test
+[100%] Built target mid-line-dataset-test
+[ 66%] Built target prism-viewer-raw-dataset
+[ 66%] Built target prism-viewer-image-export
+[100%] Building CXX object CMakeFiles/image-sequence-export-test.dir/src/dataset/dataset_browser.cpp.o
+[100%] Linking CXX executable image-sequence-export-test
+[100%] Built target image-sequence-export-test

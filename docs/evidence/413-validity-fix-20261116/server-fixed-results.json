@@ -1,0 +1,494 @@
+{
+  "boot": "7e66ee34-1f8b-4c04-bb07-d9df6256a8e4",
+  "uid": 1000,
+  "validator_sha256": "e86c5e6dac9732225c35d3bfedee9d59120d6fd7c393ed0546fb99c80d0d12a7",
+  "binary_sha256": "e8052aa5516ae5e38794f35db4f24131e9883efed31852654e4fcb6ce133c1d1",
+  "datasets": [
+    {
+      "label": "imu-only",
+      "rc": 0,
+      "source_unchanged": true,
+      "stream_summaries_equal": true,
+      "manifest_sha256": "d1cf70ee10c8576ba18e4d7d752f4a808eb4d5658d7c09b01ab029e662bcebf4",
+      "report": {
+        "cameras": [
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          }
+        ],
+        "cancelled": false,
+        "checked_records": 21385,
+        "elapsed_seconds": 0.017805492,
+        "errors": 0,
+        "imus": [
+          {
+            "discontinuities": 0,
+            "first_us": "5856000625",
+            "last_us": "5882555079",
+            "max_us": 1245,
+            "median_us": 1244,
+            "min_us": 1242,
+            "rows": 21356
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          }
+        ],
+        "issues": [
+          {
+            "file": "dataset.info",
+            "line": 0,
+            "message": "all-received recording preserves source timestamps; synchronization between streams is not asserted",
+            "severity": "warning"
+          },
+          {
+            "file": "cam0.tum",
+            "line": 0,
+            "message": "camera stream contains no received images",
+            "severity": "warning"
+          },
+          {
+            "file": "cam1.tum",
+            "line": 0,
+            "message": "camera stream contains no received images",
+            "severity": "warning"
+          },
+          {
+            "file": "cam2.tum",
+            "line": 0,
+            "message": "camera stream contains no received images",
+            "severity": "warning"
+          },
+          {
+            "file": "cam3.tum",
+            "line": 0,
+            "message": "camera stream contains no received images",
+            "severity": "warning"
+          },
+          {
+            "file": "lidar.tum",
+            "line": 0,
+            "message": "declared LiDAR point stream is empty",
+            "severity": "warning"
+          },
+          {
+            "file": "lidar_imu.tum",
+            "line": 0,
+            "message": "declared LiDAR IMU stream is empty",
+            "severity": "warning"
+          }
+        ],
+        "lidar": {
+          "discontinuities": 0,
+          "first_us": "0",
+          "last_us": "0",
+          "max_us": 0,
+          "median_us": 0,
+          "min_us": 0,
+          "rows": 0
+        },
+        "lidar_imu": {
+          "discontinuities": 0,
+          "first_us": "0",
+          "last_us": "0",
+          "max_us": 0,
+          "median_us": 0,
+          "min_us": 0,
+          "rows": 0
+        },
+        "model": "413GSV0",
+        "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/dataset-r1",
+        "time_domain": "sensor-board-clock",
+        "time_sync_samples": 29,
+        "timestamp_epoch": "boot",
+        "valid": true,
+        "version": 6,
+        "warnings": 7
+      }
+    },
+    {
+      "label": "camera",
+      "rc": 0,
+      "source_unchanged": true,
+      "stream_summaries_equal": true,
+      "manifest_sha256": "b6e3644b758d7f94d0731590f8979bfe0c4deb6b977942e493e0572f11dfb593",
+      "report": {
+        "cameras": [
+          {
+            "discontinuities": 0,
+            "first_us": "119266667",
+            "last_us": "147533334",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 849
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "119266667",
+            "last_us": "147533334",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 849
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "119266667",
+            "last_us": "147533334",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 849
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "119266667",
+            "last_us": "147533334",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 849
+          }
+        ],
+        "cancelled": false,
+        "checked_records": 24884,
+        "elapsed_seconds": 10.851689776,
+        "errors": 0,
+        "imus": [
+          {
+            "discontinuities": 0,
+            "first_us": "121000625",
+            "last_us": "147680608",
+            "max_us": 1245,
+            "median_us": 1244,
+            "min_us": 1241,
+            "rows": 21459
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          }
+        ],
+        "issues": [
+          {
+            "file": "dataset.info",
+            "line": 0,
+            "message": "all-received recording preserves source timestamps; synchronization between streams is not asserted",
+            "severity": "warning"
+          },
+          {
+            "file": "lidar.tum",
+            "line": 0,
+            "message": "declared LiDAR point stream is empty",
+            "severity": "warning"
+          },
+          {
+            "file": "lidar_imu.tum",
+            "line": 0,
+            "message": "declared LiDAR IMU stream is empty",
+            "severity": "warning"
+          }
+        ],
+        "lidar": {
+          "discontinuities": 0,
+          "first_us": "0",
+          "last_us": "0",
+          "max_us": 0,
+          "median_us": 0,
+          "min_us": 0,
+          "rows": 0
+        },
+        "lidar_imu": {
+          "discontinuities": 0,
+          "first_us": "0",
+          "last_us": "0",
+          "max_us": 0,
+          "median_us": 0,
+          "min_us": 0,
+          "rows": 0
+        },
+        "model": "413GSV0",
+        "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/reconnected-r2/dataset",
+        "time_domain": "sensor-board-clock",
+        "time_sync_samples": 29,
+        "timestamp_epoch": "boot",
+        "valid": true,
+        "version": 6,
+        "warnings": 3
+      }
+    },
+    {
+      "label": "camera-lidar-imu",
+      "rc": 0,
+      "source_unchanged": true,
+      "stream_summaries_equal": true,
+      "manifest_sha256": "987162355663ba2f543807837487f008ab9cbac0edc38f7ec74fd6ba07768f06",
+      "report": {
+        "cameras": [
+          {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "562366667",
+            "last_us": "591700000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 881
+          }
+        ],
+        "cancelled": false,
+        "checked_records": 32267,
+        "elapsed_seconds": 11.741564875,
+        "errors": 0,
+        "imus": [
+          {
+            "discontinuities": 0,
+            "first_us": "563000625",
+            "last_us": "591847379",
+            "max_us": 1245,
+            "median_us": 1243,
+            "min_us": 1242,
+            "rows": 23204
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          }
+        ],
+        "issues": [
+          {
+            "file": "dataset.info",
+            "line": 0,
+            "message": "all-received recording preserves source timestamps; synchronization between streams is not asserted",
+            "severity": "warning"
+          },
+          {
+            "file": "lidar.tum",
+            "line": 0,
+            "message": "declared LiDAR point stream is empty",
+            "severity": "warning"
+          },
+          {
+            "file": "lidar_imu.tum",
+            "line": 3,
+            "message": "7 LiDAR IMU records are explicitly marked unsynchronized; source timestamps retained",
+            "severity": "warning"
+          }
+        ],
+        "lidar": {
+          "discontinuities": 0,
+          "first_us": "0",
+          "last_us": "0",
+          "max_us": 0,
+          "median_us": 0,
+          "min_us": 0,
+          "rows": 0
+        },
+        "lidar_imu": {
+          "discontinuities": 0,
+          "first_us": "564307235",
+          "last_us": "591847224",
+          "max_us": 5815,
+          "median_us": 4838,
+          "min_us": 4190,
+          "rows": 5509
+        },
+        "model": "413GSV0",
+        "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/lidar-r4/dataset",
+        "time_domain": "sensor-board-clock",
+        "time_sync_samples": 30,
+        "timestamp_epoch": "boot",
+        "valid": true,
+        "version": 6,
+        "warnings": 3
+      }
+    },
+    {
+      "label": "camera-lidar-full",
+      "rc": 0,
+      "source_unchanged": true,
+      "stream_summaries_equal": true,
+      "manifest_sha256": "c005056ca7c6c827f0d64312cccab467860c8b7d0ee7a9d5891e479df8584d3b",
+      "report": {
+        "cameras": [
+          {
+            "discontinuities": 0,
+            "first_us": "831500000",
+            "last_us": "860800000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 880
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "831500000",
+            "last_us": "860800000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 880
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "831500000",
+            "last_us": "860800000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 880
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "831500000",
+            "last_us": "860800000",
+            "max_us": 33334,
+            "median_us": 33333,
+            "min_us": 33333,
+            "rows": 880
+          }
+        ],
+        "cancelled": false,
+        "checked_records": 37097,
+        "elapsed_seconds": 11.733404877,
+        "errors": 0,
+        "imus": [
+          {
+            "discontinuities": 0,
+            "first_us": "832000625",
+            "last_us": "860946750",
+            "max_us": 1245,
+            "median_us": 1243,
+            "min_us": 1242,
+            "rows": 23283
+          },
+          {
+            "discontinuities": 0,
+            "first_us": "0",
+            "last_us": "0",
+            "max_us": 0,
+            "median_us": 0,
+            "min_us": 0,
+            "rows": 0
+          }
+        ],
+        "issues": [
+          {
+            "file": "dataset.info",
+            "line": 0,
+            "message": "all-received recording preserves source timestamps; synchronization between streams is not asserted",
+            "severity": "warning"
+          },
+          {
+            "file": "lidar.tum",
+            "line": 3,
+            "message": "1 LiDAR records are explicitly marked unsynchronized; source timestamps retained",
+            "severity": "warning"
+          }
+        ],
+        "lidar": {
+          "discontinuities": 0,
+          "first_us": "833579742",
+          "last_us": "860939811",
+          "max_us": 5760,
+          "median_us": 5760,
+          "min_us": 477,
+          "rows": 4790
+        },
+        "lidar_imu": {
+          "discontinuities": 0,
+          "first_us": "833583428",
+          "last_us": "860947604",
+          "max_us": 5995,
+          "median_us": 4701,
+          "min_us": 4000,
+          "rows": 5474
+        },
+        "model": "413GSV0",
+        "path": "/work/builds/prism-415rsv0-record2-QdI9Ef89/viewer-legacy-device-20261109-r1/lidar-viewer-r6/dataset",
+        "time_domain": "sensor-board-clock",
+        "time_sync_samples": 30,
+        "timestamp_epoch": "boot",
+        "valid": true,
+        "version": 6,
+        "warnings": 2
+      }
+    }
+  ]
+}
