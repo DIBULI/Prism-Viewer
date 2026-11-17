@@ -174,6 +174,29 @@ int main(int argc, char** argv) {
   group->setCurrentIndex(0);
   require(mode0->isEnabled(),"independent controls recover");
 
+  panel.setDeviceModel(prism::DeviceModel::Prism21312V0);
+  loaded.automatic_camera_mask=0;
+  loaded.unified_automatic=false;
+  panel.setConfiguration(loaded,loaded_limits);
+  auto* mode1=panel.findChild<QComboBox*>(QStringLiteral("camera1ExposureModeCombo"));
+  auto* mode3=panel.findChild<QComboBox*>(QStringLiteral("camera3ExposureModeCombo"));
+  group->setCurrentIndex(1);
+  require(!mode0->isEnabled() && !mode3->isEnabled() && mode1->isEnabled(),
+          "mixed unified exposure locks only global cameras cam0 and cam3");
+  apply_called=false;apply->click();
+  require(apply_called && requested.unified_automatic && requested.automatic_camera_mask==9,
+          "mixed unified apply preserves manual RAW cameras");
+  auto mixed_limits=loaded_limits;
+  mixed_limits.max_gain_x1024=64u*1024u;
+  panel.setConfiguration(loaded,mixed_limits);
+  auto* gain1=panel.findChild<QDoubleSpinBox*>(QStringLiteral("camera1GainSpin"));
+  auto* gain2=panel.findChild<QDoubleSpinBox*>(QStringLiteral("camera2GainSpin"));
+  require(gain1->maximum()==28.0 && gain2->maximum()==28.0 &&
+          gain1->singleStep()==0.0625 && gain0->maximum()==64.0,
+          "mixed RAW cameras cap at28x without reducing global camera range");
+  panel.setDeviceModel(prism::DeviceModel::Prism413GSV0);
+  require(!apply->isEnabled(),"switching mixed to 413 invalidates old readback");
+
   // The unit decision is explicit DeviceInfo, not a heuristic based on FPS.
   panel.setCameraFps(2u);
   require(exposure0->suffix() == QStringLiteral(" us"),

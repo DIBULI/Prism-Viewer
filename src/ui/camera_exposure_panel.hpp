@@ -75,6 +75,7 @@ class CameraExposurePanel final : public QWidget {
   bool busy_ = false;
   bool has_configuration_ = false;
   bool exposure_rows_ = false;
+  uint8_t unified_camera_mask_ = 0x0f;
   QString busy_message_;
   QString operation_error_;
 };

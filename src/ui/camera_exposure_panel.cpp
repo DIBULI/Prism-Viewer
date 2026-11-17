@@ -64,7 +64,9 @@ CameraExposurePanel::CameraExposurePanel(QWidget* parent) : QWidget(parent) {
   group_layout->addWidget(exposure_group_mode_);
   connect(exposure_group_mode_, qOverload<int>(&QComboBox::currentIndexChanged),
           this, [this](int index) {
-            if (index == 1) for (auto* mode : camera_mode_) {
+            if (index == 1) for (unsigned camera=0;camera<camera_mode_.size();++camera) {
+              if (!(unified_camera_mask_ & (1u << camera))) continue;
+              auto* mode=camera_mode_[camera];
               const QSignalBlocker blocker(mode);
               mode->setCurrentIndex(mode->findData(kAutomaticModeValue));
             }
@@ -422,7 +424,14 @@ void CameraExposurePanel::setControlsLocked(bool locked) {
 
 void CameraExposurePanel::setDeviceModel(prism::DeviceModel model) {
   const bool rows = model == prism::DeviceModel::Prism415RSV0;
-  if (rows == exposure_rows_) return;
+  const uint8_t group_mask = model == prism::DeviceModel::Prism21312V0 ? 0x09u : 0x0fu;
+  if (rows == exposure_rows_ && group_mask == unified_camera_mask_) return;
+  unified_camera_mask_ = group_mask;
+  exposure_group_mode_->setItemText(1, group_mask == 0x09u
+      ? uiText("Global cameras cam0/cam3 unified AE",
+               "全局快门 cam0/cam3 统一自动曝光")
+      : uiText("Four-camera unified AE (highlight protection)",
+               "四相机统一自动曝光（过曝保护）"));
   exposure_rows_ = rows;
   // Do not reinterpret pending edits or a previous device's readback.
   has_configuration_ = false;
@@ -473,15 +482,21 @@ void CameraExposurePanel::updateExposureUnits() {
       exposure_rows_ ? uiText("Maximum exposure rows", "最大曝光行数")
                      : uiText("Maximum exposure", "最高曝光时间"));
   for (int camera = 0; camera < 4; ++camera) {
+    const bool mixed_raw = unified_camera_mask_ == 0x09u &&
+                           (camera == 1 || camera == 2);
     manual_exposure_us_[camera]->setSuffix(suffix);
     manual_exposure_us_[camera]->setSingleStep(exposure_rows_ ? 1 : 10);
     findChild<QLabel*>(QStringLiteral("camera%1ManualExposureLabel").arg(camera))->setText(
         exposure_rows_ ? uiText("Manual exposure rows", "手动曝光行数")
                        : uiText("Manual exposure", "手动曝光时间"));
     findChild<QLabel*>(QStringLiteral("camera%1GainLabel").arg(camera))->setText(
+        mixed_raw ? uiText("12M gain", "12M 增益") :
         exposure_rows_ ? uiText("SCC85HAI gain", "SCC85HAI 增益")
                        : uiText("SC130GS gain", "SC130GS 增益"));
-    sensor_gain_[camera]->setToolTip(exposure_rows_
+    sensor_gain_[camera]->setToolTip(mixed_raw
+        ? uiText("12M sensor gain: maximum 28x, in 1/16x steps.",
+                 "12M 传感器增益：最高 28×，步进为 1/16×。")
+        : exposure_rows_
         ? uiText("Sensor gain; valid values follow the device limits.",
                  "传感器增益，允许范围以设备返回的限制为准。")
         : uiText("SC130GS analog sensor gain; valid steps are 1/32×. Higher "
@@ -602,7 +617,8 @@ CameraExposurePanel::editedConfiguration() const {
   edited.target_brightness =
       static_cast<uint8_t>(target_brightness_->value());
   for (int camera = 0; camera < 4; ++camera) {
-    if (edited.unified_automatic || camera_mode_[camera]->currentData().toInt() ==
+    if ((edited.unified_automatic && (unified_camera_mask_ & (1u << camera))) ||
+        camera_mode_[camera]->currentData().toInt() ==
         kAutomaticModeValue) {
       edited.automatic_camera_mask |=
           static_cast<uint8_t>(1u << camera);
@@ -665,7 +681,8 @@ void CameraExposurePanel::updateLimitRanges() {
 
   {
     const QSignalBlocker blocker(min_gain_);
-    min_gain_->setMaximum(max_gain_->value());
+    min_gain_->setMaximum(unified_camera_mask_==0x09u ?
+        std::min(28.0,max_gain_->value()) : max_gain_->value());
   }
   {
     const QSignalBlocker blocker(max_gain_);
@@ -676,12 +693,14 @@ void CameraExposurePanel::updateLimitRanges() {
   const uint32_t max_gain_x1024 = static_cast<uint32_t>(
       std::llround(max_gain_->value() * 1024.0));
   for (size_t camera = 0; camera < manual_exposure_us_.size(); ++camera) {
+    const bool mixed_raw=unified_camera_mask_==0x09u && (camera==1 || camera==2);
     const QSignalBlocker exposure_blocker(manual_exposure_us_[camera]);
     const QSignalBlocker gain_blocker(sensor_gain_[camera]);
     manual_exposure_us_[camera]->setRange(
         min_exposure_us_->value(), manual_max);
     sensor_gain_[camera]->setMaximum(
-        static_cast<double>(max_gain_x1024) / 1024.0);
+        static_cast<double>(mixed_raw ? std::min(max_gain_x1024,28u*1024u) : max_gain_x1024) / 1024.0);
+    sensor_gain_[camera]->setSingleStep(mixed_raw ? 0.0625 : 0.03125);
     sensor_gain_[camera]->setMinimum(
         static_cast<double>(min_gain_x1024) / 1024.0);
     manual_exposure_us_[camera]->setToolTip(
@@ -807,9 +826,10 @@ void CameraExposurePanel::refreshView() {
   min_gain_->setEnabled(can_interact && !live_rows);
   max_gain_->setEnabled(can_interact && !live_rows);
   for (int camera = 0; camera < 4; ++camera) {
-    camera_mode_[camera]->setEnabled(can_interact && !unified && !live_rows);
+    const bool grouped = unified && (unified_camera_mask_ & (1u << camera));
+    camera_mode_[camera]->setEnabled(can_interact && !grouped && !live_rows);
     const bool manual =
-        !unified && camera_mode_[camera]->currentData().toInt() == kManualModeValue;
+        !grouped && camera_mode_[camera]->currentData().toInt() == kManualModeValue;
     manual_exposure_us_[camera]->setEnabled(can_interact && manual);
     sensor_gain_[camera]->setEnabled(can_interact && manual && !live_rows);
   }
