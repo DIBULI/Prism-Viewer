@@ -22,6 +22,7 @@
 #include "ui/app_theme.hpp"
 #include "ui/camera_encoding_panel.hpp"
 #include "ui/camera_exposure_panel.hpp"
+#include "ui/mixed_exposure_panel.hpp"
 #include "ui/native_camera_control_panel.hpp"
 #include "ui/camera_zoom_dialog.hpp"
 #include "ui/zoomable_image_view.hpp"
@@ -3117,6 +3118,9 @@ class MainWindow : public QMainWindow {
     native_camera_control_panel_ = new prism_viewer::ui::NativeCameraControlPanel(exposure_container);
     native_camera_control_panel_->hide();
     exposure_layout->addWidget(camera_exposure_panel_);
+    mixed_exposure_panel_=new prism_viewer::ui::MixedExposurePanel(exposure_container);
+    exposure_layout->addWidget(mixed_exposure_panel_);
+    mixed_exposure_panel_->hide();
     exposure_layout->addWidget(native_camera_control_panel_);
     exposure_scroll->setWidget(exposure_container);
     camera_tools->addTab(
@@ -3750,6 +3754,9 @@ class MainWindow : public QMainWindow {
         [this]() {
           startCameraExposureOperation(std::nullopt, std::nullopt);
         };
+    mixed_exposure_panel_->on_request=[this](uint8_t group,std::optional<prism::ExposureGroupConfiguration> value){
+      startMixedExposureOperation(group,value);
+    };
     native_camera_control_panel_->on_request =
         [this](const prism_viewer::NativeControlRequest& request) {
           startNativeCameraControlOperation(request);
@@ -4360,7 +4367,8 @@ class MainWindow : public QMainWindow {
     camera_encoding_panel_->setMixed21312(mixed);
     camera_encoding_panel_->setEnabled(!profile || mixed);
     camera_exposure_panel_->setDeviceModel(model);
-    camera_exposure_panel_->setVisible(!native);
+    camera_exposure_panel_->setVisible(!native&&!mixed);
+    mixed_exposure_panel_->setVisible(mixed);
     native_camera_control_panel_->setVisible(native);
     raw_stream_description_->setText(native ? uiText(
         "Format: original RAW8\nTrigger: external\nCapture request: 2 FPS\nMeasured rate is shown with each image.",
@@ -4393,7 +4401,8 @@ class MainWindow : public QMainWindow {
       camera_tools_->setCurrentIndex(1);
       QApplication::processEvents();
       ok = ok && native_camera_control_panel_->isVisible() == native
-          && camera_exposure_panel_->isVisible() == !native;
+          && camera_exposure_panel_->isVisible() == (!native&&model!=prism::DeviceModel::Prism21312V0)
+          && mixed_exposure_panel_->isVisible() == (model==prism::DeviceModel::Prism21312V0);
       if (native) {
         prism::CameraControlIdleStatus idle;
         for (auto& c : idle.requested) c.manual_rows = 1024;
@@ -5342,7 +5351,18 @@ class MainWindow : public QMainWindow {
     prism::ExposureConfiguration configuration;
     prism::ExposureLimits limits;
     std::optional<prism_viewer::NativeControlRequest> native;
+    int mixed_group=-1;
+    std::optional<prism::ExposureGroupConfiguration> mixed_value;
   };
+
+  void startMixedExposureOperation(uint8_t group,std::optional<prism::ExposureGroupConfiguration> value) {
+    if(!client_.isOpen()||capture_model_.load()!=prism::DeviceModel::Prism21312V0||group>1||
+       camera_exposure_operation_running_||time_sync_running_||wifi_operation_running_||camera_encoding_operation_running_||upgrade_running_)return;
+    CameraExposureOperationRequest request;request.mixed_group=group;request.mixed_value=value;request.apply=value.has_value();
+    camera_exposure_operation_running_=true;mixed_exposure_panel_->setBusy(true);refreshControls();
+    if(worker_running_){std::lock_guard<std::mutex> lock(camera_exposure_request_mutex_);pending_camera_exposure_request_=request;}
+    else{operation_controller_.join();operation_controller_.start([this,request]{runCameraExposureOperation(request);});}
+  }
 
   void publishNativeIdle(const prism::CameraControlIdleStatus& status) {
     post([this,status]() {
@@ -5450,6 +5470,12 @@ class MainWindow : public QMainWindow {
   void runCameraExposureOperation(
       const CameraExposureOperationRequest& request) {
     try {
+      if(request.mixed_group>=0){
+        if(capture_model_.load()!=prism::DeviceModel::Prism21312V0)throw std::runtime_error("Device changed; refresh group controls");
+        const auto result=withClientIo([&]{return request.mixed_value?client_.setCameraExposureGroup(*request.mixed_value):client_.cameraExposureGroup(uint8_t(request.mixed_group));});
+        post([this,result]{camera_exposure_operation_running_=false;mixed_exposure_panel_->setConfiguration(result,worker_running_);refreshControls();});
+        return;
+      }
       if(request.native) {
         const auto& r=*request.native;
         if(capture_model_.load()!=prism::DeviceModel::Prism415RSV0 || worker_running_)
@@ -5477,6 +5503,8 @@ class MainWindow : public QMainWindow {
       });
       publishCameraExposureResult(configuration, limits, request.apply);
     } catch (const std::exception& ex) {
+      if(request.mixed_group>=0){const QString error=toQString(ex.what());const auto group=request.mixed_group;
+        post([this,error,group]{camera_exposure_operation_running_=false;mixed_exposure_panel_->setError(group,error);refreshControls();});return;}
       publishCameraExposureError(toQString(ex.what()));
     }
   }
@@ -5512,6 +5540,7 @@ class MainWindow : public QMainWindow {
     cancelled = cancelled || native_camera_control_.waiting();
     native_camera_control_.reset();
     if (cancelled) publishCameraExposureError(reason);
+    if(cancelled)mixed_exposure_panel_->setBusy(false);
   }
 
   void startCameraExposureOperation(
@@ -5892,6 +5921,8 @@ class MainWindow : public QMainWindow {
         else native_camera_control_panel_->setError(uiText(
             "This firmware does not support live exposure/gain controls. Other supported functions remain available.",
             "此固件不支持新版曝光/增益控制，其他已支持功能仍可使用。"));
+      } else if(device_info.device_model==prism::DeviceModel::Prism21312V0) {
+        mixed_exposure_panel_->clear();
       } else camera_exposure_panel_->setConfiguration(opened.exposure, opened.exposure_limits);
       try {
         updateLidarStatus(client_.lidarStatus());
@@ -7124,6 +7155,8 @@ class MainWindow : public QMainWindow {
       native_camera_control_panel_->setAvailability(device_open&&native_control_available_,running && !upgrading,
           time_syncing || wifi_busy || encoding_busy || upgrading || lidar_network_busy);
     }
+    if(mixed_exposure_panel_)mixed_exposure_panel_->setAvailability(device_open&&
+      !(time_syncing||wifi_busy||encoding_busy||upgrading||lidar_network_busy));
     if (camera_encoding_panel_ != nullptr) {
       camera_encoding_panel_->setDeviceOpen(device_open);
       camera_encoding_panel_->setCaptureActive(
@@ -10760,6 +10793,7 @@ class MainWindow : public QMainWindow {
   QWidget* camera_page_ = nullptr;
   CameraEncodingPanel* camera_encoding_panel_ = nullptr;
   CameraExposurePanel* camera_exposure_panel_ = nullptr;
+  prism_viewer::ui::MixedExposurePanel* mixed_exposure_panel_ = nullptr;
   prism_viewer::ui::NativeCameraControlPanel* native_camera_control_panel_ = nullptr;
   QWidget* imu_page_ = nullptr;
   QWidget* lidar_page_ = nullptr;

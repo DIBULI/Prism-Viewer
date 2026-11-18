@@ -37,7 +37,7 @@ int main(){
  for(auto model:{prism::DeviceModel::Prism415RSV0,prism::DeviceModel::Prism413GSV0,prism::DeviceModel::Prism21312V0}){
   Fake client;prism_viewer::communication::OpenedDevice o;o.device_info.device_model=model;
   prism_viewer::readProductExposure(client,o);
-  assert(client.idles==(model==prism::DeviceModel::Prism415RSV0?1:0));assert(client.old==(model==prism::DeviceModel::Prism415RSV0?0:2));
+  assert(client.idles==(model==prism::DeviceModel::Prism415RSV0?1:0));assert(client.old==(model==prism::DeviceModel::Prism413GSV0?2:0));
  }
  Fake fail;fail.reject_idle=true;prism_viewer::communication::OpenedDevice o;o.device_info.device_model=prism::DeviceModel::Prism415RSV0;
  rejects([&](){prism_viewer::readProductExposure(fail,o);});assert(!fail.old);

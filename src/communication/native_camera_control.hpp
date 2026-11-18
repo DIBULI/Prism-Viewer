@@ -53,7 +53,7 @@ template<class Client,class Opened> void readProductExposure(Client& client,Open
       opened.native_control_idle.reset();
     }
   }
-  else {
+  else if(opened.device_info.device_model!=prism::DeviceModel::Prism21312V0) {
     opened.exposure=client.cameraExposure();
     opened.exposure_limits=client.cameraExposureLimits();
   }

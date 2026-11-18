@@ -1,4 +1,5 @@
 #include "ui/camera_exposure_panel.hpp"
+#include "ui/mixed_exposure_panel.hpp"
 #include "common/ui_text.hpp"
 
 #include <QtWidgets/QApplication>
@@ -31,6 +32,25 @@ bool near(double actual, double expected) {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  {
+    prism_viewer::ui::MixedExposurePanel mixed;mixed.setAvailability(true);
+    prism::ExposureGroupConfiguration global,raw;global.effective_max_exposure_us=78333;
+    raw.group=1;raw.automatic_camera_mask=6;raw.min_exposure_us=54;raw.max_exposure_us=raw.effective_max_exposure_us=18432;
+    raw.max_gain_x1024=28672;raw.manual_exposure_us={9216,4608};
+    mixed.setConfiguration(global,false);mixed.setConfiguration(raw,false);
+    auto* g=mixed.findChild<QGroupBox*>(QStringLiteral("exposureBank0"));
+    auto* r=mixed.findChild<QGroupBox*>(QStringLiteral("exposureBank1"));
+    require(g&&r,"missing independent exposure banks");
+    auto* target=r->findChild<QSpinBox*>(QStringLiteral("target"));target->setValue(77);
+    global.target_brightness=30;mixed.setConfiguration(global,true);
+    require(target->value()==77,"global refresh discarded unsubmitted RAW target");
+    require(r->findChild<QDoubleSpinBox*>(QStringLiteral("maxGain"))->maximum()==28,"RAW gain ceiling changed");
+    require(g->findChild<QDoubleSpinBox*>(QStringLiteral("maxGain"))->maximum()==124,"global gain ceiling was restricted by RAW bank");
+    unsigned requests=0;mixed.on_request=[&](uint8_t group,std::optional<prism::ExposureGroupConfiguration> c){
+      ++requests;require(group==1&&c&&c->target_brightness==77&&c->automatic_camera_mask==6,"RAW apply addressed wrong bank");};
+    auto buttons=r->findChildren<QPushButton*>();require(buttons.size()==2,"missing per-bank actions");buttons[1]->click();
+    require(requests==1,"RAW group apply did not run");
+  }
   prism_viewer::ui::CameraExposurePanel panel;
 
   auto* gain0 = panel.findChild<QDoubleSpinBox*>(

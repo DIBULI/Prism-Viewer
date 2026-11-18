@@ -81,6 +81,8 @@ class Client {
       const prism::DeviceConfiguration& configuration,
       uint32_t field_mask = prism::kDeviceConfigFieldAll);
   prism::ExposureConfiguration cameraExposure();
+  prism::ExposureGroupConfiguration cameraExposureGroup(uint8_t group);
+  prism::ExposureGroupConfiguration setCameraExposureGroup(const prism::ExposureGroupConfiguration& value);
   prism::ExposureConfiguration setExposureConfiguration(
       const prism::ExposureConfiguration& configuration,
       uint32_t field_mask = prism::kExposureFieldAll);

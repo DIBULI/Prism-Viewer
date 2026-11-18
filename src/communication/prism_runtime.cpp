@@ -2,6 +2,7 @@
 #include "prism/usb/network_runtime_api.hpp"
 #include "prism/usb/profile_runtime_api.hpp"
 #include "prism/usb/camera_control_runtime_api.hpp"
+#include "prism/usb/exposure_group_runtime_api.hpp"
 #include "prism/usb/gnss_reception_runtime_api.hpp"
 
 #ifdef _WIN32
@@ -261,6 +262,20 @@ prism::DeviceConfiguration Client::saveDeviceConfiguration(
 }
 prism::ExposureConfiguration Client::cameraExposure() {
   return api_->camera_exposure(handle_);
+}
+namespace {
+const prism::ExposureGroupRuntimeApi* exposureGroupApi() {
+  const auto get=reinterpret_cast<prism::GetExposureGroupRuntimeApiFunction>(GetProcAddress(loadModule(),prism::kExposureGroupRuntimeApiEntryPoint));
+  const auto* api=get?get(prism::kExposureGroupRuntimeApiVersion):nullptr;
+  if(!prism::validExposureGroupRuntimeApi(api))throw std::runtime_error("SDK does not support independent exposure groups");
+  return api;
+}
+}
+prism::ExposureGroupConfiguration Client::cameraExposureGroup(uint8_t group) {
+  return exposureGroupApi()->get(handle_,group);
+}
+prism::ExposureGroupConfiguration Client::setCameraExposureGroup(const prism::ExposureGroupConfiguration& value) {
+  return exposureGroupApi()->set(handle_,value);
 }
 prism::ExposureConfiguration Client::setExposureConfiguration(
     const prism::ExposureConfiguration& c, uint32_t m) {
