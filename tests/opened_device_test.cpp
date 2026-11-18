@@ -71,8 +71,11 @@ int main() {
         return parseCompatibleDeviceInfo(frame(5,model));
       });
       const bool native=opened.device_info.device_model==prism::DeviceModel::Prism415RSV0;
+      const bool legacy=opened.device_info.device_model==prism::DeviceModel::Prism413GSV0;
       check(!opened.maintenance_only&&client.configuration==1&&client.network==1,"known open changed");
-      check(client.native==(native?1u:0u)&&client.legacy==(native?0u:2u),"product exposure changed");
+      // 21312 reads its independent banks through the group API, never the
+      // legacy shared-bank getters used when opening 413 devices.
+      check(client.native==(native?1u:0u)&&client.legacy==(legacy?2u:0u),"product exposure changed");
       check(client.gnss==(model==1?1u:0u),"product GNSS changed");
     }
     for(unsigned model:{1u,2u}){
