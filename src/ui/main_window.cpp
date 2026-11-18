@@ -3226,19 +3226,13 @@ class MainWindow : public QMainWindow {
     dataset_controls->addWidget(dataset_path_label_, 1);
     dataset_layout->addLayout(dataset_controls);
 
-    dataset_summary_label_ = new QLabel(
-        uiText("Select a Prism dataset directory containing imu0.tum and "
-               "imu1.tum (onboard IMUs). Camera indexes are optional for "
-               "IMU-only recordings; lidar_imu.tum is detected separately.",
-               "请选择包含 imu0.tum 和 imu1.tum 的 Prism 数据集目录；"
-               "它们表示板载 IMU。仅 IMU 录制无需相机索引，"
-               "lidar_imu.tum 会单独识别为雷达 IMU。"),
-        dataset_page_);
+    dataset_summary_label_ = new QLabel(dataset_page_);
     dataset_summary_label_->setWordWrap(true);
     dataset_summary_label_->setStyleSheet(QStringLiteral(
         "background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd;"
         "border-radius: 6px; padding: 8px 10px;"));
     dataset_layout->addWidget(dataset_summary_label_);
+    dataset_summary_label_->hide();
 
     auto* dataset_navigation = new QHBoxLayout();
     dataset_previous_frame_button_ = new QPushButton(
@@ -8674,6 +8668,7 @@ class MainWindow : public QMainWindow {
           "%5 · 帧数 %1 / %2 / %3 / %4 · 可导出图片序列")
           .arg(index.cameras[0].size()).arg(index.cameras[1].size()).arg(index.cameras[2].size()).arg(index.cameras[3].size())
           .arg(toQString(identity.model)));
+      dataset_summary_label_->show();
       dataset_details_->setPlainText(uiText("Original JPEG / native RAW8 PNG. Per-camera timestamps are preserved in CSV; no synchronized grouping is inferred. Timeline playback is unavailable for this recording.",
           "导出原始 JPEG／原生 RAW8 PNG。各相机时间戳保存在 CSV 中，不推定为同步帧组。本段录制不支持时间轴回放。"));
       updateDatasetPlaybackControls();refreshControls();return true;
@@ -8699,6 +8694,7 @@ class MainWindow : public QMainWindow {
           "机型：%1 | 正在读取相机索引。此格式暂不支持 ROS Bag 导出。")
           .arg(toQString(identity.model));
       dataset_summary_label_->setText(message);
+      dataset_summary_label_->show();
       dataset_summary_label_->setStyleSheet(QStringLiteral(
           "background: #fffaeb; color: #93370d; border: 1px solid #fedf89; padding: 8px 10px;"));
       dataset_details_->setPlainText(QStringLiteral("device_model=%1\nroot=%2")
@@ -8875,6 +8871,7 @@ class MainWindow : public QMainWindow {
                "机型：%6 | 已加载 %1 组相机帧 | IMU %2/%3 | 雷达 %4 批 | 雷达 IMU %5")
             .arg(dataset_frame_count_).arg(imu0.rows).arg(imu1.rows)
             .arg(lidar.rows).arg(lidar_imu.rows).arg(toQString(identity.model)));
+    dataset_summary_label_->show();
     dataset_summary_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
         "border-radius: 6px; padding: 8px 10px; font-weight: 600;"));
