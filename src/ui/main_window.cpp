@@ -3285,6 +3285,7 @@ class MainWindow : public QMainWindow {
         uiText("Frame: -", "帧：-"), dataset_page_);
     dataset_frame_label_->setObjectName(
         QStringLiteral("datasetFrameLabel"));
+    dataset_frame_label_->setWordWrap(true);
     dataset_frame_label_->setTextInteractionFlags(
         Qt::TextSelectableByMouse);
     dataset_frame_label_->setSizePolicy(
@@ -9022,8 +9023,15 @@ class MainWindow : public QMainWindow {
       const int index = raw_dataset_.display[frame][c];
       if (index >= 0) {
         const auto& e = raw_dataset_.cameras[c][size_t(index)];
-        samples << (raw_dataset_.ordinal_only?QStringLiteral("C%1 #%2").arg(c).arg(e.frame_id):
-            QStringLiteral("C%1 #%2 Δ%3ms").arg(c).arg(e.frame_id).arg(double(time-e.timestamp_us)/1000.0, 0, 'f', 1));
+        QString sample = uiText("Camera %1: frame %2", "相机 %1：第 %2 帧")
+            .arg(c).arg(e.frame_id);
+        if (!raw_dataset_.ordinal_only) {
+          sample += time == e.timestamp_us
+              ? uiText(" (current playback time)", "（当前时刻）")
+              : uiText(" (%1 ms earlier)", "（早 %1 毫秒）")
+                    .arg(double(time-e.timestamp_us)/1000.0, 0, 'f', 1);
+        }
+        samples << sample;
         dataset_image_labels_[c]->setToolTip(uiText(
             "Camera %1 · frame %2\nSample time %3\nAge %4 ms (latest real sample, not a synchronized frame set)\nExposure %5 us · gain %6×\nDrops before this frame: %7",
             "相机 %1 · 帧号 %2\n采样时间 %3\n距当前时刻 %4 毫秒（最近真实样本，非同步帧组）\n曝光 %5 微秒 · 增益 %6×\n本帧之前丢帧：%7")
@@ -9031,7 +9039,7 @@ class MainWindow : public QMainWindow {
             .arg(raw_dataset_.ordinal_only?QStringLiteral("—"):QString::number(double(time-e.timestamp_us)/1000.0,'f',1))
             .arg(e.exposure_us).arg(double(e.gain_x1024)/1024.0, 0, 'f', 2).arg(e.dropped_before));
       } else {
-        samples << QStringLiteral("C%1 —").arg(c);
+        samples << uiText("Camera %1: no frame", "相机 %1：暂无图像").arg(c);
         dataset_image_labels_[c]->setToolTip(uiText("No current sample", "当前无有效帧"));
       }
     }
