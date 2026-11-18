@@ -3250,33 +3250,6 @@ class MainWindow : public QMainWindow {
     dataset_next_frame_button_->setObjectName(
         QStringLiteral("datasetNextFrameButton"));
     dataset_next_frame_button_->setEnabled(false);
-    auto* dataset_playback_speed_label = new QLabel(
-        uiText("Speed", "速度"), dataset_page_);
-    dataset_playback_speed_selector_ = new QComboBox(dataset_page_);
-    dataset_playback_speed_selector_->setObjectName(
-        QStringLiteral("datasetPlaybackSpeedCombo"));
-    for (const double rate : {0.25, 0.5, 1.0, 2.0, 4.0, 8.0}) {
-      dataset_playback_speed_selector_->addItem(
-          QStringLiteral("%1x").arg(rate, 0, 'g', 3), rate);
-    }
-    dataset_playback_speed_selector_->setEnabled(false);
-    bool stored_playback_rate_ok = false;
-    const double stored_playback_rate =
-        QSettings(QStringLiteral("DIBULI"), QStringLiteral("PrismViewer"))
-            .value(QStringLiteral("dataset/playback_rate"), 1.0)
-            .toDouble(&stored_playback_rate_ok);
-    const double initial_playback_rate = sanitizeDatasetPlaybackRate(
-        stored_playback_rate_ok ? stored_playback_rate : 1.0);
-    int initial_playback_index =
-        dataset_playback_speed_selector_->findData(initial_playback_rate);
-    if (initial_playback_index < 0) {
-      initial_playback_index =
-          dataset_playback_speed_selector_->findData(1.0);
-    }
-    dataset_playback_speed_selector_->setCurrentIndex(
-        initial_playback_index);
-    dataset_playback_rate_ =
-        dataset_playback_speed_selector_->currentData().toDouble();
     dataset_playback_position_label_ = new QLabel(
         uiText("Timeline: -", "时间线：-"), dataset_page_);
     dataset_playback_position_label_->setObjectName(
@@ -3314,9 +3287,6 @@ class MainWindow : public QMainWindow {
     dataset_navigation->addWidget(dataset_previous_frame_button_);
     dataset_navigation->addWidget(dataset_playback_button_);
     dataset_navigation->addWidget(dataset_next_frame_button_);
-    dataset_navigation->addSpacing(6);
-    dataset_navigation->addWidget(dataset_playback_speed_label);
-    dataset_navigation->addWidget(dataset_playback_speed_selector_);
     dataset_navigation->addSpacing(8);
     dataset_navigation->addWidget(dataset_playback_position_label_);
     dataset_navigation->addSpacing(8);
@@ -3916,19 +3886,6 @@ class MainWindow : public QMainWindow {
             jump_to_dataset_frame);
     connect(dataset_frame_jump_spin_, &QSpinBox::editingFinished, this,
             jump_to_dataset_frame);
-    connect(dataset_playback_speed_selector_,
-            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int index) {
-              if (index < 0) return;
-              dataset_playback_rate_ = sanitizeDatasetPlaybackRate(
-                  dataset_playback_speed_selector_->itemData(index)
-                      .toDouble());
-              QSettings(QStringLiteral("DIBULI"),
-                        QStringLiteral("PrismViewer"))
-                  .setValue(QStringLiteral("dataset/playback_rate"),
-                            dataset_playback_rate_);
-              if (dataset_playback_active_) restartDatasetPlaybackClock();
-            });
     connect(dataset_playback_timer_, &QTimer::timeout, this, [this]() {
       processDatasetPlaybackEvents();
     });
@@ -7800,7 +7757,6 @@ class MainWindow : public QMainWindow {
     dataset_playback_button_->setText(
         dataset_playback_active_ ? uiText("Pause", "暂停")
                                  : uiText("Play", "播放"));
-    dataset_playback_speed_selector_->setEnabled(can_play);
     dataset_frame_jump_spin_->setEnabled(has_frames);
     dataset_frame_jump_button_->setEnabled(has_frames);
   }
@@ -10841,7 +10797,6 @@ class MainWindow : public QMainWindow {
   QPushButton* dataset_previous_frame_button_ = nullptr;
   QPushButton* dataset_playback_button_ = nullptr;
   QPushButton* dataset_next_frame_button_ = nullptr;
-  QComboBox* dataset_playback_speed_selector_ = nullptr;
   QLabel* dataset_playback_position_label_ = nullptr;
   QSpinBox* dataset_frame_jump_spin_ = nullptr;
   QPushButton* dataset_frame_jump_button_ = nullptr;
@@ -10870,6 +10825,7 @@ class MainWindow : public QMainWindow {
   uint64_t dataset_playback_lidar_imu_count_ = 0;
   uint64_t dataset_playback_anchor_timestamp_us_ = 0;
   std::chrono::steady_clock::time_point dataset_playback_anchor_wall_time_{};
+  // Normal playback is always 1x; only the offline self-test accelerates time.
   double dataset_playback_rate_ = 1.0;
   bool dataset_playback_active_ = false;
   QString loaded_dataset_root_;
