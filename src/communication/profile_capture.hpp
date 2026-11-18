@@ -28,6 +28,20 @@ inline bool usesProfileCapture(prism::DeviceModel model) {
   return model == prism::DeviceModel::Prism415RSV0 || model == prism::DeviceModel::Prism21312V0;
 }
 
+inline bool usesAggregateImu(CaptureProduct product) {
+  return product == CaptureProduct::Strict415RSV0 ||
+         product == CaptureProduct::Mixed21312V0;
+}
+
+template <typename Aggregate, typename Independent>
+bool handleCaptureImu(CaptureProduct product, const prism::Frame& frame,
+                      Aggregate& aggregate, Independent& independent) {
+  // Profile START already owns IMU. Its samples must not go through the
+  // inactive independent stream, which consumes them without a callback.
+  return usesAggregateImu(product) ? aggregate.handleFrame(frame)
+                                   : independent.handleFrame(frame);
+}
+
 inline unsigned captureOptions(CaptureProduct product) {
   switch (product) {
     case CaptureProduct::Legacy413GSV0: return 0;

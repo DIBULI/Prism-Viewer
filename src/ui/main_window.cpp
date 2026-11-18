@@ -10186,8 +10186,8 @@ class MainWindow : public QMainWindow {
       prism_runtime::ImuStream imu_stream(client_, imu_handler);
       prism_runtime::AggregateImuObserver aggregate_imu(imu_handler);
       const auto handle_imu = [&](const prism::Frame& frame) {
-        return capture_product == prism_viewer::CaptureProduct::Strict415RSV0
-            ? aggregate_imu.handleFrame(frame) : imu_stream.handleFrame(frame);
+        return prism_viewer::handleCaptureImu(
+            capture_product, frame, aggregate_imu, imu_stream);
       };
       prism_runtime::LidarStream lidar_stream(
           client_, [this, requested_lidar_model, &pending_lidar_preview,
@@ -10232,7 +10232,8 @@ class MainWindow : public QMainWindow {
             dataset_recorder_.appendRoverRtcm(chunk);
           });
       try {
-        if(!profile_preview)withClientIo([&imu_stream]() { imu_stream.start(); });
+        if(!prism_viewer::usesAggregateImu(capture_product))
+          withClientIo([&imu_stream]() { imu_stream.start(); });
       } catch (...) {
         if (video_started) {
           try {
