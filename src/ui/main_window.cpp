@@ -3876,6 +3876,9 @@ class MainWindow : public QMainWindow {
             });
     const auto jump_to_dataset_frame = [this]() {
       if (dataset_frame_count_ == 0u) return;
+      // Clicking a button need not move focus from the spin box on macOS.
+      // Commit the edited text just as Return does before reading the value.
+      dataset_frame_jump_spin_->interpretText();
       const int frame = dataset_frame_jump_spin_->value() - 1;
       if (frame < 0 || static_cast<size_t>(frame) >= dataset_frame_count_) {
         return;
@@ -4100,7 +4103,8 @@ class MainWindow : public QMainWindow {
       }
       ok = !dataset_playback_active_ && wait() && ok;
       const size_t last = dataset_frame_count_ - 1;
-      dataset_frame_jump_spin_->setValue(int(last)+1); dataset_frame_jump_button_->click();
+      dataset_frame_jump_spin_->findChild<QLineEdit*>()->setText(QString::number(last+1));
+      dataset_frame_jump_button_->click();
       ok = wait() && dataset_current_frame_ == int(last) && ok;
       for (size_t c=0;c<4;++c) {
         const bool present = raw_dataset_.display[last][c] >= 0;
@@ -4146,7 +4150,9 @@ class MainWindow : public QMainWindow {
       frame_jump_ok = dataset_current_frame_ == 0 &&
                       dataset_frame_slider_->value() == 0 &&
                       dataset_frame_jump_spin_->value() == 1;
-      dataset_frame_jump_spin_->setValue(2);
+      // Leave typed text uncommitted: the button must work without Return.
+      dataset_frame_jump_spin_->findChild<QLineEdit*>()->setText(QStringLiteral("2"));
+      frame_jump_ok = frame_jump_ok && dataset_frame_jump_spin_->value() == 1;
       dataset_frame_jump_button_->click();
       frame_jump_ok = frame_jump_ok && dataset_current_frame_ == 1 &&
                       dataset_frame_slider_->value() == 1 &&
