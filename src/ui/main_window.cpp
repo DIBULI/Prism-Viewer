@@ -10183,7 +10183,6 @@ class MainWindow : public QMainWindow {
                                device_rate.minUs(),device_rate.maxUs(),device_rate.anchored());
             }
           };
-      prism_runtime::ImuStream imu_stream(client_, imu_handler);
       prism_runtime::ImuSampleObserver imu_samples(imu_handler);
       prism_runtime::LidarStream lidar_stream(
           client_, [this, requested_lidar_model, &pending_lidar_preview,
@@ -10227,25 +10226,10 @@ class MainWindow : public QMainWindow {
           client_, [this](const prism::RoverRtcmChunkView& chunk) {
             dataset_recorder_.appendRoverRtcm(chunk);
           });
-      try {
-        if(!prism_viewer::usesAggregateImu(capture_product))
-          withClientIo([&imu_stream]() { imu_stream.start(); });
-      } catch (...) {
-        if (video_started) {
-          try {
-            aggregate_stream_stop_attempted = true;
-            withClientIo([this]() { client_.stopVideo(); });
-            video_started = false;
-          } catch (const std::exception& stop_error) {
-            appendLog(QStringLiteral(
-                          "Capture rollback failed after IMU start error: %1")
-                          .arg(stop_error.what()));
-          }
-        }
-        throw;
-      }
-      appendLog(profile_preview?QStringLiteral("Profile camera preview; original RAW8 recording available over USB3; timing semantics come from each validated image"):
-          QStringLiteral("IMU started through agent SDK ImuStream"));
+      // VIDEO_START enables both camera and IMU forwarding on all supported
+      // Agent profiles, including 1.2.x. Do not create a second IMU owner.
+      appendLog(QStringLiteral("Camera and IMU started in one acquisition session"));
+      if(profile_preview)appendLog(QStringLiteral("Profile camera preview; original RAW8 recording available over USB3; timing semantics come from each validated image"));
       if (requested_lidar_model != prism::LidarModel::None) {
         try {
           withClientIo([&lidar_stream, requested_lidar_model]() {
@@ -10258,7 +10242,7 @@ class MainWindow : public QMainWindow {
         } catch (...) {
           try {
             aggregate_stream_stop_attempted = true;
-            withClientIo([&imu_stream]() { imu_stream.stop(); });
+            withClientIo([this]() { client_.stopVideo(); });
             video_started = false;
           } catch (const std::exception& stop_error) {
             appendLog(QStringLiteral(
@@ -10665,9 +10649,8 @@ class MainWindow : public QMainWindow {
       aggregate_stream_stop_attempted = true;
       try {
         if(capture_product==prism_viewer::CaptureProduct::Strict415RSV0)profile_credits.stopping();
-        if(profile_preview)withClientIo([this]() { client_.stopVideo(); });
-        else withClientIo([&imu_stream]() { imu_stream.stop(); });
-        // IMU_STOP is the aggregate Camera + IMU stop transaction.
+        withClientIo([this]() { client_.stopVideo(); });
+        // VIDEO_STOP is the aggregate Camera + IMU stop transaction.
         video_started = false;
       } catch (...) {
         stop_error = std::current_exception();

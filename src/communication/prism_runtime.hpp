@@ -203,8 +203,8 @@ const char* sensorBoardErrorCodeName(prism::SensorBoardErrorCode code);
 
 #endif
 
-// All products parse received IMU samples here, independently of whether
-// camera START or a separate IMU START owns the stream lifecycle.
+// All products parse received IMU samples here. VIDEO_START/STOP owns their
+// combined camera+IMU session; this observer only processes samples.
 // No Client/control methods: cannot issue a second START/STOP.
 class ImuSampleObserver {
  public:

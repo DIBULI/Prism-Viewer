@@ -15,8 +15,7 @@ int main(){
                       prism_viewer::CaptureProduct::Strict415RSV0,
                       prism_viewer::CaptureProduct::Mixed21312V0}) {
     calls=0;f.type=prism::FrameType::ImuSample;
-    require(prism_viewer::usesAggregateImu(product)==
-            (product!=prism_viewer::CaptureProduct::Legacy413GSV0));
+    require(prism_viewer::captureOptions(product)<=7);
     // The production sample observer is identical for all product lifecycles.
     prism_runtime::ImuSampleObserver observer(handler);
     for(unsigned i=0;i<1000;++i){
@@ -32,5 +31,5 @@ int main(){
     f.type=prism::FrameType::Heartbeat;require(!observer.handleFrame(f)&&calls==1000);
   }
   require(!client.isOpen());
-  std::cout<<"PASS inactive negative; unified observer 1000 callbacks/model, both sensor IDs; 413 separate lifecycle; malformed/nonIMU; no control writes\n";
+  std::cout<<"PASS inactive negative; unified observer 1000 callbacks/model, both sensor IDs; malformed/nonIMU; no control writes\n";
 }
