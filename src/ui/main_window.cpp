@@ -315,6 +315,7 @@ void traceProfilePreview(const char* stage, uint64_t generation, unsigned camera
 struct CameraPreviewJob {
   std::optional<prism_viewer::ui::PreviewGroupKey> group_key;
   uint64_t group_token = 0;
+  uint8_t raw_group_mask = 0x0f;
   std::array<uint8_t,4> formats{};
   std::array<QString,4> stats{};
   bool independent_image=false;
@@ -329,7 +330,7 @@ struct DecodedCameraPreviewJob {
   std::optional<prism_viewer::ui::PreviewGroupKey> group_key;
   uint64_t group_token = 0;
   std::array<QString,4> stats{};
-  std::array<prism_viewer::ui::RawPreviewMetadata,4> raw_metadata{};
+  std::array<std::optional<prism_viewer::ProfileFrameMetadata>,4> metadata{};
   std::array<bool,4> is_raw{};
   bool independent_image = false;
   uint32_t frame_id = 0;
@@ -2421,6 +2422,19 @@ QString cameraGainText(uint32_t gain_x1024, bool metadata_valid) {
   return value + QStringLiteral("×");
 }
 
+QString profileFrameText(const std::optional<prism_viewer::ProfileFrameMetadata>& frame) {
+  if (!frame) return uiText("Frame metadata unavailable", "帧元数据不可用");
+  const auto& m = *frame;
+  QStringList fields;
+  if (m.trigger_sequence) fields << uiText("Group %1","组帧号 %1").arg(m.trigger_sequence);
+  fields << uiText("Source frame %1","源帧号 %1").arg(m.source_frame)
+         << prism_viewer::ui::rawTimingDescription(m.timing_mode,m.timestamp_us,
+                                                   uiText("en","zh")==QStringLiteral("zh"))
+         << uiText("Exposure %1 μs","曝光 %1 μs").arg(m.exposure_us ? QString::number(m.exposure_us) : QStringLiteral("—"))
+         << uiText("Gain %1","增益 %1").arg(cameraGainText(m.gain_x1024,true));
+  return fields.join(QStringLiteral(" · "));
+}
+
 class CameraStatsLabel final : public QLabel {
  public:
   using QLabel::QLabel;
@@ -3007,7 +3021,6 @@ class MainWindow : public QMainWindow {
       caption->setObjectName(QStringLiteral("cameraCaption"));
       image_labels_[i] = new ImageViewLabel(tile);
       image_labels_[i]->setObjectName(QStringLiteral("cameraImage"));
-      image_labels_[i]->setTransformationMode(Qt::FastTransformation);
       image_labels_[i]->setMinimumSize(280, 160);
       image_labels_[i]->setCursor(Qt::PointingHandCursor);
       image_labels_[i]->clearImage(uiText("No frame", "无图像"));
@@ -3115,6 +3128,16 @@ class MainWindow : public QMainWindow {
     meta_text_ = new QPlainTextEdit(metadata_page);
     meta_text_->setReadOnly(true);
     meta_text_->setMaximumBlockCount(200);
+    profile_meta_timer_ = new QTimer(meta_text_);
+    profile_meta_timer_->setSingleShot(true);
+    profile_meta_timer_->setInterval(static_cast<int>(kMetadataUiPeriod.count()));
+    connect(profile_meta_timer_, &QTimer::timeout, this, [this] {
+      QStringList rows;
+      for (unsigned c=0; c<profile_meta_rows_.size(); ++c)
+        if (!profile_meta_rows_[c].isEmpty())
+          rows << uiText("Camera %1\n%2","相机 %1\n%2").arg(c).arg(profile_meta_rows_[c]);
+      meta_text_->setPlainText(rows.join(QStringLiteral("\n\n")));
+    });
     metadata_layout->addWidget(meta_text_);
     camera_tools->addTab(metadata_page, uiText("Metadata", "元数据"));
     camera_tools_ = camera_tools;
@@ -4361,6 +4384,7 @@ class MainWindow : public QMainWindow {
   void applyProfileGpuFault(unsigned camera,const QString& message) {
     if(camera>=4)return;
     profile_preview_fault_[camera]=message;latest_camera_images_[camera]=QImage();
+    setProfileMetaRow(camera, message);
     latest_camera_full_resolution_[camera] = false;
     if (live_camera_zoom_dialog_->isVisible())
       live_camera_zoom_dialog_->setImageSet(latest_camera_images_,
@@ -4442,6 +4466,51 @@ class MainWindow : public QMainWindow {
     return ok;
   }
 
+  bool runMixedLiveMetadataSelfTest(const QString& directory) {
+    resetUi();
+    tabs_->setCurrentWidget(camera_page_);
+    camera_tools_->setCurrentWidget(meta_text_->parentWidget());
+    updateVisualizationActivity();
+    const auto data=prism_viewer::dataset::loadRaw8Dataset(toFilesystemPath(directory));
+    if (!data.mixed) return false;
+    for (unsigned c=0;c<4;++c) {
+      if (data.cameras[c].empty()) return false;
+      const auto& e=data.cameras[c].front();
+      QFile file(e.absolute_path);
+      if (!file.open(QIODevice::ReadOnly) || !file.seek(e.byte_offset)) return false;
+      const auto bytes=file.read(e.byte_size);
+      if (bytes.size()!=e.byte_size) return false;
+      CameraPreviewJob job;
+      job.independent_image=true;
+      job.raw_group_mask=0x06;
+      job.formats[c]=e.raw8 ? prism::capture::kRaw8Rice : 2;
+      job.jpeg[c].assign(bytes.begin(),bytes.end());
+      job.group_key=prism_viewer::ui::rawPreviewGroupHint(job.jpeg[c],c,job.formats[c]);
+      job.stats[c]=QStringLiteral("test");
+      job.generation=camera_preview_generation_.load();
+      job.received_frame_sets=c+1;
+      camera_lane_progress_.receive(uint8_t(1u<<c),c+1,cameraMonotonicMs());
+      enqueueCameraPreview(std::move(job));
+    }
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(6);
+    do {
+      QApplication::processEvents();
+      if (std::all_of(profile_meta_rows_.begin(),profile_meta_rows_.end(),
+                      [](const QString& row){return !row.isEmpty();}) && !profile_meta_timer_->isActive()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while (std::chrono::steady_clock::now()<deadline);
+    for (unsigned c=0;c<4;++c) {
+      const auto& e=data.cameras[c].front();
+      const QString expected=profileFrameText(prism_viewer::ProfileFrameMetadata{
+          e.timing_mode,e.timestamp_us,e.frame_id,e.exposure_us,e.gain_x1024,e.trigger_sequence});
+      if (latest_camera_images_[c].isNull() || !frame_labels_[c]->text().contains(expected) ||
+          !meta_text_->toPlainText().contains(uiText("Camera %1\n%2","相机 %1\n%2").arg(c).arg(expected))) return false;
+    }
+    std::cout<<meta_text_->toPlainText().toStdString()<<'\n';
+    resetUi();
+    return meta_text_->toPlainText().isEmpty();
+  }
+
   bool runGroupedPreviewSelfTest(const QString& screenshot) {
     tabs_->setCurrentWidget(camera_page_);
     const auto settle=[] {
@@ -4466,7 +4535,7 @@ class MainWindow : public QMainWindow {
       d.group_key=prism_viewer::ui::PreviewGroupKey{group,stamp,raw};
       d.independent_image=raw;d.frame_id=group*4+camera;
       d.received_frame_sets=group*4+camera+1;d.is_raw[camera]=raw;
-      d.raw_metadata[camera]={4,stamp,group+camera*100,1000,1024,group};
+      d.metadata[camera]=prism_viewer::ProfileFrameMetadata{4,stamp,group+camera*100,1000,1024,group};
       d.stats[camera]=QStringLiteral("fixture");
       d.images[camera]=QImage(width,8,QImage::Format_RGB32);
       d.images[camera].fill(qRgb(group,camera,30));
@@ -7004,6 +7073,8 @@ class MainWindow : public QMainWindow {
       imu_table_->item(row, 3)->setForeground(QBrush());
     }
     meta_text_->clear();
+    profile_meta_timer_->stop();
+    profile_meta_rows_.fill(QString());
     log_text_->clear();
   }
 
@@ -9019,6 +9090,7 @@ class MainWindow : public QMainWindow {
       if (missing && (!camera_missing_notice_[c] || !frame_labels_[c]->text().contains(message))) {
         const bool newly_missing = !camera_missing_notice_[c];
         camera_missing_notice_[c] = true;
+        if (!profile_meta_rows_[c].isEmpty()) setProfileMetaRow(c, message);
         frame_labels_[c]->setStats(message + uiText(
             " · other streams continue", " · 不影响其他路接收"));
         frame_labels_[c]->setStyleSheet(QStringLiteral("color: #b42318;"));
@@ -9145,7 +9217,7 @@ class MainWindow : public QMainWindow {
       job.group_key = prism_viewer::ui::PreviewGroupKey{job.frame_id,0,false};
     if (job.group_key) {
       const auto arrival = grouped_preview_mailbox_.arrive(*job.group_key,
-          job.generation, job.independent_image ? 15 : expected, cameraMonotonicMs());
+          job.generation, job.independent_image ? job.raw_group_mask : expected, cameraMonotonicMs());
       if (arrival.post) postGroupedPreview(job.generation);
       job.group_token = arrival.token;
       if (!job.group_token) return; // Already retired preview; ACK/recording unchanged.
@@ -9185,9 +9257,9 @@ class MainWindow : public QMainWindow {
         // Hint enrollment is not validation. Only the decoder's CRC-validated
         // common-trigger metadata can complete a RAW display group.
         if (decoded.group_key && decoded.group_key->common_trigger &&
-            (!decoded.is_raw[c] || decoded.raw_metadata[c].timing_mode!=4 ||
-             decoded.raw_metadata[c].timestamp_us!=decoded.group_key->timestamp ||
-             decoded.raw_metadata[c].trigger_sequence!=decoded.group_key->group_id)) continue;
+            (!decoded.is_raw[c] || !decoded.metadata[c] || decoded.metadata[c]->timing_mode!=4 ||
+             decoded.metadata[c]->timestamp_us!=decoded.group_key->timestamp ||
+             decoded.metadata[c]->trigger_sequence!=decoded.group_key->group_id)) continue;
         auto lane = decoded;
         for (unsigned other=0;other<4;++other) if (other!=c) lane.images[other]={};
         if (grouped_preview_mailbox_.publish(decoded.group_token,decoded.generation,c,std::move(lane)))
@@ -9306,6 +9378,11 @@ class MainWindow : public QMainWindow {
     }
   }
 
+  void setProfileMetaRow(unsigned camera, const QString& value) {
+    profile_meta_rows_[camera] = value;
+    if (!profile_meta_timer_->isActive()) profile_meta_timer_->start();
+  }
+
   void applyDecodedCameraPreview(DecodedCameraPreviewJob frame, bool refresh_shared_views = true) {
         if (frame.generation != camera_preview_generation_.load(std::memory_order_acquire)) return;
         if (refresh_shared_views) refreshCameraPresence();
@@ -9339,15 +9416,10 @@ class MainWindow : public QMainWindow {
           if (!changed[camera]) continue;
           if(!frame.stats[camera].isEmpty()) {
             QString detail=frame.stats[camera];
-            if(frame.is_raw[camera]) {
-              const auto& m=frame.raw_metadata[camera];
-              if(m.trigger_sequence)
-                detail=uiText("Group %1", "组帧号 %1").arg(m.trigger_sequence)+QStringLiteral(" · ")+detail;
-              detail+=QStringLiteral(" · source %1 · %2 · %3 μs · %4×").arg(m.source_frame)
-                  .arg(prism_viewer::ui::rawTimingDescription(m.timing_mode,m.timestamp_us,
-                      uiText("en","zh")==QStringLiteral("zh")))
-                  .arg(m.exposure_us?QString::number(m.exposure_us):QStringLiteral("—"))
-                  .arg(m.gain_x1024?QString::number(double(m.gain_x1024)/1024.0,'f',2):QStringLiteral("—"));
+            if(frame.independent_image) {
+              const QString metadata=profileFrameText(frame.metadata[camera]);
+              detail+=QStringLiteral(" · ")+metadata;
+              setProfileMetaRow(camera, metadata);
             }
             frame_labels_[camera]->setStats(detail);
           }
@@ -9396,12 +9468,18 @@ class MainWindow : public QMainWindow {
         const auto decode_start=std::chrono::steady_clock::now();
         try {
         if(job.formats[camera]==prism::capture::kRaw8Rice) {
+          prism_viewer::ProfileFrameMetadata metadata;
           decoded.images[camera]=prism_viewer::ui::decodeRawPreview(job.jpeg[camera],
-              maximum_size,camera,job.formats[camera],&decoded.raw_metadata[camera]);
+              maximum_size,camera,job.formats[camera],&metadata);
+          decoded.metadata[camera]=metadata;
           decoded.is_raw[camera]=true;
         }
-        else decoded.images[camera] = decodePreviewJpeg(
-            job.jpeg[camera], maximum_size);
+        else {
+          const auto& jpeg=job.jpeg[camera];
+          decoded.images[camera] = decodePreviewJpeg(jpeg, maximum_size);
+          if(job.independent_image)
+            decoded.metadata[camera]=prism_viewer::profileJpegMetadata(jpeg.data(),jpeg.size(),jpeg.size(),camera);
+        }
         decoded.full_resolution[camera] = full_resolution && !decoded.images[camera].isNull();
         } catch(const std::exception& e) {
           appendLog(QStringLiteral("RAW preview rejected: %1").arg(QString::fromUtf8(e.what())));
@@ -10503,6 +10581,7 @@ class MainWindow : public QMainWindow {
                     .arg(image->width).arg(image->height).arg(count).arg(fps,0,'f',2)
                     .arg(double(image->encoded.size())/1048576.0,0,'f',2);
                 CameraPreviewJob job;job.frame_id=image->frame_id;job.independent_image=true;
+                if(capture_product==prism_viewer::CaptureProduct::Mixed21312V0) job.raw_group_mask=0x06;
                 job.stats[camera]=detail;
                 job.received_frame_sets=++received_camera_frame_sets;
                 camera_lane_progress_.receive(static_cast<uint8_t>(1u << camera),
@@ -10562,7 +10641,7 @@ class MainWindow : public QMainWindow {
               handleCompletedCameraFrame(std::move(*completed));
             }
             const auto metadata_now = std::chrono::steady_clock::now();
-            if (camera_preview_enabled_.load(std::memory_order_acquire) &&
+            if (!profile_preview && camera_preview_enabled_.load(std::memory_order_acquire) &&
                 metadata_now >= next_metadata_ui_update) {
               updateMeta(meta);
               next_metadata_ui_update = metadata_now + kMetadataUiPeriod;
@@ -10806,6 +10885,8 @@ class MainWindow : public QMainWindow {
   prism_viewer::ui::RawDatasetDecoder::Entries raw_dataset_requested_entries_{};
   bool rosbag_export_running_ = false;
   QPlainTextEdit* meta_text_ = nullptr;
+  QTimer* profile_meta_timer_ = nullptr;
+  std::array<QString,4> profile_meta_rows_{};
   QPlainTextEdit* log_text_ = nullptr;
   QDialog* log_dialog_ = nullptr;
   QCheckBox* log_auto_scroll_ = nullptr;
@@ -11987,6 +12068,11 @@ int runViewerApplication(int argc, char** argv) {
         ? command_line[camera_tools_test + 1] : QString()) ? 0 : 22;
   }
   const int grouped_preview_test=command_line.indexOf(QStringLiteral("--grouped-preview-self-test"));
+  const int mixed_live_test=command_line.indexOf(QStringLiteral("--mixed-live-metadata-self-test"));
+  if(mixed_live_test>=0 && mixed_live_test+1<command_line.size()) {
+    window.show(); app.processEvents();
+    return window.runMixedLiveMetadataSelfTest(command_line[mixed_live_test+1]) ? 0 : 21;
+  }
   if(grouped_preview_test>=0) {
     window.show();app.processEvents();
     return window.runGroupedPreviewSelfTest(grouped_preview_test+1<command_line.size()

@@ -85,7 +85,12 @@ int main(int argc,char** argv) {
       QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--dataset-playback-self-test",temp.path()});
       check(process.waitForFinished(80000),"mixed UI timeout");
       std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();
-      check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"mixed UI failed");return 0;
+      check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"mixed UI failed");
+      process.start(QString::fromLocal8Bit(argv[2]),{"--mixed-live-metadata-self-test",temp.path()});
+      check(process.waitForFinished(15000),"mixed live metadata timeout");
+      std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();
+      check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"mixed live metadata failed");
+      return 0;
     }
     auto data=loadRaw8Dataset(root);
     check(data.mixed&&!data.ordinal_only&&data.cameras[0].size()==13&&data.cameras[1].size()==3,"mixed index");

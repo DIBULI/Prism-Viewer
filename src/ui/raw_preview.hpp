@@ -1,16 +1,12 @@
 #pragma once
 #include "prism/usb/profile_video.hpp"
+#include "communication/profile_frame_metadata.hpp"
 #include <QImage>
 #include <QSize>
 #include "raw_timing.hpp"
 #include "bayer_preview.hpp"
 namespace prism_viewer::ui {
-struct RawPreviewMetadata {
-  uint8_t timing_mode=0;
-  uint64_t timestamp_us=0;
-  uint32_t source_frame=0,exposure_us=0,gain_x1024=0;
-  uint32_t trigger_sequence=0;
-};
+using RawPreviewMetadata = ProfileFrameMetadata;
 // Linear preview cache only, without ISP/demosaicing. Widgets apply sRGB once
 // after CFA filtering/resizing. Original native sensor bytes are never overwritten.
 inline QImage decodeRawPreview(const std::vector<uint8_t>& bytes,const QSize& maximum,unsigned camera,uint8_t format=0,
