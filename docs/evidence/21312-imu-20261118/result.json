@@ -1,0 +1,57 @@
+{
+  "status": "Fixed, installed locally and verified on 21312V0 over USB. No push or release.",
+  "date_local": "2026-11-18 Asia/Shanghai",
+  "cause": "Viewer skipped independent IMU START for 21312 profile capture but dispatched its samples to the inactive ImuStream, which consumed samples without invoking the display/recording callback.",
+  "implementation": "All supported models use ImuSampleObserver and one common callback for parsing, timestamp/rate checks, live display and recording. One VIDEO_START/VIDEO_STOP owns camera+IMU; redundant legacy 413 IMU_START confirmation removed. LiDAR-start error rollback also stops the actual aggregate owner.",
+  "protocol_evidence": "Agent src/control/stream_controller.c at v1.2.0, v1.3.0 and current source: VIDEO_START enables camera+IMU; IMU_START requires already-active aggregate acquisition and only confirms count/rate; VIDEO_STOP stops both. imu_requested_sensors only supplies status reply.",
+  "source_commit": "aa84312f74a17c951f25552a7aeb644c6ad06d53",
+  "installed": "/Users/xiangfuli/Downloads/Prism-Viewer 5.app",
+  "binary_sha256": "b1740871f5b164da3c32eb3dba10075113df91517f3dc0d59380aa7e45edc7b9",
+  "backup": "artifacts/21312-viewer-imu-20261118/previous-viewer.bundle",
+  "tests": {
+    "passed": 8,
+    "failed": 0,
+    "notes": "Actual SDK inactive-stream negative reproduces swallowed callback; common sample observer checks 1000 samples/model with both IMU sensor IDs, malformed/non-IMU frames. Capture options, IMU UI/rates/timestamps/units, batch export and offline IMU recorder pass. No device control in regression."
+  },
+  "live": {
+    "serial": "1b78953e9fc85455",
+    "model": "21312V0",
+    "transport": "USB3",
+    "agent": "1.4.0",
+    "board": "0.5.4",
+    "agent_pid": 387231,
+    "agent_start_us": 27733177184,
+    "viewer_pid": 82170,
+    "viewer_uid": 501,
+    "viewer_started_local": "2026-11-18 18:40:03",
+    "start_request": "18:41:14.650",
+    "running": "18:41:16.073",
+    "stop_request": "18:42:11.977",
+    "stopped": "18:42:12.956",
+    "sample_counter_last_ui": 44224,
+    "observed_rate_hz": 800.2,
+    "observed_interval_us": [
+      1248,
+      1251
+    ],
+    "last_logged_sequence_faults": 0,
+    "last_logged_clock_faults": 0,
+    "fsync_last_ui": 56,
+    "visible_acceleration_and_gyro_curves": true,
+    "imu0_present": true,
+    "imu1_present": false,
+    "recording_started": false,
+    "after_camera_streaming_mask": 0,
+    "after_imu_receiving_mask": 0,
+    "identity_and_configuration_unchanged": true
+  },
+  "log_excerpts": [
+    "18:41:14.650 Capture START options=3 (21312V0, saved FPS)",
+    "18:41:16.073 Camera and IMU started in one acquisition session",
+    "18:42:11.825 IMU0 FSYNC #56 tagged_sample_utc=19725000320 us delay=valid sample_hz=800.20 rx_hz=800.51 interval_us=1248..1251 sequence_faults=0 clock_faults=0 pps_rate=1",
+    "18:42:11.977 Stopping streams",
+    "18:42:12.956 Streams stopped"
+  ],
+  "limits": "Live test proves this 21312 USB UI restoration and normal STOP, not a long recording or fresh 413/415 hardware qualification. Device uses internal time, not external UTC. No Agent, Sensor Board, IQ, power, camera configuration or dataset changes.",
+  "evidence": "artifacts/21312-viewer-imu-20261118/{installed.json,verified.json,usb-before.json,usb-after.json,regression-final.log,package-unified.log}; GUI AX log/table and screenshot observed in chat."
+}
