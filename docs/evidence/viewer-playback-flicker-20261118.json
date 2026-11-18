@@ -1,0 +1,13 @@
+{
+  "status": "Fixed local RAW8/mixed dataset playback flashing caused by clearing every image before asynchronous decoding.",
+  "revision": "a086bcc50f215b5bd4e3e2bc4b43e7301759eee4",
+  "change": "Retain displayed image until replacement finishes; commit exposure/gain/timestamp labels with accepted decoder result. Known gaps and decode errors still clear invalid images. Existing generation checks reject obsolete seek results; no additional frame queue.",
+  "validation": "Release build passed. Existing mixed-dataset-ui, raw-dataset-ui, dataset-playback-ui and dataset-playback-timing passed (4/4). Actual local mixed dataset playback selftest passed 741 steps, frames740/123/123/740 including seek/play/pause/tail. No new tests added.",
+  "local_app": "/Users/xiangfuli/Downloads/Prism-Viewer 5.app",
+  "sha256": "0c7f581de5b88b3609c2b436ad0a64fd92e4a0939fd741495e96be9d2971eafc",
+  "ui": "Installed and opened local1.4.0; verified real dataset 1x playback advancing through steps4/84/186/298 with all four images present and no decoding placeholder at observations. Paused at298/741, frames322/160/160/322. Existing USB connection restored automatically; no live capture/recording started.",
+  "runtime": "Viewer85668/start2026-11-18 19:17:50, translocated05672B73-61FC-4428-BC6C-E8C2C2564602. Build48853/tests95780/real68010/bundle60412/install all exit0; no controller remains.",
+  "evidence": "artifacts/viewer-playback-flicker-20261118/{build.log,ctest.log,real-playback.log,real-dataset.png,prepared-unified.json,installed.json}; previous app preserved in previous-viewer.bundle.",
+  "scope": "Viewer only; dataset files and device firmware/config/power unchanged. GitHub release still49ad788; this repair is installed locally and committed, not published.",
+  "next": "Current fix and local verification complete."
+}
