@@ -1,0 +1,72 @@
+{
+  "passed": true,
+  "release_id": 447295319,
+  "url": "https://github.com/DIBULI/Prism-Viewer/releases/tag/v1.4.0",
+  "published_at": "2026-11-16T16:28:03Z",
+  "latest": true,
+  "packages": [
+    {
+      "platform": "windows-x64",
+      "name": "Prism-Viewer-1.4.0-windows-x64.zip",
+      "bytes": 25302366,
+      "sha256": "e332db8d2e64c2e2a817b10711036fafe63e6bfbebb17c85542c28a7e15bde62",
+      "identity": {
+        "version": "1.4.0",
+        "revision": "49ad7884d72922cda937c4d3bd3e5ea3b606846a",
+        "build_epoch": 1794999295
+      },
+      "url": "https://github.com/DIBULI/Prism-Viewer/releases/download/v1.4.0/Prism-Viewer-1.4.0-windows-x64.zip"
+    },
+    {
+      "platform": "macos-arm64",
+      "name": "Prism-Viewer-1.4.0-macos-arm64.zip",
+      "bytes": 25879454,
+      "sha256": "df0171b06264640bf89ecbb504b81eff17a4c41d0fda90fcbfb1e8948de7c573",
+      "identity": {
+        "version": "1.4.0",
+        "revision": "49ad7884d72922cda937c4d3bd3e5ea3b606846a",
+        "build_epoch": 1794999295
+      },
+      "url": "https://github.com/DIBULI/Prism-Viewer/releases/download/v1.4.0/Prism-Viewer-1.4.0-macos-arm64.zip"
+    },
+    {
+      "platform": "linux-x64",
+      "name": "Prism-Viewer-1.4.0-linux-x64.tar.gz",
+      "bytes": 33732225,
+      "sha256": "ba615cde16cd9da643e64368cd15640385c80891739f220f43214e967d876996",
+      "identity": {
+        "version": "1.4.0",
+        "revision": "49ad7884d72922cda937c4d3bd3e5ea3b606846a",
+        "build_epoch": 1794999295
+      },
+      "url": "https://github.com/DIBULI/Prism-Viewer/releases/download/v1.4.0/Prism-Viewer-1.4.0-linux-x64.tar.gz"
+    },
+    {
+      "platform": "linux-arm64",
+      "name": "Prism-Viewer-1.4.0-linux-arm64.tar.gz",
+      "bytes": 31704589,
+      "sha256": "426ac13e4c6f67b36d7b88e84bdcb39db4051837aeb3aeab95c8e5d7c39f843f",
+      "identity": {
+        "version": "1.4.0",
+        "revision": "49ad7884d72922cda937c4d3bd3e5ea3b606846a",
+        "build_epoch": 1794999295
+      },
+      "url": "https://github.com/DIBULI/Prism-Viewer/releases/download/v1.4.0/Prism-Viewer-1.4.0-linux-arm64.tar.gz"
+    }
+  ],
+  "manifest_sha256": "ce421f586ab01b88b3cf17f62d623d50fb22f85cba0a2b8eb30d2fb3b7e1c918",
+  "release_revision": {
+    "version": "1.4.0",
+    "revision": "49ad7884d72922cda937c4d3bd3e5ea3b606846a",
+    "build_epoch": 1794999295
+  },
+  "limits": "Website update endpoint unchanged; hardware not accessed.",
+  "ci_tests": {
+    "windows": 76,
+    "macos": 79,
+    "linux_x64": 80,
+    "linux_arm64": 80,
+    "linux_package_smoke": 8
+  },
+  "workflow": 44289910834
+}
