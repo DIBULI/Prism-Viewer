@@ -78,6 +78,10 @@ if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/runtime_api.hpp")
   message(FATAL_ERROR
     "Bundled Prism Host SDK headers are missing under ${PRISM_USB_SDK_ROOT}")
 endif()
+if(NOT EXISTS "${PRISM_USB_SDK_INCLUDE_DIR}/prism/usb/exposure_group_runtime_api.hpp")
+  message(FATAL_ERROR
+    "21312V0 exposure groups require the matching Prism SDK headers and runtimes")
+endif()
 
 add_library(prism-viewer-sdk INTERFACE)
 target_compile_definitions(prism-viewer-sdk INTERFACE

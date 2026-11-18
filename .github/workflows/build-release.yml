@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           test "$(cat VERSION)" = 1.4.0
           grep -Fq 'project(prism_viewer VERSION 1.4.0 LANGUAGES CXX)' CMakeLists.txt
-          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = e3ee47360e96bf7771ec830b0ececa7fcca32185
+          test "$(git -C third_party/Prism-SDK rev-parse HEAD)" = 4390c39f4c3d0fa22ef959f41a1d5cfae2ac68f7
           test "$(cat third_party/Prism-SDK/VERSION)" = 1.4.0
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
@@ -85,7 +85,7 @@ jobs:
         shell: pwsh
         run: |
           $dll = "third_party/Prism-SDK/runtime/windows-x64/prism_usb_sdk.dll"
-          $expected = "c9b34c2ed32913807680f541a9ac0ae15c35acfcdcec13d268c70ec36b36ebb0"
+          $expected = "5ed4ae774fb1d0c02ae8954de7d59ee740bfaec870ba44e79c3ba2a9f259b989"
           $actual = (Get-FileHash -Algorithm SHA256 $dll).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
             throw "Bundled prism_usb_sdk.dll checksum mismatch"
@@ -94,6 +94,9 @@ jobs:
             [IO.File]::ReadAllBytes($dll))
           if (-not $contents.Contains('prism_usb_sdk_get_lidar_power_api')) {
             throw "Bundled SDK is missing the LiDAR power runtime extension"
+          }
+          if (-not $contents.Contains('prism_usb_sdk_get_exposure_group_api')) {
+            throw "Bundled SDK is missing the exposure-group runtime extension"
           }
           if (-not $contents.Contains(
               'camera exposure time must be 50..995000 us')) {
@@ -239,13 +242,13 @@ jobs:
             sdk_arch: linux-x64
             sdk_linkage: shared
             sdk_runtime: runtime/linux-x64/libprism_usb_sdk.so
-            sdk_sha256: 4f79ee6c89052e20b568a67af3e89bb5f873540060e83afa56d4f18c9693c8af
+            sdk_sha256: 10e77ab0929f4fb8238d1bb3d96214929db47526ae281b0521de40f1d4227863
           - package_arch: arm64
             runner: ubuntu-22.04-arm
             sdk_arch: linux-arm64
             sdk_linkage: static
             sdk_runtime: runtime/linux-arm64/libprism_usb_sdk.a
-            sdk_sha256: cd0f6fd2eb25b05e7ade5e6bd61934ebdfc73a9513553864749e3cddba876bdd
+            sdk_sha256: 98e00dff7c660858074ba1ba418e61b16e6a7e01440586fefd96ed81d4976f79
     runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     defaults:
