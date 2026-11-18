@@ -1,0 +1,12 @@
+{
+  "status": "Removed the initial Local Dataset instruction banner and its layout space; local macOS Viewer installed and UI verified.",
+  "revision": "3b9c6669897c8b3fdfaf65e9d2531f60dd6cc3b1",
+  "scope": "Only Viewer src/ui/main_window.cpp: empty summary initially hidden; real dataset loading/result summaries explicitly shown. No new tests added.",
+  "validation": "Build exit0 (session75797); existing window-layout-self-test PASS and three dataset-tab screenshots; relocatable bundle/signature/build identity passed; installed Local Dataset UI no longer shows old IMU file guidance.",
+  "installed": "/Users/xiangfuli/Downloads/Prism-Viewer 5.app",
+  "sha256": "3d7885712435ed03421330b22389b315b584c06c2cd4c77a174492caa7a71eac",
+  "evidence": "artifacts/viewer-dataset-hint-20261118/{build.log,layout.log,dataset-camera.png,prepared-unified.json,installed.json}. Previous application preserved in previous-viewer.bundle.",
+  "runtime": "Old Viewer was stopped/not recording, exited via UI before atomic install. Reopened updated app, auto-connected to existing 21312 USB, no START/STOP/OTA or device configuration action. Local Dataset empty page observed with banner removed.",
+  "publication": "Local-only change. GitHub release remains49ad788 from previous completed task.",
+  "next": "Current request complete."
+}
