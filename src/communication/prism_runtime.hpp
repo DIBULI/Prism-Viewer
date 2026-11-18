@@ -203,13 +203,14 @@ const char* sensorBoardErrorCodeName(prism::SensorBoardErrorCode code);
 
 #endif
 
-// Borrow samples from an already-started aggregate camera+IMU stream.
+// All products parse received IMU samples here, independently of whether
+// camera START or a separate IMU START owns the stream lifecycle.
 // No Client/control methods: cannot issue a second START/STOP.
-class AggregateImuObserver {
+class ImuSampleObserver {
  public:
-  explicit AggregateImuObserver(prism::ImuSampleHandler handler)
+  explicit ImuSampleObserver(prism::ImuSampleHandler handler)
       : handler_(std::move(handler)) {
-    if (!handler_) throw std::invalid_argument("aggregate IMU handler required");
+    if (!handler_) throw std::invalid_argument("IMU sample handler required");
   }
   bool handleFrame(const prism::Frame& frame) const {
     if (frame.type != prism::FrameType::ImuSample) return false;

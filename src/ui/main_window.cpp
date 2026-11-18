@@ -10184,11 +10184,7 @@ class MainWindow : public QMainWindow {
             }
           };
       prism_runtime::ImuStream imu_stream(client_, imu_handler);
-      prism_runtime::AggregateImuObserver aggregate_imu(imu_handler);
-      const auto handle_imu = [&](const prism::Frame& frame) {
-        return prism_viewer::handleCaptureImu(
-            capture_product, frame, aggregate_imu, imu_stream);
-      };
+      prism_runtime::ImuSampleObserver imu_samples(imu_handler);
       prism_runtime::LidarStream lidar_stream(
           client_, [this, requested_lidar_model, &pending_lidar_preview,
                    &received_lidar_points, &last_lidar_preview_post](
@@ -10544,7 +10540,7 @@ class MainWindow : public QMainWindow {
             }
           }
 
-          if (handle_imu(frame)) {
+          if (imu_samples.handleFrame(frame)) {
             continue;
           }
           if (lidar_stream.handleFrame(frame)) {
