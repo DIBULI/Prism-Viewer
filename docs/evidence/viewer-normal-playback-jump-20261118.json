@@ -1,0 +1,15 @@
+{
+  "status": "Removed local dataset playback speed selector and saved rate override; fixed Go button using stale uncommitted spin-box value. Installed and verified local Viewer1.4.0.",
+  "revision": "7af644274c8fc76655489785352070effbbc9b3e",
+  "commits": "5cc47ac removes speed UI/persistent setting;9f6141d interprets edited frame number before jump and covers typed-but-uncommitted input;7af6442 updates existing layout expectations.",
+  "cause": "Reproduced on previous local build: type298 while value239, clickGo stays239; Return commits298. With keyboard tracking disabled, macOS button does not necessarily move focus. interpretText before value() fixes button path.",
+  "validation": "Final build86644exit0; raw-dataset-ui/mixed-dataset-ui/dataset-playback-ui/regular+compactChinese layout all5PASS. Initial layout checks still expected removed control and failed; ctest.log retained, corrected expectations pass ctest-r2.log. Bundle35535 and atomic install passed.",
+  "installed": "/Users/xiangfuli/Downloads/Prism-Viewer 5.app",
+  "sha256": "c6c2aef562ed707696c81c23e81dcca70cf13c333b1b333ce07997c06f7caef8",
+  "ui": "Local app no longer exposes speed control. After user selected existing dataset, typed298 then clickedGo withoutReturn; cursor changed1->298 and decodedimages followed at298/741, cams322/160/160/322. Paused. No live capture/recording performed.",
+  "interruption": "During GUI verification QFileDialog path paste blocked in QFileSystemWatcher/opendir on mainthread; sample saved. Finder recovery tool not approved, no forcequit or restart executed. User manually selected directory and application became responsive; verification completed.",
+  "runtime": "Viewer89814/start2026-11-18 19:33:00, translocated07A54D0E-60CD-43EC-BFFE-F9B78B98559D. No ongoing build/controller.",
+  "evidence": "artifacts/viewer-normal-playback-20261118/{build-r2.log,ctest.log,ctest-r2.log,prepared-r2.json,installed.json,ui-timeout-sample.txt}; previous application preserved in previous-viewer.bundle.",
+  "scope": "Viewer local-only. Normal playback fixed1x, existing accelerated selftest internal only. Device firmware/config/power and dataset files unchanged; no GitHub release update this turn.",
+  "next": "Both user requests complete."
+}
