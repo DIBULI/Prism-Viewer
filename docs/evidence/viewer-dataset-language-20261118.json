@@ -1,0 +1,11 @@
+{
+  "status": "Replaced local dataset C/#/Delta abbreviations with plain camera/frame and timing labels; installed local Viewer1.4.0.",
+  "revision": "cdb1f8763fd7b3780de0c398040fb405c3f68681",
+  "ui": "Examples: 相机0：第125帧（当前时刻）; 相机1：第61帧（早333.3毫秒）; emptylane暂无图像. Unknown timing omits age. English updated too. Word wrap enabled.",
+  "validation": "Build98728exit0; existing mixed-dataset-ui and regular/compact Chinese layout tests passed3/3. Bundle45004 and install verified. Actual dataset loaded and played via GUI; confirmed both current/earlier labels, then paused.",
+  "installed": "/Users/xiangfuli/Downloads/Prism-Viewer 5.app",
+  "sha256": "46cf134ec4e2bca79aa76bc6cdf06881e34f89004c9c4aeaca84cfc30456fe6b",
+  "runtime": "Viewer86938/start2026-11-18 19:23:22, translocated88DBF99B-4A5E-4218-AC86-101E2EE841E6. No live capture or recording started; previous app backed up.",
+  "evidence": "artifacts/viewer-dataset-language-20261118/{build.log,ctest.log,prepared-unified.json,installed.json}. No new tests. Local only; GitHub release unchanged.",
+  "next": "User wording request complete."
+}
