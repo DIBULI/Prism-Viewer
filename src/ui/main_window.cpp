@@ -9015,15 +9015,13 @@ class MainWindow : public QMainWindow {
     return dataset_raw8_ ? raw_dataset_.timestamps.at(frame) : dataset_camera_entries_[0].at(frame).timestamp_us;
   }
 
-  void showRawDatasetFrame(size_t frame) {
+  void updateRawDatasetFrameLabels(size_t frame) {
     const auto time = raw_dataset_.timestamps.at(frame);
-    prism_viewer::ui::RawDatasetDecoder::Entries entries{};
     QStringList samples;
     for (size_t c = 0; c < 4; ++c) {
       const int index = raw_dataset_.display[frame][c];
       if (index >= 0) {
-        entries[c] = raw_dataset_.cameras[c][size_t(index)];
-        const auto& e = entries[c];
+        const auto& e = raw_dataset_.cameras[c][size_t(index)];
         samples << (raw_dataset_.ordinal_only?QStringLiteral("C%1 #%2").arg(c).arg(e.frame_id):
             QStringLiteral("C%1 #%2 Δ%3ms").arg(c).arg(e.frame_id).arg(double(time-e.timestamp_us)/1000.0, 0, 'f', 1));
         dataset_image_labels_[c]->setToolTip(uiText(
@@ -9036,27 +9034,42 @@ class MainWindow : public QMainWindow {
         samples << QStringLiteral("C%1 —").arg(c);
         dataset_image_labels_[c]->setToolTip(uiText("No current sample", "当前无有效帧"));
       }
-      const auto& previous = raw_dataset_requested_entries_[c];
-      const bool unchanged = index >= 0 && !dataset_images_[c].isNull() &&
-          previous.absolute_path == entries[c].absolute_path && previous.byte_offset == entries[c].byte_offset &&
-          previous.raw_crc32 == entries[c].raw_crc32;
-      if (!unchanged) {
-        dataset_images_[c] = {};
-        dataset_image_labels_[c]->clearImage(index >= 0 ? uiText("Decoding image…", "正在解码图像……") : uiText("No current sample / recording gap", "当前无帧／录制缺帧"));
-      }
     }
     dataset_frame_label_->setText(uiText("Time step %1/%2 | %3\n%4", "时间步 %1/%2 | %3\n%4")
         .arg(frame+1).arg(dataset_frame_count_).arg(raw_dataset_.ordinal_only?
             uiText("Ordinal browsing: missing/mixed timing; no synchronized grouping or timed playback",
                    "按帧序号浏览：存在未知或混合时标，不作为同步帧组，不按时间自动播放"):
             describeDatasetTimestamp(time), samples.join(" · ")));
-    if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Decoding image…", "正在解码图像……"), {true, true, true, true});
+  }
+
+  void showRawDatasetFrame(size_t frame) {
+    prism_viewer::ui::RawDatasetDecoder::Entries entries{};
+    bool cleared_image = false;
+    for (size_t c = 0; c < entries.size(); ++c) {
+      const int index = raw_dataset_.display[frame][c];
+      if (index >= 0) {
+        entries[c] = raw_dataset_.cameras[c][size_t(index)];
+        // Keep the last complete image while its replacement decodes. Its
+        // metadata is replaced with the image, never with a pending request.
+        if (dataset_images_[c].isNull())
+          dataset_image_labels_[c]->clearImage(uiText("Decoding image…", "正在解码图像……"));
+      } else {
+        // A known recording gap must not retain an old image as valid data.
+        dataset_images_[c] = {};
+        dataset_image_labels_[c]->clearImage(uiText("No current sample / recording gap", "当前无帧／录制缺帧"));
+        dataset_image_labels_[c]->setToolTip(uiText("No current sample", "当前无有效帧"));
+        cleared_image = true;
+      }
+    }
+    if (cleared_image && dataset_camera_zoom_dialog_->isVisible())
+      dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Recorded camera images", "相机录制图像"), {true, true, true, true});
     if (!raw_dataset_decoder_) raw_dataset_decoder_ = std::make_unique<prism_viewer::ui::RawDatasetDecoder>(
         [this](prism_viewer::ui::RawDatasetDecoder::Result result) {
           post([this, result = std::move(result)] {
             if (!dataset_raw8_ || result.generation != raw_dataset_generation_) return;
             raw_dataset_ready_generation_ = result.generation;
             dataset_images_ = result.images;
+            updateRawDatasetFrameLabels(size_t(dataset_current_frame_));
             for (size_t c = 0; c < 4; ++c) {
               if (!result.errors[c].isEmpty()) {
                 dataset_image_labels_[c]->clearImage(uiText("Image read/decode error: %1", "图像读取／解码错误：%1").arg(result.errors[c]));
@@ -9066,7 +9079,6 @@ class MainWindow : public QMainWindow {
             if (dataset_camera_zoom_dialog_->isVisible()) dataset_camera_zoom_dialog_->setImageSet(dataset_images_, dataset_camera_zoom_dialog_->selectedCamera(), uiText("Recorded camera images", "相机录制图像"), {true, true, true, true});
           });
         });
-    raw_dataset_requested_entries_ = entries;
     raw_dataset_decoder_->submit(++raw_dataset_generation_, std::move(entries));
   }
 
@@ -10859,7 +10871,6 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<prism_viewer::ui::RawDatasetDecoder> raw_dataset_decoder_;
   uint64_t raw_dataset_generation_ = 0;
   uint64_t raw_dataset_ready_generation_ = 0;
-  prism_viewer::ui::RawDatasetDecoder::Entries raw_dataset_requested_entries_{};
   bool rosbag_export_running_ = false;
   QPlainTextEdit* meta_text_ = nullptr;
   QTimer* profile_meta_timer_ = nullptr;
