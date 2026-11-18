@@ -11992,7 +11992,7 @@ int runViewerApplication(int argc, char** argv) {
         QStringLiteral("datasetMetadataDetails"));
     const bool controls_ok =
         dataset_playback_button != nullptr &&
-        dataset_playback_speed != nullptr &&
+        dataset_playback_speed == nullptr &&
         dataset_playback_position != nullptr &&
         dataset_frame_slider != nullptr &&
         dataset_frame_jump_spin != nullptr &&
@@ -12118,7 +12118,7 @@ int runViewerApplication(int argc, char** argv) {
         QStringLiteral("datasetMetadataDetails"));
     const bool playback_controls_ok =
         dataset_playback_button != nullptr &&
-        dataset_playback_speed != nullptr &&
+        dataset_playback_speed == nullptr &&
         dataset_playback_position != nullptr &&
         dataset_frame_label != nullptr &&
         dataset_frame_slider != nullptr &&
@@ -12129,8 +12129,6 @@ int runViewerApplication(int argc, char** argv) {
         dataset_metadata_details != nullptr &&
         !dataset_metadata_toggle->isChecked() &&
         !dataset_metadata_details->isVisible() &&
-        dataset_playback_speed->count() == 6 &&
-        dataset_playback_speed->currentData().toDouble() > 0.0 &&
         !dataset_playback_button->isEnabled() &&
         dataset_frame_jump_spin->minimum() == 1 &&
         dataset_frame_jump_spin->maximum() == 1 &&
@@ -12335,14 +12333,14 @@ int runViewerApplication(int argc, char** argv) {
                   << " visible=" << previews[0]->isVisible()
                   << previews[1]->isVisible() << previews[2]->isVisible()
                   << " controls=" << dataset_playback_button->isVisible()
-                  << dataset_playback_speed->isVisible()
+                  << (dataset_playback_speed == nullptr)
                   << dataset_playback_position->isVisible()
                   << dataset_metadata_toggle->isVisible() << '\n';
         dataset_overview_ok = dataset_overview_ok &&
             preview->width() >= dataset_sensor_tabs->width() * 0.85 &&
             preview->height() >= dataset_sensor_tabs->height() * 0.55 &&
             dataset_playback_button->isVisible() &&
-            dataset_playback_speed->isVisible() &&
+            dataset_playback_speed == nullptr &&
             dataset_playback_position->isVisible() &&
             dataset_metadata_toggle->isVisible();
         if (screenshot_arg >= 0 && screenshot_arg + 1 < command_line.size()) {
