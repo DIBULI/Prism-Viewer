@@ -119,7 +119,7 @@ void Installer::extracted(){
   connect(poll,&QTimer::timeout,this,[this,poll,attempts]{
     if(QFile::exists(work_+"/ready")){
       poll->stop();if(!idle_()){fail("Device became active; Viewer was not closed");return;}
-      handoff_=true;result_("Installing update; Viewer will restart. Previous package retained at its backup path.");
+      handoff_=true;result_("Installing update; Viewer will restart. Old program files will be cleaned after successful startup.");
       QCoreApplication::quit();
     }else if(++*attempts>=50){poll->stop();fail("Update helper did not become ready; Viewer unchanged");}
   });poll->start();

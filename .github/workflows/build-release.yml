@@ -204,6 +204,8 @@ jobs:
             --output (Join-Path $package 'BUILD_IDENTITY.json')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          python scripts/package_inventory.py $package --checksums
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Push-Location $package
           Get-ChildItem -Recurse -File |
             Sort-Object FullName |
@@ -214,6 +216,8 @@ jobs:
             } | Set-Content -Encoding utf8 "SHA256SUMS.txt"
           Pop-Location
 
+          python scripts/package_inventory.py $package --verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path $package `
             -DestinationPath "Prism-Viewer-1.4.0-windows-x64.zip"
           $env:QT_QPA_PLATFORM = 'offscreen'
@@ -540,6 +544,7 @@ jobs:
             "${{ needs.package-metadata.outputs.revision }}" "${{ needs.package-metadata.outputs.epoch }}" \
             --output "$package/BUILD_IDENTITY.json"
 
+          python3 scripts/package_inventory.py "$package" --checksums
           checksum_manifest="$RUNNER_TEMP/prism-viewer-SHA256SUMS.txt"
           (
             cd "$package"
@@ -548,6 +553,7 @@ jobs:
               | xargs -0 sha256sum
           ) > "$checksum_manifest"
           mv "$checksum_manifest" "$package/SHA256SUMS.txt"
+          python3 scripts/package_inventory.py "$package" --verify
           tar -C "$RUNNER_TEMP" -czf \
             "$GITHUB_WORKSPACE/Prism-Viewer-1.4.0-linux-$LINUX_PACKAGE_ARCH.tar.gz" \
             "$(basename "$package")"
@@ -835,7 +841,9 @@ jobs:
           python3 scripts/verify_build_identity.py "$executable" \
             "${{ needs.package-metadata.outputs.revision }}" "${{ needs.package-metadata.outputs.epoch }}" \
             --output "$app/Contents/Resources/BUILD_IDENTITY.json"
+          python3 scripts/package_inventory.py "$app"
           codesign --force --deep --sign - "$app"
+          python3 scripts/package_inventory.py "$app" --verify
           scripts/verify_macos_bundle.sh "$app"
           QT_QPA_PLATFORM=offscreen "$executable" --tls-self-test
           QT_QPA_PLATFORM=offscreen \

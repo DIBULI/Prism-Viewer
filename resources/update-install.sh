@@ -38,4 +38,7 @@ while test ! -f "$work/started"; do
   count=$((count+1));sleep 1
 done
 printf installed >"$work/result"
-# Retain the old package as a recovery copy; never remove user files.
+# Startup is committed. Cleanup must never turn success into a rollback.
+if ! "$target/$relative" --cleanup-update-backup "$backup" "$work"; then
+  printf 'Old package cleanup deferred; update remains installed\n' >"$work/cleanup-warning.txt"
+fi

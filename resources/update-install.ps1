@@ -66,3 +66,11 @@ try {
   if($parentExited -and !$restored -and !(Test-Path -LiteralPath $Backup) -and (Test-Path -LiteralPath (Join-Path $Target $Relative))){Start-Process -FilePath (Join-Path $Target $Relative) -WorkingDirectory $launchDirectory}
   exit 1
 }
+# Outside rollback handling: cleanup failure cannot revert a running new version.
+try {
+  $cleanup=Start-Process -FilePath (Join-Path $Target $Relative) -WorkingDirectory $launchDirectory -ArgumentList @('--cleanup-update-backup',('"'+$Backup+'"'),('"'+$Work+'"')) -PassThru
+  if(!$cleanup.WaitForExit(30000)) {throw 'Old package cleanup is still pending'}
+  if($cleanup.ExitCode -ne 0) {throw 'Old package cleanup deferred'}
+} catch {
+  $_ | Out-String | Set-Content -LiteralPath (Join-Path $Work 'cleanup-warning.txt')
+}

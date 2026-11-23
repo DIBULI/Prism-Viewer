@@ -238,6 +238,7 @@ add_executable(prism-viewer
   src/ui/viewer_update_dialog.cpp
   src/update/release.cpp
   src/update/install.cpp
+  src/update/cleanup.cpp
   src/ui/preview_image_decoder.cpp
   src/ui/rk_dataset_dialog.cpp
   src/ui/wifi_hotspot_panel.cpp
@@ -632,7 +633,9 @@ if(BUILD_TESTING)
   target_link_libraries(viewer-update-download-test PRIVATE ${QT_PACKAGE}::Widgets ${QT_PACKAGE}::Network)
   add_test(NAME viewer-update-download COMMAND viewer-update-download-test)
   set_tests_properties(viewer-update-download PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
-  add_executable(update-process-fixture tests/update_process_fixture.cpp)
+  add_executable(update-process-fixture tests/update_process_fixture.cpp src/update/cleanup.cpp)
+  target_include_directories(update-process-fixture PRIVATE src)
+  target_link_libraries(update-process-fixture PRIVATE ${QT_PACKAGE}::Core)
   target_compile_features(update-process-fixture PRIVATE cxx_std_17)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
@@ -647,6 +650,9 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_install_test.py"
       "${CMAKE_CURRENT_SOURCE_DIR}/resources" $<TARGET_FILE:update-process-fixture>)
     set_tests_properties(viewer-update-install PROPERTIES TIMEOUT 100)
+    add_test(NAME viewer-update-cleanup COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_cleanup_test.py" $<TARGET_FILE:update-process-fixture>)
+    set_tests_properties(viewer-update-cleanup PROPERTIES TIMEOUT 30)
     add_test(NAME viewer-update-startup COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_startup_test.py" $<TARGET_FILE:prism-viewer>)
     set_tests_properties(viewer-update-startup PROPERTIES TIMEOUT 45

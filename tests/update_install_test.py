@@ -1,7 +1,9 @@
 """Exercise the shipped replacement helper only in fresh temporary packages."""
-import os,shutil,subprocess,sys,tempfile,time
+import json,os,shutil,subprocess,sys,tempfile,time
 from pathlib import Path
 resources=Path(sys.argv[1]);fixture=Path(sys.argv[2]).resolve()
+sys.path.insert(0,str(resources.parent/'scripts'))
+from package_inventory import write_inventory
 def wait(path,process,seconds=12):
     until=time.monotonic()+seconds
     while not path.exists():
@@ -21,15 +23,26 @@ def lock_directory(path):
     assert handle!=wintypes.HANDLE(-1).value,ctypes.get_last_error()
     return lambda: kernel.CloseHandle(handle)
 
-scenarios=['success','rollback','cancel']
+scenarios=['success','success-personal-files','missing-inventory','invalid-inventory','rollback','cancel']
 if os.name=='nt':scenarios+=['transient-lock','persistent-lock']
 for scenario in scenarios:
     with tempfile.TemporaryDirectory(prefix='prism updater space-') as folder:
-        base=Path(folder);target=base/'Viewer installed';stage=base/'new package';work=base/'prism-viewer-update-test';backup=base/'old backup'
-        for p in (target,stage,work):p.mkdir()
+        base=Path(folder);target=base/'Viewer installed';stage_root=base/'.prism-viewer-stage-ABC123';stage=stage_root/'extract/new package';work=base/'prism-viewer-update-test';backup=base/'Viewer installed.backup-ABC123'
+        for p in (target,stage,work):p.mkdir(parents=True)
         relative='fixture.exe' if os.name=='nt' else 'fixture'
         for p in (target,stage):shutil.copy2(fixture,p/relative)
-        (target/'user-data.txt').write_text('keep me')
+        (target/'lib').mkdir();(target/'lib/old-library').write_bytes(b'old binary')
+        write_inventory(target)
+        if scenario=='missing-inventory':(target/'PRISM_PACKAGE_FILES.json').unlink()
+        if scenario=='invalid-inventory':
+            inventory=json.loads((target/'PRISM_PACKAGE_FILES.json').read_text())
+            inventory['files'].append('../outside.txt')
+            (target/'PRISM_PACKAGE_FILES.json').write_text(json.dumps(inventory))
+        (base/'outside.txt').write_text('outside unchanged')
+        personal=scenario!='success'
+        if personal:
+            (target/'user-data.txt').write_text('keep me')
+            (target/'lib/user-data.txt').write_text('nested user data')
         if scenario=='rollback':(stage/'fail-start').touch()
         parent=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],cwd=target)
         args=[str(parent.pid),str(target),str(stage),str(backup),relative,str(work)]
@@ -41,7 +54,7 @@ for scenario in scenarios:
         unlock=None
         try:
             wait(work/'ready',helper)
-            assert (target/'user-data.txt').read_text()=='keep me' and not backup.exists()
+            assert (target/relative).exists() and not backup.exists()
             if scenario.endswith('-lock'):unlock=lock_directory(target)
             if scenario=='cancel':(work/'cancelled').touch()
             parent.terminate();parent.wait(timeout=5)
@@ -52,15 +65,26 @@ for scenario in scenarios:
                 assert (target/'user-data.txt').read_text()=='keep me'
                 unlock();unlock=None
             stdout,stderr=helper.communicate(timeout=25)
-            if scenario in ('success','transient-lock'):
+            if scenario in ('success','success-personal-files','transient-lock','missing-inventory','invalid-inventory'):
                 assert helper.returncode==0,(stdout,stderr)
                 assert (work/'result').read_text()=='installed'
-                assert (backup/'user-data.txt').read_text()=='keep me'
+                if personal:
+                    assert (backup/'user-data.txt').read_text()=='keep me'
+                    assert (backup/'lib/user-data.txt').read_text()=='nested user data'
                 assert (target/relative).exists() and not stage.exists()
+                if scenario in ('missing-inventory','invalid-inventory'):
+                    assert (backup/relative).exists() and (work/'cleanup-warning.txt').exists()
+                else:
+                    assert not (backup/relative).exists() and not (backup/'lib/old-library').exists()
+                    assert not stage_root.exists()
+                    result=json.loads((work/'cleanup.json').read_text())
+                    assert result['status']==('personal-files-preserved' if personal else 'cleaned'),result
+                    assert backup.exists()==personal
             elif scenario=='rollback':
                 assert helper.returncode!=0
                 assert (work/'result').read_text()=='rollback'
                 assert (target/'user-data.txt').read_text()=='keep me'
+                assert (target/'lib/old-library').exists() and not (work/'cleanup.json').exists()
                 until=time.monotonic()+5
                 while not(target/'started-old').exists():
                     assert time.monotonic()<until
@@ -74,6 +98,7 @@ for scenario in scenarios:
             if unlock:unlock()
             for p in (parent,helper):
                 if p.poll() is None:p.kill();p.wait()
+        assert (base/'outside.txt').read_text()=='outside unchanged'
         if scenario=='persistent-lock':
             until=time.monotonic()+5
             while not(target/'started-old').exists():
