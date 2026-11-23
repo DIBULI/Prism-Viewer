@@ -3467,9 +3467,38 @@ class MainWindow : public QMainWindow {
     add_sensor_tab(dataset_images_group, uiText("Camera", "相机"));
     add_sensor_tab(dataset_imu_group, QStringLiteral("IMU"));
     add_sensor_tab(dataset_lidar_group, QStringLiteral("LiDAR"));
+    auto* dataset_gnss_group = new QGroupBox(QStringLiteral("RTK / GNSS"),dataset_sensor_tabs_);
+    dataset_gnss_group->setObjectName(QStringLiteral("datasetGnssTab"));
+    auto* dataset_gnss_layout = new QVBoxLayout(dataset_gnss_group);
+    dataset_gnss_status_ = new QLabel(dataset_gnss_group);
+    dataset_gnss_status_->setObjectName(QStringLiteral("datasetGnssPlaybackStatus"));
+    dataset_gnss_status_->setWordWrap(true);dataset_gnss_layout->addWidget(dataset_gnss_status_);
+    dataset_gnss_seek_ = new QSlider(Qt::Horizontal,dataset_gnss_group);
+    dataset_gnss_seek_->setObjectName(QStringLiteral("datasetGnssSeek"));
+    dataset_gnss_seek_->setAccessibleName(uiText("RTK / GNSS playback position","RTK / GNSS 回放位置"));
+    dataset_gnss_layout->addWidget(dataset_gnss_seek_);
+    dataset_gnss_view_ = new prism_viewer::ui::GnssVisualization(dataset_gnss_group);
+    dataset_gnss_view_->setPlaybackMode();dataset_gnss_layout->addWidget(dataset_gnss_view_,1);
+    add_sensor_tab(dataset_gnss_group,QStringLiteral("RTK / GNSS"));
+    connect(dataset_gnss_seek_,&QSlider::valueChanged,this,[this](int index){
+      const auto& rows=dataset_playback_data_.gnss_observations;
+      if(index<0||size_t(index)>=rows.size())return;
+      seekDatasetPlaybackToTimestamp(rows[size_t(index)].timestamp_us);
+      if(!dataset_gnss_independent_view_) {
+        const auto& events=activeDatasetTimeline();
+        for(size_t i=dataset_playback_cursor_;i>0;--i)if(events[i-1].type==DatasetPlaybackEventType::CameraFrame){
+          dispatchDatasetPlaybackEvent(events[i-1]);break;
+        }
+      }
+      if(dataset_playback_active_)restartDatasetPlaybackClock();
+      updateDatasetPlaybackControls();
+    });
     dataset_layout->addWidget(dataset_sensor_tabs_, 1);
     connect(dataset_sensor_tabs_, &QTabWidget::currentChanged, this,
-            [this](int) { updateVisualizationActivity(); });
+            [this](int index) {
+              selectDatasetClock(index);
+              updateVisualizationActivity();
+            });
 
     dataset_details_ = new QPlainTextEdit(dataset_page_);
     dataset_details_->setObjectName(QStringLiteral("datasetMetadataDetails"));
@@ -3856,7 +3885,7 @@ class MainWindow : public QMainWindow {
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) {
               showDatasetFrame(frame);
-              if (!(dataset_raw8_ && raw_dataset_.ordinal_only) && frame >= 0 &&
+              if (!dataset_gnss_independent_view_ && !(dataset_raw8_ && raw_dataset_.ordinal_only) && frame >= 0 &&
                   static_cast<size_t>(frame) < dataset_frame_count_) {
                 seekDatasetPlaybackToTimestamp(
                     datasetFrameTimestamp(size_t(frame)));
@@ -4082,6 +4111,42 @@ class MainWindow : public QMainWindow {
     return chose&&reported&&QFileInfo::exists(QDir(destination).filePath(QStringLiteral("export.json")));
   }
 
+  bool runGnssPlaybackSelfTest(const QString& directory) {
+    loadRecordedDataset(directory,false);
+    if(dataset_metadata_only_ || dataset_playback_data_.gnss_observations.size()!=8) return false;
+    tabs_->setCurrentWidget(dataset_page_);dataset_sensor_tabs_->setCurrentIndex(3);
+    selectDatasetClock(3);
+    auto* gga=dataset_gnss_view_->findChild<QLabel*>("gnssPosition");
+    auto* rtk=dataset_gnss_view_->findChild<QLabel*>("rtkReceiverPosition");
+    if(!gga||!rtk||dataset_sensor_tabs_->count()!=4||!dataset_playback_button_->isEnabled())return false;
+    auto seek=[&](int index){dataset_gnss_seek_->setValue(index==0?1:0);dataset_gnss_seek_->setValue(index);};
+    seek(1);if(!gga->text().contains("FLOAT"))return false;
+    seek(2);if(!gga->text().contains("FIX"))return false;
+    seek(3);if(gga->text().contains("Lat "))return false;
+    seek(4);if(!rtk->text().contains("NARROW_FLOAT")||!rtk->text().contains("2400:200000"))return false;
+    seek(5);if(!rtk->text().contains("NARROW_INT"))return false;
+    seek(0);if(!gga->text().contains("SINGLE")||rtk->text().contains("NARROW_INT"))return false;
+    const auto image_before=dataset_current_frame_;
+    dataset_playback_button_->click();
+    if(!dataset_playback_active_)return false;
+    dataset_playback_anchor_wall_time_-=std::chrono::seconds(10);
+    processDatasetPlaybackEvents();
+    if(dataset_playback_active_||dataset_gnss_applied_!=8||dataset_gnss_seek_->value()!=7)return false;
+    if(dataset_gnss_independent_view_&&dataset_current_frame_!=image_before)return false;
+    seek(5);dataset_playback_button_->click();dataset_playback_button_->click();
+    if(dataset_playback_active_)return false;
+    const auto paused=dataset_playback_cursor_;processDatasetPlaybackEvents();
+    if(paused!=dataset_playback_cursor_)return false;
+    // Reload while the independent tab is already selected must reselect its clock.
+    loadRecordedDataset(directory,false);dataset_sensor_tabs_->setCurrentIndex(3);selectDatasetClock(3);
+    if(dataset_gnss_independent_view_!=dataset_playback_data_.gnss_independent)return false;
+    seek(0);if(!gga->text().contains("SINGLE"))return false;
+    if(const char* shot=std::getenv("PRISM_GNSS_PLAYBACK_SCREENSHOT")){
+      show();QApplication::processEvents();grab().save(QString::fromUtf8(shot));
+    }
+    return true;
+  }
+
   bool runDatasetPlaybackSelfTest(const QString& directory,
                                   QString* report) {
     loadRecordedDataset(directory, false);
@@ -4149,17 +4214,19 @@ class MainWindow : public QMainWindow {
         dataset_playback_data_.onboard_imus[1].size() == 1u &&
         dataset_playback_data_.lidar_batches.size() == 1u &&
         dataset_playback_data_.lidar_imu_samples.size() == 1u &&
-        dataset_playback_data_.timeline.size() == 6u;
+        dataset_playback_data_.gnss_observations.size() == 1u &&
+        !dataset_playback_data_.gnss_independent &&
+        activeDatasetTimeline().size() == 7u;
 
     bool events_dispatched = streams_loaded;
     if (events_dispatched) {
       resetDatasetPlaybackVisualization();
       dataset_playback_cursor_ = 0u;
-      for (const auto& event : dataset_playback_data_.timeline) {
+      for (const auto& event : activeDatasetTimeline()) {
         events_dispatched = dispatchDatasetPlaybackEvent(event) &&
                             events_dispatched;
       }
-      dataset_playback_cursor_ = dataset_playback_data_.timeline.size();
+      dataset_playback_cursor_ = activeDatasetTimeline().size();
       updateDatasetPlaybackPositionLabel();
     }
 
@@ -4221,9 +4288,9 @@ class MainWindow : public QMainWindow {
     const auto rate_before_switch = dataset_playback_rate_;
     const auto counts_before_switch = dataset_playback_imu_counts_;
     const auto position_before_switch = dataset_playback_position_label_->text();
-    bool tab_switch_ok = dataset_sensor_tabs_->count() == 3;
+    bool tab_switch_ok = dataset_sensor_tabs_->count() == 4;
     tabs_->setCurrentWidget(dataset_page_);
-    for (int tab : {1, 2, 0}) {
+    for (int tab : {1, 2, 3, 0}) {
       dataset_sensor_tabs_->setCurrentIndex(tab);
       tab_switch_ok = tab_switch_ok &&
           dataset_playback_cursor_ == cursor_before_switch &&
@@ -4245,7 +4312,7 @@ class MainWindow : public QMainWindow {
         info << "format=prism-raw8-dataset-v1\ndevice_model=415RSV0\ncodec=raw8-rice-lossless\n"; }
       loadRecordedDataset(fromFilesystemPath(model_root), false);
       models_ok = models_ok && dataset_metadata_only_ && dataset_frame_count_ == 0 &&
-          dataset_playback_data_.timeline.empty() &&
+          activeDatasetTimeline().empty() &&
           dataset_summary_label_->text().contains(QStringLiteral("415RSV0")) &&
           !dataset_playback_button_->isEnabled() && !dataset_export_rosbag_button_->isEnabled();
       loadRecordedDataset(directory, false);
@@ -4276,7 +4343,7 @@ class MainWindow : public QMainWindow {
                                          : QStringLiteral("FAIL"))
                     .arg(frame_jump_ok ? QStringLiteral("PASS")
                                        : QStringLiteral("FAIL"))
-                    .arg(dataset_playback_data_.timeline.size())
+                    .arg(activeDatasetTimeline().size())
                     .arg(dataset_playback_lidar_points_)
                     .arg(tab_switch_ok ? QStringLiteral("PASS")
                                        : QStringLiteral("FAIL"));
@@ -7906,10 +7973,25 @@ class MainWindow : public QMainWindow {
            !dataset_playback_data_.lidar_imu_samples.empty();
   }
 
+  void selectDatasetClock(int tab) {
+    const bool independent = dataset_playback_data_.gnss_independent && tab == 3;
+    if (independent == dataset_gnss_independent_view_) return;
+    setDatasetPlaybackActive(false);
+    dataset_gnss_independent_view_ = independent;
+    dataset_playback_cursor_ = 0;
+    resetDatasetPlaybackVisualization();
+    updateDatasetPlaybackControls();
+    updateDatasetPlaybackPositionLabel();
+  }
+
+  const std::vector<DatasetPlaybackEvent>& activeDatasetTimeline() const {
+    return dataset_gnss_independent_view_?dataset_playback_data_.gnss_timeline:dataset_playback_data_.timeline;
+  }
+
 
   void updateDatasetPlaybackControls() {
-    const bool has_frames = dataset_frame_count_ != 0u;
-    const bool can_play = !dataset_playback_data_.timeline.empty() &&
+    const bool has_frames = dataset_frame_count_ != 0u && !dataset_gnss_independent_view_;
+    const bool can_play = !activeDatasetTimeline().empty() &&
                           !worker_running_ && !rosbag_export_running_;
     if (!can_play && dataset_playback_active_) {
       dataset_playback_active_ = false;
@@ -7927,11 +8009,12 @@ class MainWindow : public QMainWindow {
                                  : uiText("Play", "播放"));
     dataset_frame_jump_spin_->setEnabled(has_frames);
     dataset_frame_jump_button_->setEnabled(has_frames);
+    dataset_frame_slider_->setEnabled(has_frames);
   }
 
   void updateDatasetPlaybackPositionLabel() {
     if (dataset_playback_position_label_ == nullptr) return;
-    const size_t event_count = dataset_playback_data_.timeline.size();
+    const size_t event_count = activeDatasetTimeline().size();
     if (event_count == 0u) {
       dataset_playback_position_label_->setText(
           uiText("Timeline: -", "时间线：-"));
@@ -7945,15 +8028,18 @@ class MainWindow : public QMainWindow {
     }
     const size_t displayed = std::min(dataset_playback_cursor_, event_count);
     const uint64_t timestamp_us =
-        dataset_playback_data_.timeline[displayed - 1u].timestamp_us;
+        activeDatasetTimeline()[displayed - 1u].timestamp_us;
     dataset_playback_position_label_->setText(
         uiText("Timeline %1/%2 | %3", "时间线 %1/%2 | %3")
             .arg(displayed)
             .arg(event_count)
-            .arg(describeDatasetTimestamp(timestamp_us)));
+            .arg(dataset_gnss_independent_view_
+                ?uiText("RTK recording time %1 s","RTK 录制时间 %1 秒").arg(double(timestamp_us)/1e6,0,'f',3)
+                :describeDatasetTimestamp(timestamp_us)));
   }
 
   void resetDatasetPlaybackVisualization() {
+    resetDatasetGnssVisualization();
     dataset_playback_imu_counts_.fill(0u);
     dataset_playback_lidar_points_ = 0u;
     dataset_playback_lidar_imu_count_ = 0u;
@@ -8043,6 +8129,41 @@ class MainWindow : public QMainWindow {
           lidar_imu_playback_label_->text());
       dataset_lidar_imu_status_label_->setStyleSheet(
           lidar_imu_playback_label_->styleSheet());
+    }
+  }
+
+  void resetDatasetGnssVisualization() {
+    dataset_gnss_applied_=0;
+    if(!dataset_gnss_view_)return;
+    dataset_gnss_view_->reset();
+    const auto count=dataset_playback_data_.gnss_observations.size();
+    {const QSignalBlocker blocker(dataset_gnss_seek_);dataset_gnss_seek_->setRange(0,count?int(count-1):0);dataset_gnss_seek_->setValue(0);}
+    dataset_gnss_seek_->setEnabled(count!=0);
+    dataset_gnss_status_->setText(!count?uiText("No recorded RTK/GNSS observations","未录制到 RTK/GNSS 报文"):
+      dataset_playback_data_.gnss_independent
+      ?uiText("%1 recorded observations. RTK uses its own recording clock; select this tab and use Play/Pause or the slider. It is not aligned with camera/IMU time.",
+              "%1 条已录制报文。RTK 使用独立录制时间；选择本页后使用播放／暂停或拖动滑条，不与相机／IMU 时刻对齐。").arg(count)
+      :uiText("%1 recorded observations. Playback uses approximate reception time linked to IMU; receiver epochs are retained and are not replaced by this playback time.",
+              "%1 条已录制报文。按关联 IMU 的近似接收时间回放；保留接收机原始时标，不把回放时间当作测量时间。").arg(count));
+  }
+
+  void applyDatasetGnssObservation(size_t index,bool redraw=true) {
+    if(index>=dataset_playback_data_.gnss_observations.size())return;
+    const auto& row=dataset_playback_data_.gnss_observations[index];
+    prism::GnssObservations batch;batch.session=row.session;batch.cursor=row.sequence;
+    batch.device_monotonic_ms=row.received_ms;batch.gap=row.gap;
+    batch.records.push_back({row.sequence,row.received_ms,row.sentence});
+    dataset_gnss_view_->apply(batch,redraw);dataset_gnss_applied_=index+1;
+    if(redraw){const QSignalBlocker blocker(dataset_gnss_seek_);dataset_gnss_seek_->setValue(int(index));}
+  }
+
+  void seekDatasetGnss(uint64_t timestamp_us) {
+    resetDatasetGnssVisualization();
+    const auto& rows=dataset_playback_data_.gnss_observations;
+    for(size_t i=0;i<rows.size()&&rows[i].timestamp_us<=timestamp_us;++i)applyDatasetGnssObservation(i,false);
+    if(dataset_gnss_applied_){
+      const QSignalBlocker blocker(dataset_gnss_seek_);dataset_gnss_seek_->setValue(int(dataset_gnss_applied_-1));
+      dataset_gnss_view_->setPlaybackAge((timestamp_us-rows[dataset_gnss_applied_-1].timestamp_us)/1000);
     }
   }
 
@@ -8242,18 +8363,24 @@ class MainWindow : public QMainWindow {
       case DatasetPlaybackEventType::LidarImu:
         applyDatasetLidarImuSample(event.stream_index);
         return true;
+      case DatasetPlaybackEventType::GnssObservation:
+        applyDatasetGnssObservation(event.stream_index);
+        return true;
     }
     return false;
   }
 
   void seekDatasetPlaybackToTimestamp(uint64_t timestamp_us) {
-    dataset_playback_cursor_ =
-        firstDatasetPlaybackEventAfter(dataset_playback_data_, timestamp_us);
+    const auto& events=activeDatasetTimeline();
+    dataset_playback_cursor_=size_t(std::upper_bound(events.begin(),events.end(),timestamp_us,
+        [](uint64_t stamp,const DatasetPlaybackEvent& event){return stamp<event.timestamp_us;})-events.begin());
     if (worker_running_) {
       updateDatasetPlaybackPositionLabel();
       return;
     }
+    if(dataset_gnss_independent_view_){seekDatasetGnss(timestamp_us);updateDatasetPlaybackPositionLabel();return;}
     resetDatasetPlaybackVisualization();
+    if(!dataset_playback_data_.gnss_independent)seekDatasetGnss(timestamp_us);
     for (size_t sensor = 0; sensor < dataset_playback_data_.onboard_imus.size();
          ++sensor) {
       const auto& samples = dataset_playback_data_.onboard_imus[sensor];
@@ -8294,7 +8421,7 @@ class MainWindow : public QMainWindow {
 
   void resetDatasetPlaybackPosition() {
     dataset_playback_timer_->stop();
-    if (dataset_frame_count_ != 0u) {
+    if (dataset_frame_count_ != 0u && !dataset_gnss_independent_view_) {
       const QSignalBlocker blocker(dataset_frame_slider_);
       dataset_frame_slider_->setValue(0);
       showDatasetFrame(0);
@@ -8315,11 +8442,11 @@ class MainWindow : public QMainWindow {
   void scheduleDatasetPlaybackStep() {
     dataset_playback_timer_->stop();
     if (!dataset_playback_active_ ||
-        dataset_playback_cursor_ >= dataset_playback_data_.timeline.size()) {
+        dataset_playback_cursor_ >= activeDatasetTimeline().size()) {
       return;
     }
     const uint64_t next_timestamp_us =
-        dataset_playback_data_.timeline[dataset_playback_cursor_].timestamp_us;
+        activeDatasetTimeline()[dataset_playback_cursor_].timestamp_us;
     const auto now = std::chrono::steady_clock::now();
     const uint64_t elapsed_us = static_cast<uint64_t>(
         std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(
@@ -8341,21 +8468,20 @@ class MainWindow : public QMainWindow {
     const long double rounded_ms = std::ceil(remaining_us / 1000.0L);
     const int delay_ms = static_cast<int>(std::clamp<long double>(
         rounded_ms, 1.0L,
-        prism_viewer::dataset::kDatasetPlaybackMaximumDelayMs));
+        dataset_playback_data_.gnss_observations.empty()?prism_viewer::dataset::kDatasetPlaybackMaximumDelayMs:200));
     dataset_playback_timer_->start(delay_ms);
   }
 
   void restartDatasetPlaybackClock() {
     if (!dataset_playback_active_ ||
-        dataset_playback_cursor_ >= dataset_playback_data_.timeline.size()) {
+        dataset_playback_cursor_ >= activeDatasetTimeline().size()) {
       return;
     }
     dataset_playback_anchor_wall_time_ = std::chrono::steady_clock::now();
     dataset_playback_anchor_timestamp_us_ =
         dataset_playback_cursor_ == 0u
-            ? dataset_playback_data_.timeline[0].timestamp_us
-            : dataset_playback_data_
-                  .timeline[dataset_playback_cursor_ - 1u]
+            ? activeDatasetTimeline()[0].timestamp_us
+            : activeDatasetTimeline()[dataset_playback_cursor_ - 1u]
                   .timestamp_us;
     scheduleDatasetPlaybackStep();
   }
@@ -8383,12 +8509,12 @@ class MainWindow : public QMainWindow {
     constexpr size_t kMaximumEventsPerUiTurn = 4096u;
     size_t processed = 0u;
     while (dataset_playback_cursor_ <
-               dataset_playback_data_.timeline.size() &&
-           dataset_playback_data_.timeline[dataset_playback_cursor_]
+               activeDatasetTimeline().size() &&
+           activeDatasetTimeline()[dataset_playback_cursor_]
                    .timestamp_us <= due_timestamp_us &&
            processed < kMaximumEventsPerUiTurn) {
       if (!dispatchDatasetPlaybackEvent(
-              dataset_playback_data_.timeline[dataset_playback_cursor_])) {
+              activeDatasetTimeline()[dataset_playback_cursor_])) {
         setDatasetPlaybackActive(false);
         return;
       }
@@ -8396,12 +8522,16 @@ class MainWindow : public QMainWindow {
       ++processed;
     }
     updateDatasetPlaybackPositionLabel();
-    if (dataset_playback_cursor_ >= dataset_playback_data_.timeline.size()) {
+    if(dataset_gnss_applied_ && (dataset_gnss_independent_view_ || !dataset_playback_data_.gnss_independent)) {
+      const auto stamp=dataset_playback_data_.gnss_observations[dataset_gnss_applied_-1].timestamp_us;
+      dataset_gnss_view_->setPlaybackAge(due_timestamp_us>stamp?(due_timestamp_us-stamp)/1000:0);
+    }
+    if (dataset_playback_cursor_ >= activeDatasetTimeline().size()) {
       setDatasetPlaybackActive(false);
       return;
     }
     if (processed == kMaximumEventsPerUiTurn &&
-        dataset_playback_data_.timeline[dataset_playback_cursor_]
+        activeDatasetTimeline()[dataset_playback_cursor_]
                 .timestamp_us <= due_timestamp_us) {
       dataset_playback_timer_->start(0);
       return;
@@ -8411,10 +8541,10 @@ class MainWindow : public QMainWindow {
 
   void setDatasetPlaybackActive(bool active) {
     dataset_playback_timer_->stop();
-    if (active && !dataset_playback_data_.timeline.empty() &&
+    if (active && !activeDatasetTimeline().empty() &&
         !worker_running_ && !rosbag_export_running_) {
       if (dataset_playback_cursor_ >=
-          dataset_playback_data_.timeline.size()) {
+          activeDatasetTimeline().size()) {
         resetDatasetPlaybackPosition();
       }
       dataset_playback_active_ = true;
@@ -8779,6 +8909,7 @@ class MainWindow : public QMainWindow {
           uiText("Invalid dataset metadata", "数据集元数据无效"), toQString(error.what()));
       return;
     }
+    dataset_gnss_independent_view_=false;
     const auto openImagesWithoutPlayback = [&]() {
       prism_viewer::dataset::ImageSequenceIndex index;
       try {
@@ -8868,12 +8999,12 @@ class MainWindow : public QMainWindow {
             .arg(raw_dataset_.mixed?uiText("JPEG + 12M RAW8 grayscale","JPEG + 12M RAW8 灰度"):
                 uiText("RAW8 lossless · grayscale display","RAW8 无损 · 灰度显示")));
         dataset_summary_label_->setText(dataset_summary_label_->text() + uiText(
-            " | IMU %1/%2 | LiDAR %3 batches | LiDAR IMU %4",
-            " | IMU %1/%2 | 雷达 %3 批 | 雷达 IMU %4")
+            " | IMU %1/%2 | LiDAR %3 batches | LiDAR IMU %4 | RTK/GNSS %5",
+            " | IMU %1/%2 | 雷达 %3 批 | 雷达 IMU %4 | RTK/GNSS %5")
             .arg(dataset_playback_data_.onboard_imus[0].size())
             .arg(dataset_playback_data_.onboard_imus[1].size())
             .arg(dataset_playback_data_.lidar_batches.size())
-            .arg(dataset_playback_data_.lidar_imu_samples.size()));
+            .arg(dataset_playback_data_.lidar_imu_samples.size()).arg(dataset_playback_data_.gnss_observations.size()));
         QString details = QStringLiteral("device_model=%1\nformat=%2\n").arg(toQString(identity.model),
             raw_dataset_.mixed?QStringLiteral("prism-mixed-dataset-v1"):QStringLiteral("prism-raw8-dataset-v1"));
         for (size_t c = 0; c < 4; ++c)
@@ -8974,7 +9105,7 @@ class MainWindow : public QMainWindow {
     }
 
     if (complete_frames == 0 && imu0.rows == 0 && imu1.rows == 0 &&
-        lidar.rows == 0 && lidar_imu.rows == 0) {
+        lidar.rows == 0 && lidar_imu.rows == 0 && !std::filesystem::exists(root/"gnss_observations.csv")) {
       if (openImagesWithoutPlayback()) return;
       if (show_errors) {
         QMessageBox::warning(
@@ -9021,10 +9152,10 @@ class MainWindow : public QMainWindow {
     dataset_path_label_->setText(directory);
     dataset_path_label_->setToolTip(directory);
     dataset_summary_label_->setText(
-        uiText("Model: %6 | Loaded %1 camera frame sets | IMU %2/%3 | LiDAR %4 | LiDAR IMU %5",
-               "机型：%6 | 已加载 %1 组相机帧 | IMU %2/%3 | 雷达 %4 批 | 雷达 IMU %5")
+        uiText("Model: %6 | Loaded %1 camera frame sets | IMU %2/%3 | LiDAR %4 | LiDAR IMU %5 | RTK/GNSS %7",
+               "机型：%6 | 已加载 %1 组相机帧 | IMU %2/%3 | 雷达 %4 批 | 雷达 IMU %5 | RTK/GNSS %7")
             .arg(dataset_frame_count_).arg(imu0.rows).arg(imu1.rows)
-            .arg(lidar.rows).arg(lidar_imu.rows).arg(toQString(identity.model)));
+            .arg(lidar.rows).arg(lidar_imu.rows).arg(toQString(identity.model)).arg(dataset_playback_data_.gnss_observations.size()));
     dataset_summary_label_->show();
     dataset_summary_label_->setStyleSheet(QStringLiteral(
         "background: #ecfdf3; color: #027a48; border: 1px solid #abefc6;"
@@ -9055,7 +9186,7 @@ class MainWindow : public QMainWindow {
                    .arg(lidar_imu.first_timestamp_us)
                    .arg(lidar_imu.last_timestamp_us);
     details += QStringLiteral("\nplayback timeline: events=%1")
-                   .arg(dataset_playback_data_.timeline.size());
+                   .arg(activeDatasetTimeline().size());
     dataset_details_->setPlainText(details);
 
     if (has_cameras && dataset_frame_count_ != 0) {
@@ -9093,8 +9224,8 @@ class MainWindow : public QMainWindow {
             has_cameras
                 ? uiText("No camera frames were recorded",
                          "没有录制到相机帧")
-                : uiText("No camera data (IMU-only dataset)",
-                         "无相机数据（仅 IMU 数据集）"));
+                : uiText("No camera data was recorded",
+                         "未录制相机数据"));
         image_label->setToolTip(QString());
       }
       dataset_camera_zoom_dialog_->hide();
@@ -9104,7 +9235,8 @@ class MainWindow : public QMainWindow {
     }
     dataset_sensor_tabs_->setCurrentIndex(
         dataset_frame_count_ != 0u ? 0 : (hasDatasetImuPlayback() ? 1 :
-                                         (hasDatasetLidarPlayback() ? 2 : 0)));
+                                         (hasDatasetLidarPlayback() ? 2 : (!dataset_playback_data_.gnss_observations.empty()?3:0))));
+    selectDatasetClock(dataset_sensor_tabs_->currentIndex());
     updateDatasetPlaybackControls();
     appendLog(QStringLiteral(
                   "Recorded dataset loaded: %1 mode=%2 frame_sets=%3")
@@ -11015,6 +11147,11 @@ class MainWindow : public QMainWindow {
   std::array<std::vector<DatasetImageEntry>, 4> dataset_camera_entries_{};
   std::array<QImage, 4> dataset_images_{};
   DatasetPlaybackData dataset_playback_data_;
+  prism_viewer::ui::GnssVisualization* dataset_gnss_view_=nullptr;
+  QLabel* dataset_gnss_status_=nullptr;
+  QSlider* dataset_gnss_seek_=nullptr;
+  size_t dataset_gnss_applied_=0;
+  bool dataset_gnss_independent_view_=false;
   size_t dataset_frame_count_ = 0;
   size_t dataset_playback_cursor_ = 0;
   int dataset_current_frame_ = 0;
@@ -12146,6 +12283,11 @@ int runViewerApplication(int argc, char** argv) {
     std::cout << "recording_usb_ui_self_test=" << (success ? "PASS" : "FAIL") << '\n';
     return success ? 0 : 26;
   }
+  const int gnss_test=command_line.indexOf(QStringLiteral("--gnss-playback-self-test"));
+  if(gnss_test>=0&&gnss_test+1<command_line.size()){
+    const bool ok=window.runGnssPlaybackSelfTest(command_line[gnss_test+1]);
+    std::cout<<"gnss_playback_ui_self_test="<<(ok?"PASS":"FAIL")<<'\n';return ok?0:29;
+  }
   const int playback_self_test = command_line.indexOf(
       QStringLiteral("--dataset-playback-self-test"));
   if (playback_self_test >= 0 &&
@@ -12464,7 +12606,8 @@ int runViewerApplication(int argc, char** argv) {
         main_tabs != nullptr && dataset_page != nullptr &&
         dataset_sensor_tabs != nullptr && dataset_camera_preview != nullptr &&
         dataset_imu_preview != nullptr && dataset_lidar_preview != nullptr &&
-        dataset_sensor_tabs->count() == 3 &&
+        dataset_sensor_tabs->count() == 4 &&
+        dataset_sensor_tabs->widget(3)->objectName() == QStringLiteral("datasetGnssTabScroll") &&
         dataset_sensor_tabs->widget(0)->objectName() ==
             QStringLiteral("datasetCameraTabScroll") &&
         dataset_sensor_tabs->widget(1)->objectName() ==

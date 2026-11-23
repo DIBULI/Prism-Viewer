@@ -15,6 +15,7 @@ enum class DatasetPlaybackEventType {
   OnboardImu1,
   LidarPoints,
   LidarImu,
+  GnssObservation,
 };
 
 struct DatasetPlaybackImuSample {
@@ -75,13 +76,24 @@ struct DatasetPlaybackEvent {
   size_t stream_index = 0;
 };
 
+struct DatasetPlaybackGnssObservation {
+  uint64_t timestamp_us = 0, elapsed_us = 0, session = 0, sequence = 0, received_ms = 0;
+  bool gap = false;
+  std::string sentence;
+};
+
 struct DatasetPlaybackData {
   std::array<std::vector<DatasetPlaybackImuSample>, 2> onboard_imus;
   std::vector<DatasetPlaybackLidarBatch> lidar_batches;
   std::vector<DatasetPlaybackLidarImuSample> lidar_imu_samples;
   std::vector<DatasetPlaybackEvent> timeline;
+  std::vector<DatasetPlaybackGnssObservation> gnss_observations;
+  // Without arrival anchors, retain the recording-relative GNSS clock in a
+  // separate timeline. Never merge it with camera/IMU measurement timestamps.
+  bool gnss_independent = false;
+  std::vector<DatasetPlaybackEvent> gnss_timeline;
 
-  bool empty() const noexcept { return timeline.empty(); }
+  bool empty() const noexcept { return timeline.empty() && gnss_timeline.empty(); }
 };
 
 bool loadDatasetPlaybackData(

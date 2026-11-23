@@ -168,14 +168,22 @@ GnssVisualization::GnssVisualization(QWidget* parent):QWidget(parent){
   sky_->onSelected=[this](QString id){for(int i=0;i<table_->rowCount();i++)if(table_->item(i,0)->text()==id){table_->selectRow(i);table_->scrollToItem(table_->item(i,0));break;}};
   auto* timer=new QTimer(this);connect(timer,&QTimer::timeout,this,[this]{refresh();});timer->start(200);refresh();
 }
-void GnssVisualization::apply(const prism::GnssObservations& b){if(model_.session&&model_.session!=b.session){gnss_plot_->fitTrack();rtk_plot_->fitTrack();}model_.apply(b);age_.restart();error_.clear();refresh();}
+void GnssVisualization::apply(const prism::GnssObservations& b,bool redraw){if(model_.session&&model_.session!=b.session){gnss_plot_->fitTrack();rtk_plot_->fitTrack();}model_.apply(b);age_.restart();playback_age_=0;error_.clear();if(redraw)refresh();}
+void GnssVisualization::setPlaybackMode(){playback_=true;playback_age_=0;findChild<QTabWidget*>()->setCurrentIndex(1);refresh();}
+void GnssVisualization::setPlaybackAge(uint64_t milliseconds){playback_age_=milliseconds;refresh();}
 void GnssVisualization::unavailable(const QString& s){error_=s;refresh();}
-void GnssVisualization::reset(){model_={};gnss_plot_->fitTrack();rtk_plot_->fitTrack();age_.invalidate();error_.clear();refresh();}
+void GnssVisualization::reset(){model_={};gnss_plot_->fitTrack();rtk_plot_->fitTrack();age_.invalidate();playback_age_=0;error_.clear();refresh();}
 void GnssVisualization::refresh(){
-  uint64_t now=model_.now+(age_.isValid()?uint64_t(age_.elapsed()):10000);auto satellites=model_.satellites(now);
-  status_->setText(!error_.isEmpty()?error_:uiText("%1 satellites · gaps %2 · live data only","%1 颗卫星 · 数据断档 %2 · 仅显示实测数据").arg(satellites.size()).arg(model_.gaps));
+  const uint64_t age=playback_?playback_age_:(age_.isValid()?uint64_t(age_.elapsed()):10000);
+  uint64_t now=model_.now+std::min(age,UINT64_MAX-model_.now);auto satellites=model_.satellites(now);
+  status_->setText(!error_.isEmpty()?error_:playback_
+      ?uiText("Recorded GNSS/RTK · %1 satellites · gaps %2 · invalid checksums %3",
+              "GNSS/RTK 回放 · %1 颗卫星 · 数据断档 %2 · 无效校验报文 %3").arg(satellites.size()).arg(model_.gaps).arg(model_.rejected)
+      :uiText("%1 satellites · gaps %2 · live data only","%1 颗卫星 · 数据断档 %2 · 仅显示实测数据").arg(satellites.size()).arg(model_.gaps));
   auto position=[&](const prism::gnss_plot::Position& p){
-    if(!p.valid||!prism::gnss_plot::fresh(now,p.ms,2000)||!error_.isEmpty())return uiText("No fresh valid solution; historical trajectory retained","暂无新鲜有效解；保留历史轨迹");
+    if(!p.valid||!prism::gnss_plot::fresh(now,p.ms,2000)||!error_.isEmpty())return
+        (playback_&&!p.source.empty()?QString::fromStdString(p.source+" · "+p.solution+" · "+p.epoch)+"\n":QString())+
+        uiText("No fresh valid solution; historical trajectory retained","暂无新鲜有效解；保留历史轨迹");
     if(!model_.origin.valid)return uiText("Waiting for the next valid position to set origin","等待下一条有效定位建立原点");
     auto xyz=model_.origin.project(p);
     return QString("%1 · %2 · %3\nLat %4°  Lon %5°  h %6 m\nE %7 m  N %8 m  U %9 m · %10 s")

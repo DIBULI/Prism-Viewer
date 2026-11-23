@@ -1,3 +1,4 @@
+#include "gnss_playback_fixture.hpp"
 #include "dataset/raw8_dataset.hpp"
 #include "dataset/raw8_recorder.hpp"
 #include "common/ui_text.hpp"
@@ -99,6 +100,16 @@ int main(int argc,char** argv) {
     QTemporaryDir temp;check(temp.isValid(),"temp");
     auto root=prism_viewer::common::toFilesystemPath(temp.path());
     auto info=fixture(root);
+    if(argc==3&&std::string(argv[1])=="--gnss-ui") {
+      QTemporaryDir data;check(data.isValid(),"temp GNSS");
+      const auto root=prism_viewer::common::toFilesystemPath(data.path());
+      fixture(root);
+      gnss_fixture::create(root);
+      QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--gnss-playback-self-test",data.path()});
+      check(process.waitForFinished(45000),"GNSS UI timeout");
+      std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();
+      check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"profile GNSS UI failed");return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--record-ui") {
       for(unsigned fps:{12u,24u,36u}){
         fixture(root,false,false,false,fps);

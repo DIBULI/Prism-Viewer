@@ -1,4 +1,5 @@
 #include "dataset/dataset_playback.hpp"
+#include "dataset/gnss_playback.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -343,6 +344,8 @@ int eventPriority(DatasetPlaybackEventType type) {
       return 3;
     case DatasetPlaybackEventType::LidarImu:
       return 4;
+    case DatasetPlaybackEventType::GnssObservation:
+      return 5;
   }
   return 5;
 }
@@ -409,6 +412,7 @@ bool loadDatasetPlaybackData(
       data->timeline.push_back({data->lidar_imu_samples[index].timestamp_us,
                                 DatasetPlaybackEventType::LidarImu, index});
     }
+    loadGnssPlayback(root, *data);
     std::stable_sort(
         data->timeline.begin(), data->timeline.end(),
         [](const DatasetPlaybackEvent& left,

@@ -146,5 +146,14 @@ int main(int argc,char** argv){
  b.records.clear();b.device_monotonic_ms=5001;w.apply(b);assert(table->rowCount()==0);
  w.unavailable("Disconnected");w.reset();noOld();app.processEvents();
  std::puts("RTK precision display: zh/en, FIX/FLOAT, axis order, missing/zero, invalid, expiry, gap, disconnect and reset passed");
+ // Local playback freezes while paused, and expires only as its clock advances.
+ w.setPlaybackMode();b.session=3;b.cursor=1;b.device_monotonic_ms=1000;
+ b.records={{1,1000,rtkSentence()}};w.apply(b);
+ QThread::msleep(2100);app.processEvents();assert(rtk->text().contains("North N 0.012"));
+ w.setPlaybackAge(2100);noOld();assert(rtk->text().contains("NARROW_INT"));
+ w.reset();assert(!rtk->text().contains("NARROW_INT"));
+ b.records={{1,1000,rtkSentence("0.012","0.034","0.056","NARROW_FLOAT")}};w.apply(b,false);w.setPlaybackAge(0);
+ assert(rtk->text().contains("NARROW_FLOAT")&&!rtk->text().contains("NARROW_INT"));
+ std::puts("Playback pause clock, explicit expiry and backwards seek reset passed");
  w.hide();zoomWidgets(app,argc>1?QString::fromUtf8(argv[1]):QString());return 0;
 }

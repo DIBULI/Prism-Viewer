@@ -147,6 +147,25 @@ These ASCII messages are not full-frequency binary observations, ephemerides
 or a complete CORS correction stream. Existing rover/base RTCM files contain
 only bytes actually delivered through their respective interfaces.
 
+Viewer 1.4.0 adds a local **RTK / GNSS** playback tab for 413GSV0, 415RSV0 and
+21312V0 recordings containing `gnss_observations.csv` and `.bin`. It replays the
+original checksummed GGA/ADRNAV reports, solution states, satellite reports and
+receiver-estimated precision; it does not solve positions from RTCM. Missing
+GNSS remains missing. Checksum failures and cache gaps do not become fixes.
+Playback keeps the original receiver epochs and separates trajectory segments
+at recorded discontinuities. Seeking backwards rebuilds only the prefix up to
+the selected time. Pausing freezes the recorded state, including freshness.
+
+When synchronized IMU arrival anchors cover every observation within two
+seconds, playback uses approximate reception time mapped to the sensor timeline,
+as the existing GNSS bag exporter does. This is **not measurement UTC**. Otherwise
+the RTK tab uses its own recording-relative clock: selecting it makes Play/Pause
+and its position slider control GNSS independently of images/IMU/LiDAR. RAW
+`host_elapsed_us` is not assumed to share the companion recorder's time origin.
+The UI identifies which time policy is in use. Original dataset files are never
+modified. Separate receiver summary CSVs alone are not used to synthesize raw
+reports or satellite observations.
+
 ### Receiver binary observations, ephemerides and CORS
 
 Updated Web and Viewer record the additional `receiver-cors-bytes-v1` stream:
