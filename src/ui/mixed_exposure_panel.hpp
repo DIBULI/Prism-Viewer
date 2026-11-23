@@ -70,11 +70,18 @@ class MixedExposurePanel final : public QWidget {
   explicit MixedExposurePanel(QWidget* parent=nullptr):QWidget(parent) {
     using prism_viewer::common::uiText;
     auto* root=new QVBoxLayout(this);root->setContentsMargins(0,0,0,0);
+    const auto wrappedLabel=[](QWidget* parent,const QString& text=QString()) {
+      auto* label=new QLabel(text,parent);label->setWordWrap(true);
+      auto policy=label->sizePolicy();policy.setHorizontalPolicy(QSizePolicy::Ignored);
+      policy.setVerticalPolicy(QSizePolicy::Maximum);label->setSizePolicy(policy);
+      label->setMinimumWidth(0);return label;
+    };
     for(unsigned g=0;g<2;++g){auto& b=banks_[g];
       auto* box=new QGroupBox(g?uiText("12M · Cameras 1 / 2","12M · 相机 1 / 2"):uiText("1.3M · Cameras 0 / 3","1.3M · 相机 0 / 3"),this);
       box->setObjectName(QStringLiteral("exposureBank%1").arg(g));root->addWidget(box);
-      auto* layout=new QVBoxLayout(box);b.message=new QLabel(box);b.message->setWordWrap(true);layout->addWidget(b.message);
+      auto* layout=new QVBoxLayout(box);b.message=wrappedLabel(box);layout->addWidget(b.message);
       b.fields=new QWidget(box);auto* grid=new QGridLayout(b.fields);grid->setContentsMargins(0,0,0,0);layout->addWidget(b.fields);
+      grid->setColumnStretch(0,1);grid->setColumnStretch(1,1);
       const auto integer=[&](int lo,int hi,const QString& name){auto* w=new QSpinBox(b.fields);w->setRange(lo,hi);w->setObjectName(name);return w;};
       const auto gain=[&](const QString& name){auto* w=new QDoubleSpinBox(b.fields);w->setDecimals(5);w->setRange(1,g?28:124);w->setSingleStep(g?0.0625:0.03125);w->setSuffix(QStringLiteral("×"));w->setObjectName(name);return w;};
       b.target=integer(1,255,QStringLiteral("target"));
@@ -83,8 +90,15 @@ class MixedExposurePanel final : public QWidget {
       b.min_gain=gain(QStringLiteral("minGain"));b.max_gain=gain(QStringLiteral("maxGain"));
       b.unified=new QComboBox(b.fields);b.unified->addItem(uiText("Independent automatic exposure","独立自动曝光"));
       if(!g)b.unified->addItem(uiText("Unified automatic exposure","统一自动曝光"));
+      b.unified->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+      b.unified->setMinimumContentsLength(12);
+      b.unified->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);
       int row=0;grid->addWidget(b.unified,row++,0,1,2);
-      const auto field=[&](const QString& label,QWidget* w){grid->addWidget(new QLabel(label,b.fields),row,0);grid->addWidget(w,row++,1);};
+      const auto field=[&](const QString& label,QWidget* w){
+        grid->addWidget(wrappedLabel(b.fields,label),row,0);
+        w->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);
+        grid->addWidget(w,row++,1);
+      };
       field(uiText("Target brightness (1–255)","目标亮度（1–255）"),b.target);
       field(uiText("Minimum exposure (µs)","曝光下限（微秒）"),b.min_exp);
       field(uiText("Maximum exposure (µs)","曝光上限（微秒）"),b.max_exp);

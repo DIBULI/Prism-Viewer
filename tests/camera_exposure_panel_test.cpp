@@ -38,6 +38,9 @@ int main(int argc, char** argv) {
     raw.group=1;raw.automatic_camera_mask=6;raw.min_exposure_us=54;raw.max_exposure_us=raw.effective_max_exposure_us=18432;
     raw.max_gain_x1024=28672;raw.manual_exposure_us={9216,4608};
     mixed.setConfiguration(global,false);mixed.setConfiguration(raw,false);
+    mixed.resize(360,900);mixed.show();QApplication::processEvents();
+    require(mixed.minimumSizeHint().width()<=360,
+            "independent exposure groups fit the compact sidebar");
     auto* g=mixed.findChild<QGroupBox*>(QStringLiteral("exposureBank0"));
     auto* r=mixed.findChild<QGroupBox*>(QStringLiteral("exposureBank1"));
     require(g&&r,"missing independent exposure banks");
