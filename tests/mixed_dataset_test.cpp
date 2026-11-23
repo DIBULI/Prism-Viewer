@@ -1,4 +1,5 @@
 #include "dataset/raw8_dataset.hpp"
+#include "dataset/raw8_recorder.hpp"
 #include "common/ui_text.hpp"
 #include "ui/bayer_preview.hpp"
 #include "raw_dataset_fixture.hpp"
@@ -8,6 +9,8 @@
 #include <QProcess>
 #include <QColor>
 #include <iostream>
+#include <chrono>
+#include <thread>
 using namespace prism_viewer::dataset;
 namespace fs=std::filesystem;
 void check(bool ok,const char* text){if(!ok)throw std::runtime_error(text);}
@@ -81,6 +84,12 @@ int main(int argc,char** argv) {
     QTemporaryDir temp;check(temp.isValid(),"temp");
     auto root=prism_viewer::common::toFilesystemPath(temp.path());
     auto info=fixture(root);
+    if(argc==3&&std::string(argv[1])=="--record-ui") {
+      QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--mixed-recording-self-test",temp.path()});
+      check(process.waitForFinished(60000),"mixed recording UI timeout");
+      std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();
+      check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"mixed recording UI failed");return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--ui") {
       QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--dataset-playback-self-test",temp.path()});
       check(process.waitForFinished(80000),"mixed UI timeout");
@@ -132,6 +141,28 @@ int main(int argc,char** argv) {
     fixture(root,false,false,true);data=loadRaw8Dataset(root);
     check(data.ordinal_only&&data.display.size()==13&&data.cameras[2][0].timestamp_us==0,"unknown timestamp fabricated");
     check(validateRaw8Dataset(root,{},{}).valid,"unknown time image browsing rejected");
+    // Recording entry points must validate actual product/rate/serial, not
+    // loosen the all-RAW 415 rate check for a mixed camera stream.
+    Raw8RecordingOptions options;options.device_model="21312V0";options.device_serial="test";options.fps=12;
+    for(unsigned fault=0;fault<5;++fault){
+      auto bad=options;
+      if(fault==0)bad.fps=2;if(fault==1)bad.fps=24;if(fault==2)bad.fps=36;
+      if(fault==3)bad.device_serial.clear();if(fault==4)bad.device_model="413GSV0";
+      bool rejected=false;try{Raw8Recorder recorder(root,bad);}catch(const std::exception&){rejected=true;}
+      check(rejected,"invalid mixed recording setup accepted");
+    }
+    for(unsigned fault=0;fault<3;++fault){
+      Raw8Recorder recorder(root,options);prism::capture::ProfileImage image;
+      image.camera=1;image.format=prism::capture::kRaw8Rice;image.width=4096;image.height=3072;
+      image.timestamp_us=1000000;image.encoded=frame(1,10,1000000,4);
+      if(fault==0)image.camera=0;
+      if(fault==1)image.width=5120;
+      if(fault==2){native8_fixture::put(image.encoded,68,1);native8_fixture::seal(image.encoded);}
+      recorder.append(image);recorder.finish();
+      const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+      while(!recorder.status().done&&std::chrono::steady_clock::now()<end)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      check(recorder.status().done&&!recorder.status().complete&&recorder.status().bytes==0,"invalid mixed frame persisted");
+    }
     std::cout<<"PASS mixed JPEG/RAW8 independent timeline, native pixels, metadata, loss, absent lane, unknown clocks, malformed input\n";
   } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

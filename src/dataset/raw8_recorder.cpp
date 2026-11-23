@@ -1,5 +1,6 @@
 #include "dataset/raw8_recorder.hpp"
 #include "dataset/raw8_dataset.hpp"
+#include "communication/profile_frame_metadata.hpp"
 #include "common/ui_text.hpp"
 #include <QDateTime>
 #include <QDir>
@@ -91,8 +92,18 @@ struct Raw8Recorder::Impl {
   uint64_t transfers=0;
   std::array<uint8_t,4> timing{};
   std::thread worker;
+  bool mixed()const{return options.device_model=="21312V0";}
+  bool rawCamera(unsigned c)const{return !mixed()||c==1||c==2;}
+  unsigned sourceStep(unsigned c)const{return mixed()&&rawCamera(c)?3:1;}
+  unsigned width(unsigned c)const{return mixed()?(rawCamera(c)?4096:1280):5120;}
+  unsigned height(unsigned c)const{return rawCamera(c)?3072:1024;}
   explicit Impl(const std::filesystem::path& parent,Raw8RecordingOptions o):options(std::move(o)){
-    require(options.fps==1||options.fps==2,"RAW8 recording supports only1 or2FPS");
+    require(options.device_model=="415RSV0"||mixed(),"Unsupported profile recording model");
+    require(options.device_serial.find_first_of("\r\n=")==std::string::npos&&
+            options.device_serial.find('\0')==std::string::npos,"Invalid recording device serial");
+    require(!mixed()||!options.device_serial.empty(),"Device serial unavailable for recording");
+    if(mixed())require(options.fps==12,"21312V0 recording requires 12 FPS for cam0/cam3; cam1/cam2 remain 2 FPS");
+    else require(options.fps==1||options.fps==2,"415RSV0 RAW8 recording supports only 1 or 2 FPS");
     require(options.queue_frames&&options.queue_bytes&&options.reserve_bytes>=64*1024*1024ull,
             "Invalid RAW8 recording queue or storage reserve");
     require(!(options.required_imu_mask&~3u)&&options.imu_queue_samples,"Invalid IMU recording limits");
@@ -132,9 +143,11 @@ struct Raw8Recorder::Impl {
     std::lock_guard<std::mutex> lock(mutex);
     complete=complete&&state.error.empty();
       const auto drops=std::accumulate(state.dropped.begin(),state.dropped.end(),uint64_t(0));
-      text<<"format=prism-raw8-dataset-v1\ndevice_model=415RSV0\ncodec=raw8-rice-lossless\n"
-          <<"width=5120\nheight=3072\nsource_bits=8\ncamera_count=4\n"
-          <<"fps_per_camera="<<options.fps<<"\ncomplete="<<complete<<"\nbytes="<<state.bytes
+      text<<"format="<<(mixed()?"prism-mixed-dataset-v1":"prism-raw8-dataset-v1")
+          <<"\ndevice_model="<<options.device_model<<"\ndevice_serial="<<options.device_serial
+          <<"\ncodec="<<(mixed()?"per-camera-jpeg-and-raw8-rice":"raw8-rice-lossless")<<'\n';
+      if(!mixed())text<<"width=5120\nheight=3072\nsource_bits=8\nfps_per_camera="<<options.fps<<'\n';
+      text<<"camera_count=4\nframe_stride=1\ncomplete="<<complete<<"\nbytes="<<state.bytes
           <<"\ndrop_accounting=1\nhas_drops="<<bool(drops)<<"\nframes_complete="<<(!drops&&state.error.empty())
           <<"\nqueue_policy=fail_without_eviction\ndropped_frames_total="<<drops
           <<"\ntiming=per-image-discriminator-device-clock\nrecording_host=viewer\n";
@@ -151,6 +164,10 @@ struct Raw8Recorder::Impl {
       text<<"error="<<error<<'\n';
       for(unsigned c=0;c<4;c++){
         const auto key="camera"+std::to_string(c)+"_";
+        if(mixed())text<<key<<"width="<<width(c)<<'\n'<<key<<"height="<<height(c)<<'\n'
+            <<key<<"source_bits=8\n"<<key<<"profile="<<(rawCamera(c)?2:1)<<'\n'
+            <<key<<"fps_per_camera="<<(rawCamera(c)?2:options.fps)<<'\n'
+            <<key<<"source_steps="<<sourceStep(c)<<'\n';
         text<<key<<"images="<<state.frames[c]<<'\n'<<key<<"received="<<state.received[c]<<'\n'
             <<key<<"dropped="<<state.dropped[c]<<'\n'<<key<<"dropped_tail="<<pending[c]<<'\n'
             <<key<<"first_received_frame="<<first[c]<<'\n'<<key<<"last_received_frame="<<last[c]<<'\n';
@@ -167,24 +184,33 @@ struct Raw8Recorder::Impl {
       if(state.closing||state.done)return;
       using namespace prism::capture;
       const auto& b=image.encoded;const auto* p=b.data();
-      const auto header=parseRaw8Header(p,b.size(),b.size(),kRaw8Rice);
-      require(image.format==kRaw8Rice&&image.camera<4&&image.width==5120&&image.height==3072&&
-        header.camera==image.camera&&header.timestamp_us==image.timestamp_us&&
-        (!header.payload_crc_checked||rawCrc32(p+header.bytes,b.size()-header.bytes)==header.encoded_crc),
-        "Invalid RAW8 recording frame");
-      const auto c=image.camera;const auto id=rawLe32(p+24);
-      const auto time=rawLe32(p+40)|(uint64_t(rawLe32(p+44))<<32);
+      const auto c=image.camera;
+      require(c<4&&image.width==width(c)&&image.height==height(c),"Invalid profile recording geometry");
+      uint32_t id=0;uint64_t time=0;uint8_t mode=0;
+      if(rawCamera(c)){
+        const auto header=parseRaw8Header(p,b.size(),b.size(),kRaw8Rice);
+        require(image.format==kRaw8Rice&&header.camera==c&&header.width==width(c)&&header.height==height(c)&&
+          header.timestamp_us==image.timestamp_us&&(!mixed()||header.source_frame_step==sourceStep(c))&&
+          (!header.payload_crc_checked||rawCrc32(p+header.bytes,b.size()-header.bytes)==header.encoded_crc),
+          "Invalid RAW8 recording frame");
+        id=header.frame_id;time=header.timestamp_us;mode=header.timing_mode;
+      }else{
+        const auto metadata=profileJpegMetadata(p,b.size(),b.size(),c);
+        require(image.format==2&&metadata&&metadata->timestamp_us==image.timestamp_us,
+                "Invalid JPEG recording frame");
+        id=metadata->source_frame;time=metadata->timestamp_us;mode=metadata->timing_mode;
+      }
       // Agent assigns one global delivery ID per independent image. It is NOT
       // the native per-camera source ID, nor the common trigger group ID.
       require(transfers<UINT32_MAX&&(!transfers||image.frame_id==uint32_t(last_transfer+1u)),
               "RAW8 transport sequence gap/replay");
-      require((p[38]==0||p[38]==3||p[38]==4)&&validProfileTiming(p[38],time),"Invalid RAW8 image timing");
+      require((mode==0||mode==3||mode==4)&&validProfileTiming(mode,time),"Invalid profile image timing");
       require(state.received[c]<UINT32_MAX&&(!state.received[c]||
-        (id==last[c]+1u&&(!p[38]||p[38]!=timing[c]||time>stamp[c]))),"RAW8 source sequence/timestamp gap");
+        (id==uint32_t(last[c]+sourceStep(c))&&(!mode||mode!=timing[c]||time>stamp[c]))),"RAW8 source sequence/timestamp gap");
       if(!state.received[c])first[c]=id;
       if(!transfers)first_transfer=image.frame_id;
       ++transfers;last_transfer=image.frame_id;
-      ++state.received[c];last[c]=id;stamp[c]=time;timing[c]=p[38];
+      ++state.received[c];last[c]=id;stamp[c]=time;timing[c]=mode;
       // Preserve queued and in-flight frames. Overflow is terminal and visible,
       // never a complete recording with an implicit frame-rate reduction.
       if(queue.size()>=options.queue_frames||b.size()>options.queue_bytes||
@@ -237,7 +263,7 @@ struct Raw8Recorder::Impl {
       }
       for(unsigned c=0;c<4;c++){
         const auto base=state.root/("camera"+std::to_string(c));
-        files[c].setFileName(common::fromFilesystemPath(base)+".pr8-stream");
+        files[c].setFileName(common::fromFilesystemPath(base)+(rawCamera(c)?".pr8-stream":".mjpg-stream"));
         indexes[c].setFileName(common::fromFilesystemPath(base)+".jsonl");
         require(files[c].open(QIODevice::WriteOnly|QIODevice::NewOnly)&&
                 indexes[c].open(QIODevice::WriteOnly|QIODevice::NewOnly),"Cannot create RAW8 streams");
@@ -262,15 +288,24 @@ struct Raw8Recorder::Impl {
         require(state.bytes<=options.limit_bytes&&item.bytes.size()<=options.limit_bytes-state.bytes,
                 "RAW8 recording size limit reached");
         const auto c=item.camera;const auto* p=item.bytes.data();
-        const auto header=prism::capture::parseRaw8Header(p,item.bytes.size(),item.bytes.size(),prism::capture::kRaw8Rice);
-        require(!header.payload_crc_checked||prism::capture::rawCrc32(p+header.bytes,item.bytes.size()-header.bytes)==prism::capture::rawLe32(p+48),
-                "RAW8 encoded CRC mismatch");
+        uint32_t raw_crc=0,encoded_crc=0,trigger=0;uint8_t mode=0;
+        if(rawCamera(c)){
+          const auto header=prism::capture::parseRaw8Header(p,item.bytes.size(),item.bytes.size(),prism::capture::kRaw8Rice);
+          require(!header.payload_crc_checked||prism::capture::rawCrc32(p+header.bytes,item.bytes.size()-header.bytes)==header.encoded_crc,
+                  "RAW8 encoded CRC mismatch");
+          raw_crc=header.raw_crc;encoded_crc=header.encoded_crc;trigger=header.trigger_sequence;mode=header.timing_mode;
+        }else{
+          const auto metadata=profileJpegMetadata(p,item.bytes.size(),item.bytes.size(),c);
+          require(bool(metadata),"JPEG source metadata changed before persistence");
+          // Store the existing envelope value, without a new image CRC pass.
+          raw_crc=prism::capture::rawLe32(p+46);trigger=metadata->trigger_sequence;mode=metadata->timing_mode;
+        }
         writeAll(files[c],reinterpret_cast<const char*>(p),qint64(item.bytes.size()));
         QJsonObject row{{"frame_id",double(item.id)},{"transfer_id",double(item.transfer)},{"timestamp_us",double(item.stamp)},
-          {"offset",double(offset[c])},{"bytes",double(item.bytes.size())},{"timing_mode",int(p[38])},
-          {"raw_crc32",double(prism::capture::rawLe32(p+20))},{"encoded_crc32",double(prism::capture::rawLe32(p+48))},
+          {"offset",double(offset[c])},{"bytes",double(item.bytes.size())},{"timing_mode",int(mode)},
+          {"raw_crc32",double(raw_crc)},{"encoded_crc32",double(encoded_crc)},
           {"dropped_before",double(item.before)}};
-        if(header.trigger_sequence)row.insert("trigger_sequence",double(header.trigger_sequence));
+        if(trigger)row.insert("trigger_sequence",double(trigger));
         if(item.before)row.insert("drop_reason","disk_queue_full");
         auto json=QJsonDocument(row).toJson(QJsonDocument::Compact);json+='\n';
         writeAll(indexes[c],json.constData(),json.size());

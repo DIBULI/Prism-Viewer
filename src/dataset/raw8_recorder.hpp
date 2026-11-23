@@ -19,6 +19,8 @@ struct Raw8RecordingStatus {
 };
 struct Raw8RecordingOptions {
   unsigned fps=1; // Actual qualified input rate, never the product ceiling.
+  std::string device_model="415RSV0";
+  std::string device_serial;
   size_t queue_frames=12;
   uint64_t queue_bytes=192ull*1024*1024;
   uint64_t reserve_bytes=1024ull*1024*1024;
@@ -33,7 +35,7 @@ struct Raw8RecordingOptions {
   std::function<void()> before_write;
   std::function<void()> before_verify;
 };
-// Writes original GPU-compressed frames, independent of the replaceable preview
+// Writes original profile frames (415 RAW8 or 21312 JPEG/RAW8), independent of the replaceable preview
 // queue. Overflow or an oversized frame fails the recording without evicting
 // queued/in-flight data. The incomplete manifest records the rejected frame.
 class Raw8Recorder {

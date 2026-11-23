@@ -4443,6 +4443,91 @@ class MainWindow : public QMainWindow {
     return ok;
   }
 
+  bool runMixedRecordingSelfTest(const QString& directory) {
+    using namespace prism_viewer::dataset;
+    const auto input=loadRaw8Dataset(toFilesystemPath(directory));
+    if(!input.mixed)return false;
+    QTemporaryDir output;
+    if(!output.isValid())return false;
+    prism::DeviceInfo info;
+    info.device_model=prism::DeviceModel::Prism21312V0;
+    info.product_serial="mixed-recorder-ui-serial";
+    capture_model_.store(info.device_model);
+    // Exercise the same session constructor as the recording button. Mixed
+    // capture rates 24/36 are valid for preview, but recording is 12 FPS only.
+    for(unsigned fps:{24u,36u}){
+      info.camera_fps=fps;bool rejected=false;
+      try{startProfileRecordingSession(output.path(),info);}catch(const std::exception&){rejected=true;}
+      if(!rejected||dataset_recorder_.isActive()||rawRecording())return false;
+    }
+    info.camera_fps=12;
+    startProfileRecordingSession(output.path(),info);
+    const auto raw=rawRecording();if(!raw)return false;
+    std::vector<DatasetImageEntry> entries;
+    for(const auto& lane:input.cameras)entries.insert(entries.end(),lane.begin(),lane.end());
+    std::stable_sort(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a.timestamp_us<b.timestamp_us;});
+    uint32_t transfer=UINT32_MAX-12;
+    std::array<uint64_t,4> counts{};
+    for(const auto& e:entries){
+      QFile f(e.absolute_path);
+      if(!f.open(QIODevice::ReadOnly)||!f.seek(e.byte_offset))return false;
+      const auto bytes=f.read(e.byte_size);if(bytes.size()!=e.byte_size)return false;
+      prism::capture::ProfileImage image;
+      image.camera=e.camera;image.format=e.raw8?prism::capture::kRaw8Rice:2;
+      image.width=e.raw8?4096:1280;image.height=e.raw8?3072:1024;
+      image.frame_id=transfer++;image.timestamp_us=e.timestamp_us;
+      image.encoded.assign(bytes.begin(),bytes.end());raw->append(image);
+      const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+      ++counts[e.camera];
+      while(!raw->status().closing&&raw->status().frames[e.camera]<counts[e.camera]&&std::chrono::steady_clock::now()<end)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if(raw->status().closing||raw->status().frames[e.camera]!=counts[e.camera])return false;
+    }
+    for(unsigned c=0;c<2;++c)for(unsigned n=0;n<4;++n){
+      prism::ImuSample s;s.sensor_id=c;s.format=2;s.sample_id=uint16_t(65534+n);
+      s.timestamp_us=1000000+n*1250;s.accel_mg={0,0,1000};s.gyro_mdps={1000,0,0};
+      dataset_recorder_.appendImu(s);raw->appendImu(s);
+    }
+    const std::array<uint8_t,6> rtcm{{0xd3,0,0,0x47,0xea,0x4b}};
+    prism::RoverRtcmChunkView chunk;chunk.version=1;chunk.sequence=1;chunk.flags=1;
+    chunk.data=rtcm.data();chunk.data_size=rtcm.size();dataset_recorder_.appendRoverRtcm(chunk);
+    prism::GnssObservations gnss;gnss.session=7;gnss.cursor=1;gnss.device_monotonic_ms=1234;
+    gnss.records.push_back({1,1234,"$GNGGA,120000.100,3110.00000,N,12130.00000,E,5,15,1.2,20,M,10,M,,*43"});
+    dataset_recorder_.appendGnss(gnss,std::chrono::steady_clock::now());
+    stopImuRecording(false);
+    const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+    while(!raw->status().done&&std::chrono::steady_clock::now()<end)std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto status=raw->status();
+    if(!status.complete||!status.error.empty()||!raw_aux_finalized_||!raw_aux_error_.empty()||
+        status.frames!=counts||status.imu_samples!=std::array<uint64_t,2>{4,4}){
+      std::cerr<<"mixed recorder failed: "<<status.error<<" / "<<raw_aux_error_<<'\n';return false;
+    }
+    const auto got=loadRaw8Dataset(status.root);
+    if(!got.mixed||!validateRaw8Dataset(status.root,{},{}).valid)return false;
+    for(unsigned c=0;c<4;++c){
+      if(got.cameras[c].size()!=input.cameras[c].size())return false;
+      for(size_t n=0;n<got.cameras[c].size();++n){
+        const auto& a=got.cameras[c][n];const auto& b=input.cameras[c][n];
+        if(a.frame_id!=b.frame_id||a.timestamp_us!=b.timestamp_us||a.trigger_sequence!=b.trigger_sequence||
+            a.exposure_us!=b.exposure_us||a.gain_x1024!=b.gain_x1024)return false;
+      }
+      const auto name=QStringLiteral("camera%1%2").arg(c).arg(c==1||c==2?QStringLiteral(".pr8-stream"):QStringLiteral(".mjpg-stream"));
+      QFile a(QDir(directory).filePath(name)),b(QDir(fromFilesystemPath(status.root)).filePath(name));
+      if(!a.open(QIODevice::ReadOnly)||!b.open(QIODevice::ReadOnly)||a.readAll()!=b.readAll())return false;
+    }
+    for(const auto* name:{"dataset.info","streams.info"}){
+      QFile f(fromFilesystemPath(status.root/name));if(!f.open(QIODevice::ReadOnly))return false;
+      const auto text=f.readAll();
+      if(!text.contains("device_model=21312V0\n")||!text.contains("device_serial=mixed-recorder-ui-serial\n")||!text.contains("complete=1\n"))return false;
+    }
+    QFile rtcm_file(fromFilesystemPath(status.root/"rover_rtcm.bin"));
+    if(!rtcm_file.open(QIODevice::ReadOnly)||rtcm_file.readAll()!=QByteArray(reinterpret_cast<const char*>(rtcm.data()),int(rtcm.size())))return false;
+    QFile gnss_file(fromFilesystemPath(status.root/"gnss_observations.bin"));
+    if(!gnss_file.open(QIODevice::ReadOnly)||!gnss_file.readAll().contains("GNGGA"))return false;
+    std::cout<<"PASS production mixed recording: 12 FPS JPEG + 2 FPS RAW8; source/transfer wrap, metadata, serial, two IMUs, GNSS/RTCM, replay and pixel validation\n";
+    return true;
+  }
+
   bool runMixedLiveMetadataSelfTest(const QString& directory) {
     resetUi();
     tabs_->setCurrentWidget(camera_page_);
@@ -6369,11 +6454,11 @@ class MainWindow : public QMainWindow {
     auto status=raw->status();
     if(!raw_aux_error_.empty()&&status.error.empty())status.error="Auxiliary streams: "+raw_aux_error_;
     const uint64_t dropped=std::accumulate(status.dropped.begin(),status.dropped.end(),uint64_t(0));
-    const auto title=!status.error.empty()?uiText("RAW8 recording failed", "RAW8 录制失败"):
+    const auto title=!status.error.empty()?uiText("Camera recording failed", "相机录制失败"):
       status.done&&raw_aux_finalized_?(dropped?uiText("Recording saved with dropped images", "录制已保存，但存在丢帧"):
-        uiText("Recording saved; RAW8 and IMU verified", "录制已保存；RAW8 与 IMU 已校验")):
-      status.closing?uiText("RAW8 draining and verifying", "RAW8 正在写完缓存并校验"):
-      uiText("Recording original RAW8", "正在录制原始 RAW8");
+        uiText("Recording saved; camera data and IMU verified", "录制已保存；相机与 IMU 数据已校验")):
+      status.closing?uiText("Finishing camera recording", "正在完成相机录制收尾"):
+      uiText("Recording original camera data", "正在录制原始相机数据");
     imu_record_status_label_->setText(title+QStringLiteral(" · %1/%2/%3/%4 · %5 MiB\n%6")
       .arg(status.frames[0]).arg(status.frames[1]).arg(status.frames[2]).arg(status.frames[3])
       .arg(double(status.bytes)/1048576.0,0,'f',1)
@@ -6396,20 +6481,32 @@ class MainWindow : public QMainWindow {
     imu_record_stop_button_->setEnabled(!status.closing&&!status.done);
   }
   void startRawRecording(const QString& parent) {
-    if(!worker_running_||rawRecordingActive())throw std::runtime_error("RAW8 capture not ready or recorder busy");
+    if(!worker_running_||rawRecordingActive()||dataset_recorder_.isActive())throw std::runtime_error("Profile capture not ready or recorder busy");
     const auto info=runCorsUsbCommand([this]{return client_.deviceInfo();});
     recording_usb_gate_.observe(info.usb_speed,std::chrono::steady_clock::now());
     if(!worker_running_||!recordingLinkAllowed(client_.isOpen()))
       throw std::runtime_error(recordingUsbRequirement().toStdString());
+    startProfileRecordingSession(parent,info);
+  }
+
+  void startProfileRecordingSession(const QString& parent,const prism::DeviceInfo& info) {
+    if(info.device_model!=capture_model_.load()||!prism_viewer::usesProfileCapture(info.device_model))
+      throw std::runtime_error("Recording device model changed; reconnect before recording");
+    if(info.device_model==prism::DeviceModel::Prism21312V0&&info.camera_fps!=12)
+      throw std::runtime_error(uiText(
+        "21312V0 recording requires the 1.3M cameras at 12 FPS. Stop capture, select 12 FPS, then start again. The 12M cameras remain at 2 FPS.",
+        "21312V0 录制时，1.3M 相机需设为 12 FPS。请停止采集，选择 12 FPS 后重新开始；12M 相机保持 2 FPS。").toStdString());
     // This is configuration, not a fabricated measurement. Individual source
     // timestamps remain authoritative; absent lanes/IMUs are not prerequisites.
     prism_viewer::dataset::Raw8RecordingOptions options;options.fps=info.camera_fps;
+    options.device_model=prism::deviceModelName(info.device_model);
+    options.device_serial=info.product_serial;
     options.record_any_imu=true;options.require_all_cameras=false;
     options.companion_streams=true;
     options.reserve_bytes=8ull*1024*1024*1024;
     options.imu_timestamp_domain="source-preserved-see-per-sample-flags";
     auto raw=std::make_shared<prism_viewer::dataset::Raw8Recorder>(toFilesystemPath(parent),options);
-    DatasetRecorder::ReceivedStreamsPolicy policy{true,true,"415RSV0"};
+    DatasetRecorder::ReceivedStreamsPolicy policy{true,true,options.device_model,options.device_serial};
     std::string error;
     if(!dataset_recorder_.start(raw->status().root,false,DatasetRecordingMode::Full,true,
           datasetTimestampDomainForProvider(latest_time_sync_provider_),&error,0,true,&policy)){
@@ -6421,8 +6518,10 @@ class MainWindow : public QMainWindow {
     recording_drop_notified_=false;
     recording_drop_banner_->clear();recording_drop_banner_->hide();
     std::atomic_store(&raw_recorder_,std::move(raw));
+    dataset_recorder_.appendTimeSync(info,latest_time_sync_provider_,latest_rk_heartbeat_time_us_);
     imu_record_status_label_->setProperty("ready_text",QString{});
-    appendLog(QStringLiteral("All-received recording started: RAW8 + onboard IMU + LiDAR + GNSS/RTK; configured camera FPS=%1, no missing-stream requirement, no resampling; root=%2").arg(info.camera_fps).arg(recorded_dataset_root_));
+    appendLog(QStringLiteral("All-received recording started: %1 original camera data + onboard IMU + LiDAR + GNSS/RTK; configured camera FPS=%2; root=%3")
+        .arg(QString::fromStdString(options.device_model)).arg(info.camera_fps).arg(recorded_dataset_root_));
     pollRawRecording();refreshControls();
   }
 
@@ -12079,6 +12178,9 @@ int runViewerApplication(int argc, char** argv) {
   }
   const int grouped_preview_test=command_line.indexOf(QStringLiteral("--grouped-preview-self-test"));
   const int mixed_live_test=command_line.indexOf(QStringLiteral("--mixed-live-metadata-self-test"));
+  const int mixed_recording_test=command_line.indexOf(QStringLiteral("--mixed-recording-self-test"));
+  if(mixed_recording_test>=0&&mixed_recording_test+1<command_line.size())
+    return window.runMixedRecordingSelfTest(command_line[mixed_recording_test+1])?0:21;
   if(mixed_live_test>=0 && mixed_live_test+1<command_line.size()) {
     window.show(); app.processEvents();
     return window.runMixedLiveMetadataSelfTest(command_line[mixed_live_test+1]) ? 0 : 21;
