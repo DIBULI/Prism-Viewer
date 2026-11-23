@@ -4370,6 +4370,15 @@ class MainWindow : public QMainWindow {
     camera_exposure_panel_->setVisible(!native&&!mixed);
     mixed_exposure_panel_->setVisible(mixed);
     native_camera_control_panel_->setVisible(native);
+    if (auto* scroll = findChild<QScrollArea*>(QStringLiteral("cameraExposureScrollArea"))) {
+      // Fonts and styled controls give the mixed panel a larger minimum on
+      // Windows. Reserve its measured content width, plus the scroll bar and
+      // tab frame, instead of clipping a fixed-width sidebar.
+      mixed_exposure_panel_->ensurePolished();
+      const int content_width = mixed
+          ? std::max(360, mixed_exposure_panel_->minimumSizeHint().width()) : 360;
+      camera_tools_->setMinimumWidth(content_width + scroll->verticalScrollBar()->sizeHint().width() + 8);
+    }
     raw_stream_description_->setText(native ? uiText(
         "Format: original RAW8\nTrigger: external\nCapture request: 2 FPS\nMeasured rate is shown with each image.",
         "格式：原始 RAW8\n触发：外触发\n采集请求：2 FPS\n实测帧率显示在各路图像旁。") : uiText(
