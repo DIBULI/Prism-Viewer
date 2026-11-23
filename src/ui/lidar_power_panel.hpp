@@ -24,7 +24,7 @@ class LidarPowerPanel final : public QWidget {
   QPushButton *query_, *standby_, *wake_;
   QLabel* status_;
   QWidget* speed_panel_;
-  QPushButton *speed_query_, *speed_normal_, *speed_low_;
+  QPushButton *speed_query_, *speed_normal_, *speed_low_, *speed_high_;
   QLabel* speed_status_;
   bool speed_known_=false;
   bool available_=false, busy_=false;

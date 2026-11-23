@@ -7562,7 +7562,7 @@ class MainWindow : public QMainWindow {
        camera_exposure_operation_running_ || camera_encoding_operation_running_ ||
        cors_session_.active() || lidar_network_operation_running_ || upgrade_running_ || client_.streamTransferActive())return;
     if(action && QMessageBox::question(this,uiText("LiDAR hardware state","雷达硬件状态"),
-        speed?uiText("Change MID-360S motor speed? Device readback will be checked.","确认切换 MID-360S 转速？切换后将读取设备确认。"):
+        speed?uiText("Change LiDAR motor speed? Device readback will be checked.","确认切换雷达转速？切换后将读取设备确认。"):
         action==2?uiText("Put the LiDAR into hardware standby?","确认让雷达进入硬件待机？"):
         uiText("Wake the LiDAR? Motor startup can take more than ten seconds.","确认唤醒雷达？电机启动可能需要十余秒。"),
         QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;

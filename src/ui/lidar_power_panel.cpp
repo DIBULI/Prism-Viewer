@@ -35,24 +35,28 @@ LidarPowerPanel::LidarPowerPanel(QWidget* parent):QWidget(parent) {
   status_=new QLabel(this);status_->setObjectName("lidarPowerState");status_->setWordWrap(true);layout->addWidget(status_,4,0,1,2);
   speed_panel_=new QWidget(this);
   auto* speeds=new QGridLayout(speed_panel_);speeds->setContentsMargins(0,0,0,0);
-  auto* speed_hint=new QLabel(uiText("MID-360S motor speed. Read first. Low speed is not standby; not automatically saved or reapplied after restart.",
-    "MID-360S 转速：先读取确认。低速不是待机；不自动保存或在重启后重应用。"),speed_panel_);
+  auto* speed_hint=new QLabel(uiText("MID-360S/L motor speed. Read first. High speed is L-only. Low speed is not standby; not automatically saved or reapplied after restart.",
+    "MID-360S/L 转速：先读取确认。高速仅限 L；低速不是待机。不自动保存或在重启后重应用。"),speed_panel_);
   speed_hint->setWordWrap(true);speeds->addWidget(speed_hint,0,0,1,2);
   speed_query_=new QPushButton(uiText("Read speed","读取转速"),speed_panel_);
-  speed_normal_=new QPushButton(uiText("Normal (high)","正常转速（高）"),speed_panel_);
+  speed_normal_=new QPushButton(uiText("Normal speed","正常转速"),speed_panel_);
   speed_low_=new QPushButton(uiText("Low speed","低转速"),speed_panel_);
+  speed_high_=new QPushButton(uiText("High speed","高转速"),speed_panel_);
+  speed_high_->setObjectName("lidarSpeedHigh");
   speed_query_->setObjectName("lidarSpeedQuery");speed_normal_->setObjectName("lidarSpeedNormal");speed_low_->setObjectName("lidarSpeedLow");
   int speed_action=0;
-  for(auto* button:{speed_query_,speed_normal_,speed_low_}){
+  for(auto* button:{speed_query_,speed_normal_,speed_low_,speed_high_}){
     const int op=speed_action++;
     connect(button,&QPushButton::clicked,this,[this,op]{
-      if(available_&&!busy_&&model_->currentData().toInt()==2&&(!op||speed_known_)&&on_speed_action)
-        on_speed_action(prism::LidarModel::Mid360S,op);
+      const int model=model_->currentData().toInt();
+      if(available_&&!busy_&&(model==2||model==4)&&(op!=3||model==4)&&(!op||speed_known_)&&on_speed_action)
+        on_speed_action(static_cast<prism::LidarModel>(model),op);
     });
   }
   speeds->addWidget(speed_query_,1,0,1,2);speeds->addWidget(speed_normal_,2,0);speeds->addWidget(speed_low_,2,1);
   speed_status_=new QLabel(this);speed_status_->setObjectName("lidarSpeedState");speed_status_->setWordWrap(true);
-  speeds->addWidget(speed_status_,3,0,1,2);speeds->setColumnStretch(0,1);speeds->setColumnStretch(1,1);
+  speeds->addWidget(speed_high_,3,0,1,2);
+  speeds->addWidget(speed_status_,4,0,1,2);speeds->setColumnStretch(0,1);speeds->setColumnStretch(1,1);
   layout->addWidget(speed_panel_,5,0,1,2);
   connect(model_,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this]{clear();refresh();});
   clear();refresh();
@@ -60,10 +64,13 @@ LidarPowerPanel::LidarPowerPanel(QWidget* parent):QWidget(parent) {
 void LidarPowerPanel::refresh(){
   model_->setEnabled(available_&&!busy_);
   for(auto* b:{query_,standby_,wake_})b->setEnabled(available_&&!busy_&&model_->currentData().toInt()>0);
-  const bool speed_model=model_->currentData().toInt()==2;
+  const bool is_l=model_->currentData().toInt()==4;
+  const bool speed_model=model_->currentData().toInt()==2||is_l;
   speed_panel_->setVisible(speed_model);
   speed_query_->setEnabled(available_&&!busy_&&speed_model);
   for(auto* b:{speed_normal_,speed_low_})b->setEnabled(available_&&!busy_&&speed_model&&speed_known_);
+  speed_high_->setVisible(is_l);
+  speed_high_->setEnabled(available_&&!busy_&&is_l&&speed_known_);
 }
 void LidarPowerPanel::setAvailable(bool available,bool invalidate){
   available_=available;if(invalidate&&!busy_)clear();refresh();
@@ -74,11 +81,14 @@ void LidarPowerPanel::setBusy(bool busy){
 void LidarPowerPanel::clear(){status_->setText(uiText("State unknown; read to confirm.","状态未知，请读取确认。"));speed_known_=false;speed_status_->setText(uiText("Motor speed not confirmed","尚未确认转速"));refresh();}
 void LidarPowerPanel::setError(const QString& error){clear();status_->setText(uiText("State unknown; read before retrying: %1","状态未知，请读取确认后再重试：%1").arg(error));}
 void LidarPowerPanel::setSpeedResult(const prism::LidarSpeedStatus& s){
-  if(model_->currentData().toInt()!=2||s.model!=prism::LidarModel::Mid360S||s.device_type!=35||
-     (s.mode!=prism::LidarSpeedMode::Normal&&s.mode!=prism::LidarSpeedMode::Low)){clear();return;}
+  const int model=model_->currentData().toInt();
+  if((model!=2&&model!=4)||int(s.model)!=model||s.device_type!=(model==4?41u:35u)||
+     (s.mode!=prism::LidarSpeedMode::Normal&&s.mode!=prism::LidarSpeedMode::Low&&
+      !(model==4&&s.mode==prism::LidarSpeedMode::High))){clear();return;}
   speed_known_=true;
   speed_status_->setText(uiText("Last readback: %1","最近回读：%1").arg(s.mode==prism::LidarSpeedMode::Normal?
-      uiText("Normal (high)","正常转速（高）"):uiText("Low speed","低转速")));
+      uiText("Normal speed","正常转速"):s.mode==prism::LidarSpeedMode::High?
+      uiText("High speed","高转速"):uiText("Low speed","低转速")));
   refresh();
 }
 void LidarPowerPanel::setResult(const prism::LidarPowerStatus& s){

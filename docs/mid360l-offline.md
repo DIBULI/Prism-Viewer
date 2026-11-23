@@ -1,16 +1,14 @@
-# MID-360L candidate
+# MID-360L support
 
 The MID-360L changes are offline-qualified and require the corresponding Agent
-and Host SDK implementation (Prism model 4, Livox device type 41). The existing
-published 1.4.0 SDK submodule pin has not been replaced with a partial runtime
-bundle. For development, set `PRISM_USB_SDK_ROOT` to matching candidate headers
-and the rebuilt runtime for the target platform. The default published SDK pin
-does not yet contain this feature; coordinate all platform SDK artifacts before
-publishing this Viewer candidate.
+and Host SDK implementation (Prism model 4, Livox device type 41). Viewer pins
+SDK commit `d15e1bd2426a6d1cd8dbba15ec6ea7c753b8045c`, with matching Windows,
+macOS, Linux x64 and Linux ARM64 runtimes built from Agent `404d19a`.
 
-The candidate adds model selection, power query/standby/wake, point/IMU replay,
-dataset validation and ROS1/ROS2 bag export. MID-360S speed controls remain
-restricted to MID-360S. MID-360L line IDs are unknown, and unsynchronized source
+The update adds model selection, power query/standby/wake, point/IMU replay,
+dataset validation and ROS1/ROS2 bag export. Speed controls offer normal/low on
+MID-360S and normal/low/high on MID-360L, with matched discovery and readback.
+MID-360L line IDs are unknown, and unsynchronized source
 timestamps remain explicitly unsynchronized. Physical streaming, PTP/GPS lock
 and long-duration capture remain to be tested with hardware.
 
