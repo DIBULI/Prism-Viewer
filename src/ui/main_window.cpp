@@ -4443,7 +4443,7 @@ class MainWindow : public QMainWindow {
     return ok;
   }
 
-  bool runMixedRecordingSelfTest(const QString& directory) {
+  bool runMixedRecordingSelfTest(const QString& directory,unsigned fps) {
     using namespace prism_viewer::dataset;
     const auto input=loadRaw8Dataset(toFilesystemPath(directory));
     if(!input.mixed)return false;
@@ -4453,14 +4453,9 @@ class MainWindow : public QMainWindow {
     info.device_model=prism::DeviceModel::Prism21312V0;
     info.product_serial="mixed-recorder-ui-serial";
     capture_model_.store(info.device_model);
-    // Exercise the same session constructor as the recording button. Mixed
-    // capture rates 24/36 are valid for preview, but recording is 12 FPS only.
-    for(unsigned fps:{24u,36u}){
-      info.camera_fps=fps;bool rejected=false;
-      try{startProfileRecordingSession(output.path(),info);}catch(const std::exception&){rejected=true;}
-      if(!rejected||dataset_recorder_.isActive()||rawRecording())return false;
-    }
-    info.camera_fps=12;
+    // Exercise the recording button's actual session constructor at all mixed
+    // capture rates. Viewer must not inherit the on-device TF rate limit.
+    info.camera_fps=fps;
     startProfileRecordingSession(output.path(),info);
     const auto raw=rawRecording();if(!raw)return false;
     std::vector<DatasetImageEntry> entries;
@@ -4524,7 +4519,7 @@ class MainWindow : public QMainWindow {
     if(!rtcm_file.open(QIODevice::ReadOnly)||rtcm_file.readAll()!=QByteArray(reinterpret_cast<const char*>(rtcm.data()),int(rtcm.size())))return false;
     QFile gnss_file(fromFilesystemPath(status.root/"gnss_observations.bin"));
     if(!gnss_file.open(QIODevice::ReadOnly)||!gnss_file.readAll().contains("GNGGA"))return false;
-    std::cout<<"PASS production mixed recording: 12 FPS JPEG + 2 FPS RAW8; source/transfer wrap, metadata, serial, two IMUs, GNSS/RTCM, replay and pixel validation\n";
+    std::cout<<"PASS production mixed recording: "<<fps<<" FPS JPEG + 2 FPS RAW8; source stride, transfer wrap, metadata, serial, two IMUs, GNSS/RTCM, replay and pixel validation\n";
     return true;
   }
 
@@ -6492,10 +6487,6 @@ class MainWindow : public QMainWindow {
   void startProfileRecordingSession(const QString& parent,const prism::DeviceInfo& info) {
     if(info.device_model!=capture_model_.load()||!prism_viewer::usesProfileCapture(info.device_model))
       throw std::runtime_error("Recording device model changed; reconnect before recording");
-    if(info.device_model==prism::DeviceModel::Prism21312V0&&info.camera_fps!=12)
-      throw std::runtime_error(uiText(
-        "21312V0 recording requires the 1.3M cameras at 12 FPS. Stop capture, select 12 FPS, then start again. The 12M cameras remain at 2 FPS.",
-        "21312V0 录制时，1.3M 相机需设为 12 FPS。请停止采集，选择 12 FPS 后重新开始；12M 相机保持 2 FPS。").toStdString());
     // This is configuration, not a fabricated measurement. Individual source
     // timestamps remain authoritative; absent lanes/IMUs are not prerequisites.
     prism_viewer::dataset::Raw8RecordingOptions options;options.fps=info.camera_fps;
@@ -12179,8 +12170,8 @@ int runViewerApplication(int argc, char** argv) {
   const int grouped_preview_test=command_line.indexOf(QStringLiteral("--grouped-preview-self-test"));
   const int mixed_live_test=command_line.indexOf(QStringLiteral("--mixed-live-metadata-self-test"));
   const int mixed_recording_test=command_line.indexOf(QStringLiteral("--mixed-recording-self-test"));
-  if(mixed_recording_test>=0&&mixed_recording_test+1<command_line.size())
-    return window.runMixedRecordingSelfTest(command_line[mixed_recording_test+1])?0:21;
+  if(mixed_recording_test>=0&&mixed_recording_test+2<command_line.size())
+    return window.runMixedRecordingSelfTest(command_line[mixed_recording_test+1],command_line[mixed_recording_test+2].toUInt())?0:21;
   if(mixed_live_test>=0 && mixed_live_test+1<command_line.size()) {
     window.show(); app.processEvents();
     return window.runMixedLiveMetadataSelfTest(command_line[mixed_live_test+1]) ? 0 : 21;

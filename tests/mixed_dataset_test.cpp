@@ -39,21 +39,21 @@ std::vector<uint8_t> frame(unsigned c,uint32_t id,uint64_t stamp,unsigned mode) 
   std::vector<uint8_t> b={255,216,255,239,0,66};b.insert(b.end(),h.begin(),h.end());
   b.insert(b.end(),jpeg.begin()+2,jpeg.end());return b;
 }
-std::string fixture(const fs::path& root,bool drops=false,bool empty=false,bool unknown=false) {
+std::string fixture(const fs::path& root,bool drops=false,bool empty=false,bool unknown=false,unsigned jpeg_fps=12) {
   fs::create_directories(root);
   std::string info="format=prism-mixed-dataset-v1\ndevice_model=21312V0\ndevice_serial=fixture\ncodec=per-camera-jpeg-and-raw8-rice\ncomplete=1\ncamera_count=4\nframe_stride=1\ndrop_accounting=1\nhas_drops="+
       std::to_string(drops?1:0)+"\nframes_complete="+std::to_string(drops?0:1)+"\n";
   uint64_t total=0;
   for(unsigned c=0;c<4;++c) {
     const bool raw=c==1||c==2;const auto p="camera"+std::to_string(c);
-    const unsigned received=empty&&c==3?0:raw?3:13;
+    const unsigned received=empty&&c==3?0:raw?3:jpeg_fps+1;
     const unsigned dropped=drops&&c==1?1:0;
     std::string stream,index;uint64_t offset=0;unsigned pending=0,count=0;
     for(unsigned i=0;i<received;++i) {
       if(dropped&&i==1){++pending;continue;}
       const uint32_t id=10+i*(raw?3:1);
       const unsigned mode=unknown&&c==2&&i==0?0:4;
-      const uint64_t stamp=mode?1000000ULL+(raw?250000+i*500000ULL:i*1000000ULL/12):0;
+      const uint64_t stamp=mode?1000000ULL+(raw?250000+i*500000ULL:i*1000000ULL/jpeg_fps):0;
       auto b=frame(c,id,stamp,mode);
       QJsonObject row{{"offset",double(offset)},{"bytes",int(b.size())},{"frame_id",double(id)},
         {"timestamp_us",double(stamp)},{"timing_mode",int(mode)},{"trigger_sequence",mode==4?int(id):0},
@@ -69,7 +69,7 @@ std::string fixture(const fs::path& root,bool drops=false,bool empty=false,bool 
     total+=offset;
     info+=p+"_width="+std::to_string(raw?4096:1280)+"\n"+p+"_height="+std::to_string(raw?3072:1024)+
       "\n"+p+"_source_bits=8\n"+p+"_profile="+std::to_string(raw?2:1)+
-      "\n"+p+"_fps_per_camera="+std::to_string(raw?2:12)+"\n"+p+"_source_steps="+std::to_string(raw?3:1)+
+      "\n"+p+"_fps_per_camera="+std::to_string(raw?2:jpeg_fps)+"\n"+p+"_source_steps="+std::to_string(raw?3:1)+
       "\n"+p+"_images="+std::to_string(count)+"\n"+p+"_received="+std::to_string(received)+
       "\n"+p+"_dropped="+std::to_string(dropped)+"\n"+p+"_dropped_tail=0\n"+
       p+"_first_received_frame="+std::to_string(received?10:0)+"\n"+p+"_last_received_frame="+
@@ -85,10 +85,14 @@ int main(int argc,char** argv) {
     auto root=prism_viewer::common::toFilesystemPath(temp.path());
     auto info=fixture(root);
     if(argc==3&&std::string(argv[1])=="--record-ui") {
-      QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--mixed-recording-self-test",temp.path()});
-      check(process.waitForFinished(60000),"mixed recording UI timeout");
-      std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();
-      check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"mixed recording UI failed");return 0;
+      for(unsigned fps:{12u,24u,36u}){
+        fixture(root,false,false,false,fps);
+        QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--mixed-recording-self-test",temp.path(),QString::number(fps)});
+        check(process.waitForFinished(60000),"mixed recording UI timeout");
+        std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();
+        check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"mixed recording UI failed");
+      }
+      return 0;
     }
     if(argc==3&&std::string(argv[1])=="--ui") {
       QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--dataset-playback-self-test",temp.path()});
@@ -141,13 +145,13 @@ int main(int argc,char** argv) {
     fixture(root,false,false,true);data=loadRaw8Dataset(root);
     check(data.ordinal_only&&data.display.size()==13&&data.cameras[2][0].timestamp_us==0,"unknown timestamp fabricated");
     check(validateRaw8Dataset(root,{},{}).valid,"unknown time image browsing rejected");
-    // Recording entry points must validate actual product/rate/serial, not
-    // loosen the all-RAW 415 rate check for a mixed camera stream.
+    // Validate product identity and metadata; do not apply the TF writer's
+    // rate limit to the host's all-received recording path.
     Raw8RecordingOptions options;options.device_model="21312V0";options.device_serial="test";options.fps=12;
-    for(unsigned fault=0;fault<5;++fault){
+    for(unsigned fault=0;fault<4;++fault){
       auto bad=options;
-      if(fault==0)bad.fps=2;if(fault==1)bad.fps=24;if(fault==2)bad.fps=36;
-      if(fault==3)bad.device_serial.clear();if(fault==4)bad.device_model="413GSV0";
+      if(fault==0)bad.fps=0;if(fault==1)bad.fps=121;
+      if(fault==2)bad.device_serial.clear();if(fault==3)bad.device_model="413GSV0";
       bool rejected=false;try{Raw8Recorder recorder(root,bad);}catch(const std::exception&){rejected=true;}
       check(rejected,"invalid mixed recording setup accepted");
     }

@@ -102,8 +102,9 @@ struct Raw8Recorder::Impl {
     require(options.device_serial.find_first_of("\r\n=")==std::string::npos&&
             options.device_serial.find('\0')==std::string::npos,"Invalid recording device serial");
     require(!mixed()||!options.device_serial.empty(),"Device serial unavailable for recording");
-    if(mixed())require(options.fps==12,"21312V0 recording requires 12 FPS for cam0/cam3; cam1/cam2 remain 2 FPS");
-    else require(options.fps==1||options.fps==2,"415RSV0 RAW8 recording supports only 1 or 2 FPS");
+    // The host records every received frame. Product capture settings and the
+    // on-device TF writer's rate limit do not belong in the Viewer recorder.
+    require(options.fps>0&&options.fps<=120,"Invalid configured recording rate");
     require(options.queue_frames&&options.queue_bytes&&options.reserve_bytes>=64*1024*1024ull,
             "Invalid RAW8 recording queue or storage reserve");
     require(!(options.required_imu_mask&~3u)&&options.imu_queue_samples,"Invalid IMU recording limits");

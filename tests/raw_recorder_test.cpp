@@ -196,8 +196,18 @@ int main(int argc,char**argv){
     {options.before_write=[](){throw std::runtime_error("injected disk failure");};
       Raw8Recorder r(parent,options);r.append(image(0,0));const auto s=wait(r);
       check(!s.complete&&s.error=="injected disk failure","write error hidden");}
-    {options={};options.fps=4;bool rejected=false;try{Raw8Recorder r(parent,options);}catch(...){rejected=true;}
-      check(rejected,"rate above2FPS accepted");}
+    // Host recording is independent of product-specific capture/TF limits.
+    {options={};options.fps=4;Raw8Recorder r(parent,options);
+      for(unsigned id=0;id<2;++id)for(unsigned c=0;c<4;++c){
+        auto i=image(c,id);i.timestamp_us=1000000+id*250000+c;
+        native8_fixture::put(i.encoded,40,uint32_t(i.timestamp_us));native8_fixture::sealHeader(i.encoded);r.append(i);
+      }
+      const auto s=wait(r);check(s.complete&&s.frames==std::array<uint64_t,4>{2,2,2,2},"host rate incorrectly capped");
+      check(validateRaw8Dataset(s.root,{},{}).cameras[0].median_interval_us==250000,"host frame timestamps changed");
+    }
+    for(unsigned fps:{0u,121u}){options={};options.fps=fps;bool rejected=false;
+      try{Raw8Recorder r(parent,options);}catch(...){rejected=true;}
+      check(rejected,"invalid configured rate accepted");}
     std::cout<<"PASS RAW8 writer:2FPS fixture, no overwrite, full readback CRC, bounded non-evicting queues, gaps and I/O failures\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
