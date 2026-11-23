@@ -4416,6 +4416,7 @@ class MainWindow : public QMainWindow {
                 << " sidebar=" << camera_tools_->width()
                 << " native-min=" << native_camera_control_panel_->minimumSizeHint().width()
                 << " legacy-min=" << camera_exposure_panel_->minimumSizeHint().width()
+                << " mixed-min=" << mixed_exposure_panel_->minimumSizeHint().width()
                 << " viewport=" << (exposure_scroll ? exposure_scroll->viewport()->width() : -1)
                 << " horizontal-overflow=" << (exposure_scroll ? exposure_scroll->horizontalScrollBar()->maximum() : -1)
                 << " ok=" << ok << '\n';

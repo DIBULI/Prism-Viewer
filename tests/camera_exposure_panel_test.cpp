@@ -34,6 +34,11 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   {
     prism_viewer::ui::MixedExposurePanel mixed;mixed.setAvailability(true);
+    mixed.setStyleSheet(QStringLiteral(
+        "QWidget {font-size:10pt;}"
+        "QGroupBox {border:1px solid #dfe6ef; margin-top:14px; padding:11px; font-weight:600;}"
+        "QPushButton {border:1px solid #c9d4e2; padding:7px 13px;}"
+        "QComboBox,QAbstractSpinBox {border:1px solid #c9d4e2; padding:6px 9px;}"));
     prism::ExposureGroupConfiguration global,raw;global.effective_max_exposure_us=78333;
     raw.group=1;raw.automatic_camera_mask=6;raw.min_exposure_us=54;raw.max_exposure_us=raw.effective_max_exposure_us=18432;
     raw.max_gain_x1024=28672;raw.manual_exposure_us={9216,4608};

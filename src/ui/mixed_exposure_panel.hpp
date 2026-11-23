@@ -81,7 +81,9 @@ class MixedExposurePanel final : public QWidget {
       box->setObjectName(QStringLiteral("exposureBank%1").arg(g));root->addWidget(box);
       auto* layout=new QVBoxLayout(box);b.message=wrappedLabel(box);layout->addWidget(b.message);
       b.fields=new QWidget(box);auto* grid=new QGridLayout(b.fields);grid->setContentsMargins(0,0,0,0);layout->addWidget(b.fields);
-      grid->setColumnStretch(0,1);grid->setColumnStretch(1,1);
+      // Let labels wrap beside the numeric controls. Equal stretch would
+      // duplicate Windows' wider spin-box minimum into the label column.
+      grid->setColumnStretch(0,1);
       const auto integer=[&](int lo,int hi,const QString& name){auto* w=new QSpinBox(b.fields);w->setRange(lo,hi);w->setObjectName(name);return w;};
       const auto gain=[&](const QString& name){auto* w=new QDoubleSpinBox(b.fields);w->setDecimals(5);w->setRange(1,g?28:124);w->setSingleStep(g?0.0625:0.03125);w->setSuffix(QStringLiteral("×"));w->setObjectName(name);return w;};
       b.target=integer(1,255,QStringLiteral("target"));
