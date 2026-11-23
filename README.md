@@ -20,9 +20,12 @@ A missing camera does not stop other camera previews or IMU callbacks.
 **Viewer Update** checks and downloads directly from **dibuli.com**, including newer
 builds with the same release version. **Download and update** verifies the complete
 platform package, then exits, replaces and restarts Viewer. Stop capture/recording
-and close the device connection before installation. The previous package is
-retained beside the installation; failure to start the new application restores
-it. Writable portable-package/app locations and 9 GiB free space are required.
+and close the device connection before installation. Failure to start the new
+application restores the previous package. After successful startup, its listed
+program files are removed; personal files added to the installation are preserved.
+Cleanup failure never rolls back a successful update. This applies to updates
+initiated by the new updater; older helpers and historical backups are unchanged.
+Writable portable-package/app locations and 9 GiB free space are required.
 This updates Viewer and its bundled SDK only, never device firmware. Older Viewer
 builds without this button need one manual package replacement to gain online updates.
 

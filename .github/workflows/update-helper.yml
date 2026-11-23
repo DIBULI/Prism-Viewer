@@ -6,6 +6,9 @@ on:
       - resources/update-install.ps1
       - tests/update_install_test.py
       - tests/update_process_fixture.cpp
+      - tests/update_cleanup_test.py
+      - src/update/cleanup.*
+      - scripts/package_inventory.py
       - .github/workflows/update-helper.yml
   workflow_dispatch:
 permissions:
@@ -13,21 +16,35 @@ permissions:
 jobs:
   windows-helper:
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - name: Install Qt Core for the real cleanup implementation
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0
+          aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -O "$env:RUNNER_TEMP/Qt"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $qtPrefix = Join-Path $env:RUNNER_TEMP 'Qt/6.8.3/msvc2022_64'
+          "QT_PREFIX=$qtPrefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          (Join-Path $qtPrefix 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build small updater process fixture
         shell: pwsh
         run: |
           $source = (Join-Path $pwd 'tests/update_process_fixture.cpp').Replace('\','/')
+          $cleanup = (Join-Path $pwd 'src/update/cleanup.cpp').Replace('\','/')
+          $include = (Join-Path $pwd 'src').Replace('\','/')
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/helper-source" | Out-Null
           @"
           cmake_minimum_required(VERSION 3.20)
           project(UpdateFixture LANGUAGES CXX)
-          add_executable(update-process-fixture "$source")
+          find_package(Qt6 REQUIRED COMPONENTS Core)
+          add_executable(update-process-fixture "$source" "$cleanup")
+          target_include_directories(update-process-fixture PRIVATE "$include")
+          target_link_libraries(update-process-fixture PRIVATE Qt6::Core)
           target_compile_features(update-process-fixture PRIVATE cxx_std_17)
           "@ | Set-Content "$env:RUNNER_TEMP/helper-source/CMakeLists.txt"
-          cmake -S "$env:RUNNER_TEMP/helper-source" -B build-helper -A x64
+          cmake -S "$env:RUNNER_TEMP/helper-source" -B build-helper -A x64 "-DCMAKE_PREFIX_PATH=$env:QT_PREFIX"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build build-helper --config Release
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -35,4 +52,6 @@ jobs:
         shell: pwsh
         run: |
           python tests/update_install_test.py "$pwd/resources" "$pwd/build-helper/Release/update-process-fixture.exe"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tests/update_cleanup_test.py "$pwd/build-helper/Release/update-process-fixture.exe"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
