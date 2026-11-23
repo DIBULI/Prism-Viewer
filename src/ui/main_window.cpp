@@ -2800,6 +2800,7 @@ class MainWindow : public QMainWindow {
     lidar_model_selector_->addItem(
         QStringLiteral("Hesai PandarXT-32"),
         static_cast<int>(prism::LidarModel::Xt32));
+    lidar_model_selector_->addItem(QStringLiteral("Mid-360L"), static_cast<int>(prism::LidarModel::Mid360L));
     lidar_model_selector_->setCurrentIndex(0);
     lidar_model_selector_->setEnabled(false);
     lidar_model_selector_->setSizePolicy(
@@ -6294,14 +6295,13 @@ class MainWindow : public QMainWindow {
     if (lidar_enabled_checkbox_->isChecked()) {
       requested_lidar_model = static_cast<prism::LidarModel>(
           lidar_model_selector_->currentData().toInt());
-      if (requested_lidar_model != prism::LidarModel::Mid360 &&
-          requested_lidar_model != prism::LidarModel::Mid360S &&
+      if (!prism::isLivoxModel(requested_lidar_model) &&
           requested_lidar_model != prism::LidarModel::Xt32) {
         QMessageBox::warning(
             this, uiText("LiDAR model required", "需要选择雷达型号"),
-            uiText("Select Mid-360, Mid-360S or PandarXT-32 before starting capture. "
+            uiText("Select Mid-360, Mid-360S, Mid-360L or PandarXT-32 before starting capture. "
                    "The Agent will not choose a model automatically.",
-                   "开始采集前请选择 Mid-360、Mid-360S 或 PandarXT-32。Agent 不会自动选择型号。"));
+                   "开始采集前请选择 Mid-360、Mid-360S、Mid-360L 或 PandarXT-32。Agent 不会自动选择型号。"));
         tabs_->setCurrentWidget(lidar_page_);
         return;
       }
@@ -8312,7 +8312,8 @@ class MainWindow : public QMainWindow {
             : (sample.model ==
                        static_cast<uint8_t>(prism::LidarModel::Mid360S)
                    ? QStringLiteral("Mid-360S")
-                   : uiText("legacy", "旧格式"));
+                   : sample.model == static_cast<uint8_t>(prism::LidarModel::Mid360L)
+                         ? QStringLiteral("Mid-360L") : uiText("legacy", "旧格式"));
     lidar_imu_playback_label_->setText(
         uiText("Dataset LiDAR IMU %1/%2 | %3 | %4 | "
                "accel [%5, %6, %7] m/s² | gyro [%8, %9, %10] rad/s",

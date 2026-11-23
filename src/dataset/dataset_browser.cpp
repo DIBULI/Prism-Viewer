@@ -846,7 +846,7 @@ DatasetValidationResult validatePrismDatasetImpl(
             raw_timestamp) ||
           point_count == 0u || point_count > kMaximumLidarPointsPerBatch ||
           size != point_count * (model == 3u ? 24u : kStoredLidarPointBytes) ||
-          (model != 1u && model != 2u && model != 3u)) {
+          (model != 1u && model != 2u && model != 3u && model != 4u)) {
         addIssue(&result, DatasetValidationSeverity::Error, "lidar.tum",
                  line_number, "invalid LiDAR point index row");
         continue;
@@ -968,7 +968,7 @@ DatasetValidationResult validatePrismDatasetImpl(
         uint64_t raw_timestamp = 0;
         if (!(parser >> model >> device_type >> time_type >> sample_id >>
               raw_timestamp >> synced) ||
-            (model != 1u && model != 2u) || device_type > 255u ||
+            (model != 1u && model != 2u && model != 4u) || device_type > 255u ||
             time_type > 255u || sample_id > std::numeric_limits<uint32_t>::max() ||
             synced > 1u) {
           addIssue(&result, DatasetValidationSeverity::Error,

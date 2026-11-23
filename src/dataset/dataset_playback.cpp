@@ -142,7 +142,7 @@ void loadLidarIndex(const std::filesystem::path& root,
         byte_size > std::numeric_limits<uint32_t>::max() ||
         point_count == 0u || point_count > kMaximumLidarPointsPerBatch ||
         byte_size != point_count * (model == 3u ? 24u : kStoredLidarPointBytes) ||
-        (model != 1u && model != 2u && model != 3u) || device_type > 255u ||
+        (model != 1u && model != 2u && model != 3u && model != 4u) || device_type > 255u ||
         time_type > 255u || batch_id > std::numeric_limits<uint32_t>::max()) {
       throw std::runtime_error("invalid lidar.tum line " +
                                std::to_string(line_number));
@@ -242,7 +242,7 @@ void loadLidarImu(
       uint32_t synced = 0;
       if (!(parser >> model >> device_type >> time_type >> sample_id >>
             sample.timestamp_raw_ns >> synced) ||
-          (model != 1u && model != 2u) || device_type > 255u ||
+          (model != 1u && model != 2u && model != 4u) || device_type > 255u ||
           time_type > 255u ||
           sample_id > std::numeric_limits<uint32_t>::max() || synced > 1u) {
         throw std::runtime_error("invalid lidar_imu.tum source at line " +

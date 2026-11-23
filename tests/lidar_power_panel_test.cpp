@@ -37,6 +37,9 @@ int main(int argc,char** argv){
   p.setError("speed timeout");check(!speedLow->isEnabled(),"stale speed enabled after error");
   model->setCurrentIndex(1);check(!speedQuery->isEnabled()&&!speedLow->isEnabled(),"MID360 speed allowed");
   model->setCurrentIndex(3);check(!speedQuery->isEnabled(),"XT32 speed allowed");
+  model->setCurrentIndex(model->findData(4));
+  check(model->currentData().toInt()==4&&query->isEnabled(),"MID-360L power selection missing");
+  check(!speedQuery->isEnabled()&&!speedLow->isEnabled(),"MID-360S speed sent to MID-360L");
   model->setCurrentIndex(2);
   int command=-1;p.on_action=[&](prism::LidarModel m,int op){check(m==prism::LidarModel::Mid360S,"wrong model");command=op;};
   standby->click();check(command==2,"standby operation wrong");

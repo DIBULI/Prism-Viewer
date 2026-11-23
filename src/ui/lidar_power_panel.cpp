@@ -15,7 +15,7 @@ LidarPowerPanel::LidarPowerPanel(QWidget* parent):QWidget(parent) {
   hint->setWordWrap(true);layout->addWidget(hint,0,0,1,2);
   model_=new QComboBox(this);model_->setObjectName("lidarPowerModel");
   model_->addItem(uiText("Select model", "选择型号"),0);
-  model_->addItem("Livox Mid-360",1);model_->addItem("Livox Mid-360S",2);model_->addItem("Hesai PandarXT-32",3);
+  model_->addItem("Livox Mid-360",1);model_->addItem("Livox Mid-360S",2);model_->addItem("Hesai PandarXT-32",3);model_->addItem("Livox Mid-360L",4);
   layout->addWidget(model_,1,0,1,2);
   query_=new QPushButton(uiText("Read state","读取状态"),this);
   standby_=new QPushButton(uiText("Standby","待机"),this);

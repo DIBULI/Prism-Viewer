@@ -2136,7 +2136,7 @@ RosbagExportResult exportDatasetToRosbag(
               raw_timestamp) || point_count == 0 ||
             point_count > kMaximumLidarPointsPerBatch ||
             size != point_count * (model == 3u ? 24ULL : 16ULL) ||
-            (model != 1u && model != 2u && model != 3u)) {
+            (model != 1u && model != 2u && model != 3u && model != 4u)) {
           throw std::runtime_error("invalid lidar.tum line " +
                                    std::to_string(line_number));
         }
@@ -2196,7 +2196,7 @@ RosbagExportResult exportDatasetToRosbag(
             dataset_root, relative_path, offset, static_cast<uint32_t>(size),
             &container, &open_container);
         const std::string frame_id =
-            model == 3u ? "hesai_xt32" : (model == 1u ? "livox_mid360" : "livox_mid360s");
+            model == 3u ? "hesai_xt32" : (model == 1u ? "livox_mid360" : model == 4u ? "livox_mid360l" : "livox_mid360s");
         write_completed_frames(frame_accumulator.append(
             timestamp_us, time_interval_100ns, frame_id, points,
             static_cast<uint32_t>(point_count), model == 3u));
@@ -2259,7 +2259,7 @@ RosbagExportResult exportDatasetToRosbag(
           uint64_t timestamp_raw = 0;
           if (!(parser >> model >> device_type >> time_type >> sample_id >>
                 timestamp_raw >> timestamp_synced) ||
-              (model != 1u && model != 2u) ||
+              (model != 1u && model != 2u && model != 4u) ||
               device_type > std::numeric_limits<uint8_t>::max() ||
               time_type > std::numeric_limits<uint8_t>::max() ||
               sample_id > std::numeric_limits<uint32_t>::max() ||
