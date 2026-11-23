@@ -6858,7 +6858,12 @@ class MainWindow : public QMainWindow {
     if (QMessageBox::warning(
             this,
             uiText("Upgrade Prism system", "升级 Prism 系统"),
-            (package.format_version == 2
+            (package.format_version == 3
+              ? uiText("Stop capture before updating. This complete package automatically prepares the installer on 1.3.x devices. Keep power connected throughout. When success is confirmed, restart the device once to apply all changes."
+                       "\n\nPackage: %1\nAgent: %2\nSensor Board: %3\n\nContinue?",
+                       "请先停止采集。此完整包会自动为 1.3.x 设备准备升级器。全程保持供电；确认升级成功后，整机重启一次即可生效。"
+                       "\n\n升级包：%1\nAgent：%2\nSensor Board：%3\n\n是否继续？")
+              : package.format_version == 2
               ? uiText("Stop all capture first. This full package updates Agent, Sensor Board, Web and the network service. The connection will disconnect and reconnect automatically. Application failures roll back Linux files; Sensor Board firmware is not rolled back with them. RTK is not checked or controlled."
                        "\n\nPackage: %1\nAgent: %2\nsensor-board: %3\n\nContinue?",
                        "请先停止所有采集。此完整包将更新Agent、Sensor Board、Web和网络服务；期间连接会断开并自动重连。应用安装失败会回退Linux文件，Sensor Board固件不随之回退。不检查或控制RTK。"
@@ -6934,7 +6939,10 @@ class MainWindow : public QMainWindow {
             });
         const bool sensor_board_skipped = result.sensor_board.state ==
             prism::SensorBoardUpgradeStatus::SkippedSameVersion;
-        updateStatus(result.package.format_version == 2
+        updateStatus(result.package.format_version == 3
+            ? uiText("Complete update verified. Restart the device once to apply all changes.",
+                     "完整升级已验证完成，整机重启一次即可生效。")
+            : result.package.format_version == 2
             ? uiText("Agent, Sensor Board, Web and network service updated and verified",
                      "Agent、Sensor Board、Web和网络服务均已更新并验证")
             : sensor_board_skipped
