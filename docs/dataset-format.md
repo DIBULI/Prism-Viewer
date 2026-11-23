@@ -30,6 +30,17 @@ remain readable; new recordings use text.
 
 ## Prism-415RSV0 RAW8 playback
 
+RAW8 and 21312V0 mixed JPEG/RAW8 recordings also load companion `imu0.tum`,
+`imu1.tum`, `lidar.tum` (with its point containers) and `lidar_imu.tum` from the
+dataset directory. The local IMU and LiDAR tabs show the recorded samples, and
+playback includes sensor samples beyond the last camera frame. Missing streams
+are shown as absent; malformed sensor indexes produce an explicit open error.
+Opening and playback do not modify the dataset.
+
+When camera timing is unknown, images remain available for ordinal browsing
+while IMU and LiDAR play on their recorded timestamps. Moving between those
+images does not seek the sensor timeline or imply image/sensor synchronization.
+
 Open a completed recording directory using **Datasets → Open**. It contains
 `dataset.info` and `camera0` through `camera3`, each with a `.jsonl` index and a
 `.pr8-stream` lossless RAW8 container. Both the current text manifest

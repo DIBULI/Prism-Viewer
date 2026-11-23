@@ -77,6 +77,21 @@ std::string fixture(const fs::path& root,bool drops=false,bool empty=false,bool 
   }
   info+="bytes="+std::to_string(total)+"\n";raw_fixture::save(root/"dataset.info",info);return info;
 }
+void companionFixture(const fs::path& root) {
+  for(unsigned sensor=0;sensor<2;++sensor)
+    raw_fixture::save(root/("imu"+std::to_string(sensor)+".tum"),
+        "1.100000 0.1 -0.2 9.8 0.01 -0.02 0.03\n2.400000 0.2 -0.3 9.7 0.02 -0.03 0.04\n");
+  std::vector<uint8_t> points(32);
+  native8_fixture::put(points,0,1000);native8_fixture::put(points,4,2000);native8_fixture::put(points,8,3000);
+  native8_fixture::put(points,16,4000);native8_fixture::put(points,20,5000);native8_fixture::put(points,24,6000);
+  raw_fixture::save(root/"lidar-data-0000.bin",std::string(reinterpret_cast<const char*>(points.data()),points.size()));
+  raw_fixture::save(root/"lidar.tum",
+      "1.100000 lidar-data-0000.bin 0 16 1 2 35 1 1 1100000000 100 1 0\n"
+      "2.400000 lidar-data-0000.bin 16 16 1 2 35 1 2 2400000000 100 1 0\n");
+  raw_fixture::save(root/"lidar_imu.tum",
+      "1.100000 0.1 -0.2 9.8 0.01 -0.02 0.03 2 35 1 1 1100000000 1 0\n"
+      "2.400000 0.2 -0.3 9.7 0.02 -0.03 0.04 2 35 1 2 2400000000 1 0\n");
+}
 }
 int main(int argc,char** argv) {
   QCoreApplication app(argc,argv);
@@ -95,10 +110,20 @@ int main(int argc,char** argv) {
       return 0;
     }
     if(argc==3&&std::string(argv[1])=="--ui") {
-      QProcess process;process.start(QString::fromLocal8Bit(argv[2]),{"--dataset-playback-self-test",temp.path()});
-      check(process.waitForFinished(80000),"mixed UI timeout");
-      std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();
-      check(process.exitStatus()==QProcess::NormalExit&&process.exitCode()==0,"mixed UI failed");
+      QProcess process;
+      const auto playback=[&](bool success=true){
+        process.start(QString::fromLocal8Bit(argv[2]),{"--dataset-playback-self-test",temp.path()});
+        check(process.waitForFinished(80000),"mixed UI timeout");
+        const auto output=process.readAllStandardOutput()+process.readAllStandardError();
+        std::cout<<output.toStdString();
+        check(process.exitStatus()==QProcess::NormalExit&&((process.exitCode()==0)==success),"mixed UI failed");
+        if(!success)check(output.contains("imu0.tum"),"missing sensor parse error");
+      };
+      playback(); // Older camera-only recordings remain browsable.
+      companionFixture(root);playback(); // Includes sensor samples after the last image.
+      fixture(root,false,false,true);playback(); // Unknown image clocks do not hide sensors or invent alignment.
+      fixture(root);raw_fixture::save(root/"imu0.tum","broken sample\n");playback(false);
+      companionFixture(root);
       process.start(QString::fromLocal8Bit(argv[2]),{"--mixed-live-metadata-self-test",temp.path()});
       check(process.waitForFinished(15000),"mixed live metadata timeout");
       std::cout<<process.readAllStandardOutput().toStdString()<<process.readAllStandardError().toStdString();

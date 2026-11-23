@@ -3856,7 +3856,7 @@ class MainWindow : public QMainWindow {
     connect(dataset_frame_slider_, &QSlider::valueChanged,
             this, [this](int frame) {
               showDatasetFrame(frame);
-              if (frame >= 0 &&
+              if (!(dataset_raw8_ && raw_dataset_.ordinal_only) && frame >= 0 &&
                   static_cast<size_t>(frame) < dataset_frame_count_) {
                 seekDatasetPlaybackToTimestamp(
                     datasetFrameTimestamp(size_t(frame)));
@@ -4086,8 +4086,14 @@ class MainWindow : public QMainWindow {
                                   QString* report) {
     loadRecordedDataset(directory, false);
     if (dataset_raw8_) {
+      const auto root = toFilesystemPath(directory);
       bool ok = !dataset_metadata_only_ && dataset_frame_count_ != 0 &&
           dataset_playback_button_->isEnabled() && !dataset_export_rosbag_button_->isEnabled();
+      for (size_t sensor=0; sensor<2; ++sensor)
+        ok = dataset_playback_data_.onboard_imus[sensor].size() ==
+            summarizeTumFile(root/("imu"+std::to_string(sensor)+".tum")).rows && ok;
+      ok = dataset_playback_data_.lidar_batches.size() == summarizeTumFile(root/"lidar.tum").rows &&
+          dataset_playback_data_.lidar_imu_samples.size() == summarizeTumFile(root/"lidar_imu.tum").rows && ok;
       if (!ok) { if (report) *report = dataset_summary_label_->text(); return false; }
       resize(1480, 940); tabs_->setCurrentWidget(dataset_page_); show();
       // Seek across dissimilar camera timelines while a decode is in flight.
@@ -4109,10 +4115,18 @@ class MainWindow : public QMainWindow {
         QApplication::processEvents(); std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
       ok = !dataset_playback_active_ && wait() && ok;
+      for (size_t sensor=0; sensor<2; ++sensor)
+        ok = dataset_playback_imu_counts_[sensor] == dataset_playback_data_.onboard_imus[sensor].size() && ok;
+      ok = dataset_playback_lidar_imu_count_ == dataset_playback_data_.lidar_imu_samples.size() && ok;
+      if (!dataset_playback_data_.lidar_batches.empty())
+        ok = dataset_playback_lidar_points_ > 0 && dataset_lidar_point_cloud_widget_->pointCount() > 0 && ok;
+      if (raw_dataset_.ordinal_only) ok = dataset_current_frame_ == 0 && ok;
+      const size_t played_cursor = dataset_playback_cursor_;
       const size_t last = dataset_frame_count_ - 1;
       dataset_frame_jump_spin_->findChild<QLineEdit*>()->setText(QString::number(last+1));
       dataset_frame_jump_button_->click();
       ok = wait() && dataset_current_frame_ == int(last) && ok;
+      if (raw_dataset_.ordinal_only) ok = dataset_playback_cursor_ == played_cursor && ok;
       for (size_t c=0;c<4;++c) {
         const bool present = raw_dataset_.display[last][c] >= 0;
         ok = (present != dataset_images_[c].isNull()) && ok;
@@ -4121,9 +4135,12 @@ class MainWindow : public QMainWindow {
       }
       const QString screenshot = qEnvironmentVariable("PRISM_RAW_DATASET_SCREENSHOT");
       if (!screenshot.isEmpty()) { QApplication::processEvents(); ok = grab().save(screenshot) && ok; }
-      if (report) *report = QStringLiteral("Profile dataset seek/play/pause/tail/async PASS=%1 steps=%2 frames=%3/%4/%5/%6")
+      if (report) *report = QStringLiteral("Profile dataset seek/play/pause/tail/async PASS=%1 steps=%2 frames=%3/%4/%5/%6 IMU=%7/%8 LiDAR=%9 LiDAR-IMU=%10 ordinal=%11")
           .arg(ok).arg(dataset_frame_count_).arg(raw_dataset_.cameras[0].size()).arg(raw_dataset_.cameras[1].size())
-          .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size());
+          .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size())
+          .arg(dataset_playback_data_.onboard_imus[0].size()).arg(dataset_playback_data_.onboard_imus[1].size())
+          .arg(dataset_playback_data_.lidar_batches.size()).arg(dataset_playback_data_.lidar_imu_samples.size())
+          .arg(raw_dataset_.ordinal_only);
       setDatasetPlaybackActive(false); return ok;
     }
     const bool streams_loaded =
@@ -4519,6 +4536,10 @@ class MainWindow : public QMainWindow {
     if(!rtcm_file.open(QIODevice::ReadOnly)||rtcm_file.readAll()!=QByteArray(reinterpret_cast<const char*>(rtcm.data()),int(rtcm.size())))return false;
     QFile gnss_file(fromFilesystemPath(status.root/"gnss_observations.bin"));
     if(!gnss_file.open(QIODevice::ReadOnly)||!gnss_file.readAll().contains("GNGGA"))return false;
+    loadRecordedDataset(fromFilesystemPath(status.root),false);
+    if(dataset_metadata_only_||dataset_playback_data_.onboard_imus[0].size()!=4||
+        dataset_playback_data_.onboard_imus[1].size()!=4||!hasDatasetImuPlayback()||
+        hasDatasetLidarPlayback()||!dataset_playback_button_->isEnabled())return false;
     std::cout<<"PASS production mixed recording: "<<fps<<" FPS JPEG + 2 FPS RAW8; source stride, transfer wrap, metadata, serial, two IMUs, GNSS/RTCM, replay and pixel validation\n";
     return true;
   }
@@ -7888,7 +7909,7 @@ class MainWindow : public QMainWindow {
 
   void updateDatasetPlaybackControls() {
     const bool has_frames = dataset_frame_count_ != 0u;
-    const bool can_play = !(dataset_raw8_ && raw_dataset_.ordinal_only) && !dataset_playback_data_.timeline.empty() &&
+    const bool can_play = !dataset_playback_data_.timeline.empty() &&
                           !worker_running_ && !rosbag_export_running_;
     if (!can_play && dataset_playback_active_) {
       dataset_playback_active_ = false;
@@ -8277,8 +8298,13 @@ class MainWindow : public QMainWindow {
       const QSignalBlocker blocker(dataset_frame_slider_);
       dataset_frame_slider_->setValue(0);
       showDatasetFrame(0);
-      seekDatasetPlaybackToTimestamp(
-          datasetFrameTimestamp(0));
+      if (!(dataset_raw8_ && raw_dataset_.ordinal_only)) {
+        seekDatasetPlaybackToTimestamp(datasetFrameTimestamp(0));
+      } else {
+        if (!worker_running_) resetDatasetPlaybackVisualization();
+        dataset_playback_cursor_ = 0u;
+        updateDatasetPlaybackPositionLabel();
+      }
     } else {
       if (!worker_running_) resetDatasetPlaybackVisualization();
       dataset_playback_cursor_ = 0u;
@@ -8823,8 +8849,15 @@ class MainWindow : public QMainWindow {
         dataset_image_export_available_=true;
         dataset_camera_entries_ = raw_dataset_.cameras;
         dataset_frame_count_ = raw_dataset_.timestamps.size();
-        if(!raw_dataset_.ordinal_only)for (size_t i = 0; i < dataset_frame_count_; ++i)
-          dataset_playback_data_.timeline.push_back({raw_dataset_.timestamps[i], DatasetPlaybackEventType::CameraFrame, i});
+        // Profile recordings keep companion streams in the same directory.
+        // Unknown camera timing permits ordinal image browsing, but must not
+        // become a fabricated clock for IMU or LiDAR playback.
+        std::string playback_error;
+        if (!loadDatasetPlaybackData(root, raw_dataset_.ordinal_only
+                ? std::vector<uint64_t>{} : raw_dataset_.timestamps,
+                &dataset_playback_data_, &playback_error)) {
+          throw std::runtime_error("Cannot load companion sensor streams: " + playback_error);
+        }
         dataset_metadata_only_ = false;
         const auto drops = raw_dataset_.dropped[0] + raw_dataset_.dropped[1] + raw_dataset_.dropped[2] + raw_dataset_.dropped[3];
         dataset_summary_label_->setText(uiText(
@@ -8834,12 +8867,24 @@ class MainWindow : public QMainWindow {
             .arg(raw_dataset_.cameras[2].size()).arg(raw_dataset_.cameras[3].size()).arg(drops)
             .arg(raw_dataset_.mixed?uiText("JPEG + 12M RAW8 grayscale","JPEG + 12M RAW8 灰度"):
                 uiText("RAW8 lossless · grayscale display","RAW8 无损 · 灰度显示")));
+        dataset_summary_label_->setText(dataset_summary_label_->text() + uiText(
+            " | IMU %1/%2 | LiDAR %3 batches | LiDAR IMU %4",
+            " | IMU %1/%2 | 雷达 %3 批 | 雷达 IMU %4")
+            .arg(dataset_playback_data_.onboard_imus[0].size())
+            .arg(dataset_playback_data_.onboard_imus[1].size())
+            .arg(dataset_playback_data_.lidar_batches.size())
+            .arg(dataset_playback_data_.lidar_imu_samples.size()));
         QString details = QStringLiteral("device_model=%1\nformat=%2\n").arg(toQString(identity.model),
             raw_dataset_.mixed?QStringLiteral("prism-mixed-dataset-v1"):QStringLiteral("prism-raw8-dataset-v1"));
         for (size_t c = 0; c < 4; ++c)
           details += QStringLiteral("camera%1_images=%2\ncamera%1_dropped=%3\n").arg(c).arg(raw_dataset_.cameras[c].size()).arg(raw_dataset_.dropped[c]);
         details += uiText("\nIndexes and image headers checked. Validate reads the camera streams.\nJPEG is displayed as recorded; RAW8 uses native grayscale pixels. Source files are unchanged.\nROS bag export is not supported for this format.",
             "\n已检查索引和帧头。可使用“验证”检查相机流。\nJPEG 按录制画面显示；RAW8 使用原生灰度像素，不修改原始文件。\n此格式暂不支持 ROS Bag 导出。");
+        details += uiText("\nCompanion IMU and LiDAR samples play using their recorded timestamps; UTC alignment is not inferred.",
+            "\nIMU 与雷达样本按已记录的时间戳回放，不推定 UTC 对齐。");
+        if (raw_dataset_.ordinal_only) details += uiText(
+            "\nCamera timing is unavailable: images can be browsed by frame; sensor playback does not move the images.",
+            "\n相机时标不可用：图像可按帧浏览，传感器回放不会带动图像。");
         dataset_details_->setPlainText(details);
         { const QSignalBlocker blocker(dataset_frame_slider_);
           dataset_frame_slider_->setRange(0, int(dataset_frame_count_)-1); dataset_frame_slider_->setValue(0); }
@@ -8847,12 +8892,17 @@ class MainWindow : public QMainWindow {
           dataset_frame_jump_spin_->setRange(1, int(dataset_frame_count_)); dataset_frame_jump_spin_->setValue(1); }
         dataset_frame_slider_->setEnabled(true);
         dataset_sensor_tabs_->setCurrentIndex(0);
+        resetDatasetPlaybackVisualization();
         showDatasetFrame(0);
-        seekDatasetPlaybackToTimestamp(datasetFrameTimestamp(0));
+        if (!raw_dataset_.ordinal_only) seekDatasetPlaybackToTimestamp(datasetFrameTimestamp(0));
+        else updateDatasetPlaybackPositionLabel();
         updateDatasetPlaybackControls(); refreshControls();
       } catch (const std::exception& error) {
         raw_dataset_ = {};
-        dataset_summary_label_->setText(uiText("Model: %1 | Camera dataset could not be opened: %2", "机型：%1 | 无法打开相机数据集：%2").arg(toQString(identity.model), toQString(error.what())));
+        dataset_camera_entries_ = {}; dataset_playback_data_ = {}; dataset_frame_count_ = 0;
+        dataset_metadata_only_ = true;
+        resetDatasetPlaybackVisualization(); updateDatasetPlaybackPositionLabel();
+        dataset_summary_label_->setText(uiText("Model: %1 | Dataset could not be opened: %2", "机型：%1 | 无法打开数据集：%2").arg(toQString(identity.model), toQString(error.what())));
         // Image extraction preserves independent source rows and does not need
         // the older playback reader's synchronized cadence assumptions.
         try {
