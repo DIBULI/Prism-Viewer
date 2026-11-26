@@ -53,7 +53,8 @@ for scenario in scenarios:
         if scenario.startswith("legacy-"):
             lines = [hashlib.sha256(p.read_bytes()).hexdigest() + "  " + str(p.relative_to(backup)).replace("/", "\\")
                      for p in (backup / "prism-viewer.exe", old_file)]
-            (backup / "SHA256SUMS.txt").write_text("\ufeff" + "\r\n".join(lines) + "\r\n", encoding="utf-8")
+            with (backup / "SHA256SUMS.txt").open("w", encoding="utf-8", newline="") as output:
+                output.write("\ufeff" + "\r\n".join(lines) + "\r\n")
             if scenario == "legacy-modified":
                 old_file.write_bytes(b"user modified")
             elif scenario == "legacy-traversal":
@@ -115,7 +116,9 @@ for scenario in scenarios:
                 assert personal.read_text() == "preserve recording"
                 assert not (backup / "prism-viewer.exe").exists() and not stage.exists()
             else:
-                assert code == 0 and not backup.exists(), (scenario, code)
+                assert code == 0 and not backup.exists(), (scenario, code,
+                    [str(p.relative_to(backup)) for p in backup.rglob("*")],
+                    (work / "startup-cleanup.json").read_text() if (work / "startup-cleanup.json").exists() else "no cleanup report")
                 if scenario != "stage-symlink":
                     assert not stage.exists()
                 else:
