@@ -41,6 +41,7 @@
 #include "ui/main_window.hpp"
 #include "ui/viewer_update_dialog.hpp"
 #include "update/startup_ack.hpp"
+#include "update/cleanup.hpp"
 #include "ui/preview_image_decoder.hpp"
 #include "ui/raw_preview.hpp"
 #include "communication/capture_credits.hpp"
@@ -12790,11 +12791,12 @@ int runViewerApplication(int argc, char** argv) {
   const int update_ack=command_line.indexOf(QStringLiteral("--viewer-update-ack"));
   if(update_ack>=0&&update_ack+1<command_line.size()){
     const auto path=command_line[update_ack+1];
-    QTimer::singleShot(2000,&app,[path]{
+    QTimer::singleShot(2000,&app,[path,&app]{
       if (!update::writeStartupAcknowledgement(path))
         qWarning("Cannot write Viewer update startup acknowledgement");
+      else update::scheduleUpdateCleanup(&app, path);
     });
-  }
+  } else update::scheduleUpdateCleanup(&app);
   return app.exec();
 }
 

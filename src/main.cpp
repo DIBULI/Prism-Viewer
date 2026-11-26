@@ -6,7 +6,8 @@
 #include <string_view>
 
 int main(int argc, char** argv) {
-  if (argc == 4 && std::string_view(argv[1]) == "--cleanup-update-backup") {
+  if ((argc == 4 && std::string_view(argv[1]) == "--cleanup-update-backup") ||
+      (argc == 3 && std::string_view(argv[1]) == "--finish-update-cleanup")) {
     QCoreApplication app(argc, argv);
     QDir root(QCoreApplication::applicationDirPath());
 #ifdef Q_OS_MACOS
@@ -15,6 +16,7 @@ int main(int argc, char** argv) {
     root.cdUp();
 #endif
     const auto args = app.arguments();
+    if (argc == 3) return prism_viewer::update::finishUpdateCleanup(root.absolutePath(), args[2]);
     return prism_viewer::update::cleanupPreviousPackage(root.absolutePath(), args[2], args[3]);
   }
   // No display, device connection or event loop is needed to inspect an artifact.

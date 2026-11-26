@@ -1,7 +1,7 @@
 """Exercise the shipped replacement helper only in fresh temporary packages."""
 import json,os,shutil,subprocess,sys,tempfile,time
 from pathlib import Path
-resources=Path(sys.argv[1]);fixture=Path(sys.argv[2]).resolve()
+resources=Path(sys.argv[1]).resolve();fixture=Path(sys.argv[2]).resolve()
 sys.path.insert(0,str(resources.parent/'scripts'))
 from package_inventory import write_inventory
 def wait(path,process,seconds=12):

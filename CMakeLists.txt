@@ -662,6 +662,9 @@ if(BUILD_TESTING)
     add_test(NAME viewer-update-cleanup COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_cleanup_test.py" $<TARGET_FILE:update-process-fixture>)
     set_tests_properties(viewer-update-cleanup PROPERTIES TIMEOUT 30)
+    add_test(NAME viewer-update-cleanup-recovery COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_cleanup_recovery_test.py" $<TARGET_FILE:update-process-fixture>)
+    set_tests_properties(viewer-update-cleanup-recovery PROPERTIES TIMEOUT 60)
     add_test(NAME viewer-update-startup COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_startup_test.py" $<TARGET_FILE:prism-viewer>)
     set_tests_properties(viewer-update-startup PROPERTIES TIMEOUT 45

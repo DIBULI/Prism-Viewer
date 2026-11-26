@@ -24,7 +24,11 @@ and close the device connection before installation. Failure to start the new
 application restores the previous package. After successful startup, its listed
 program files are removed; personal files added to the installation are preserved.
 Cleanup failure never rolls back a successful update. This applies to updates
-initiated by the new updater; older helpers and historical backups are unchanged.
+initiated by older helpers too. The new Viewer removes matching previous-package
+files and empty staging directories after the helper confirms installation.
+Windows file locks are retried briefly and again on a later startup. Older
+packages with a checksum list are supported; unidentified backups, modified
+legacy files, personal files and failed-update payloads are preserved.
 Writable portable-package/app locations and 9 GiB free space are required.
 This updates Viewer and its bundled SDK only, never device firmware. Older Viewer
 builds without this button need one manual package replacement to gain online updates.
