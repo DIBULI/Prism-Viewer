@@ -149,6 +149,14 @@ prism::GnssReceptionStatus Client::gnssReceptionStatus() {
 }
 
 std::vector<prism::RecordedDataset> Client::recordedDatasets() {return datasetApi()->list(handle_);}
+prism::DeviceLogArchive Client::deviceLogArchive(const prism::DeviceLogProgress& progress,const prism::DeviceLogCancel& cancel) {
+  const auto get=reinterpret_cast<prism::GetDeviceLogRuntimeApi>(
+      GetProcAddress(loadModule(),prism::kDeviceLogRuntimeApiEntryPoint));
+  const auto* api=get?get(1):nullptr;
+  if(!api||api->abi_version!=1||api->struct_size<sizeof(*api)||!api->collect)
+    throw std::runtime_error("Device log SDK extension unavailable; update the complete Viewer package");
+  return api->collect(handle_,progress,cancel);
+}
 std::string Client::downloadRecordedDataset(const std::string& name,const std::string& parent,
     const prism::DatasetProgress& progress,const prism::DatasetCancel& cancel) {
   return datasetApi()->download(handle_,name,parent,progress,cancel);

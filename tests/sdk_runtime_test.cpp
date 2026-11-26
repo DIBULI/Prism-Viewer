@@ -16,6 +16,7 @@ extern "C" const prism::GnssReceptionRuntimeApi* prism_usb_sdk_get_gnss_receptio
 extern "C" const prism::LidarPowerRuntimeApi* prism_usb_sdk_get_lidar_power_api(uint32_t);
 extern "C" const prism::NetworkRuntimeApi* prism_usb_sdk_get_network_api(uint32_t);
 extern "C" const prism::ProfileRuntimeApi* prism_usb_sdk_get_profile_api(uint32_t);
+extern "C" const prism::DeviceLogRuntimeApi* prism_usb_sdk_get_device_log_api(uint32_t);
 #endif
 
 int main() {
@@ -33,6 +34,15 @@ int main() {
     const auto get_api = &prism_usb_sdk_get_runtime_api;
 #endif
     if (!get_api) throw std::runtime_error("SDK runtime entry point missing");
+#ifdef _WIN32
+    const auto get_logs=reinterpret_cast<prism::GetDeviceLogRuntimeApi>(
+        GetProcAddress(module,prism::kDeviceLogRuntimeApiEntryPoint));
+#else
+    const auto get_logs=&prism_usb_sdk_get_device_log_api;
+#endif
+    const auto* logs=get_logs?get_logs(1):nullptr;
+    if(!logs||logs->abi_version!=1||logs->struct_size!=sizeof(prism::DeviceLogRuntimeApi)||
+        !logs->collect||get_logs(0)||get_logs(2))throw std::runtime_error("Device log extension is incomplete");
     const auto* api = get_api(prism::kRuntimeApiVersion);
     if (!api || api->abi_version != prism::kRuntimeApiVersion ||
         api->struct_size != sizeof(prism::RuntimeApi) || !api->sdk_version ||

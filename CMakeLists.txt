@@ -241,6 +241,7 @@ add_executable(prism-viewer
   src/update/cleanup.cpp
   src/ui/preview_image_decoder.cpp
   src/ui/rk_dataset_dialog.cpp
+  src/ui/device_logs_dialog.cpp
   src/ui/wifi_hotspot_panel.cpp
   src/ui/zoomable_image_view.cpp
 )
@@ -456,6 +457,13 @@ if(PRISM_DEPLOY_RUNTIME_DEPENDENCIES)
 endif()
 
 include(CTest)
+if(BUILD_TESTING)
+  add_executable(device-logs-dialog-test tests/device_logs_dialog_test.cpp src/ui/device_logs_dialog.cpp src/common/ui_text.cpp)
+  target_include_directories(device-logs-dialog-test PRIVATE src)
+  target_link_libraries(device-logs-dialog-test PRIVATE prism-viewer-sdk ${QT_PACKAGE}::Widgets)
+  add_test(NAME device-logs-dialog COMMAND device-logs-dialog-test)
+  set_tests_properties(device-logs-dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+endif()
 if(BUILD_TESTING)
   add_executable(live-exposure-rows-test tests/live_exposure_rows_test.cpp)
   target_include_directories(live-exposure-rows-test PRIVATE src)

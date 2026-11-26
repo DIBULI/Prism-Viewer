@@ -46,12 +46,14 @@
 #include "communication/capture_credits.hpp"
 #include "ui/recording_loss_warning.hpp"
 #include "ui/rk_dataset_dialog.hpp"
+#include "ui/device_logs_dialog.hpp"
 #include "ui/wifi_hotspot_panel.hpp"
 
 #include <QtCore/QByteArray>
 #include <QtCore/QBuffer>
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
+#include <QtCore/QStandardPaths>
 #include <QtCore/QEvent>
 #include <QtCore/QFileInfo>
 #include <QtCore/QMetaObject>
@@ -3697,6 +3699,31 @@ class MainWindow : public QMainWindow {
     auto* copy_log_button = new QPushButton(uiText("Copy All", "全部复制"), log_dialog_);
     auto* clear_log_button = new QPushButton(uiText("Clear", "清空"), log_dialog_);
     auto* close_log_button = new QPushButton(uiText("Close", "关闭"), log_dialog_);
+    auto* device_logs_button = new QPushButton(uiText("Export device logs ZIP…", "导出设备日志 ZIP……"), log_dialog_);
+    device_logs_button->setObjectName(QStringLiteral("exportDeviceLogsButton"));
+    log_actions->addWidget(device_logs_button);
+    connect(device_logs_button,&QPushButton::clicked,this,[this] {
+      if(!client_.isOpen()){showOpenDeviceHint(uiText("Device logs","设备日志"));return;}
+      if(worker_running_||rosbag_export_running_||dataset_recorder_.isActive()||rawRecordingActive()||
+          time_sync_running_||wifi_operation_running_||camera_exposure_operation_running_||
+          camera_encoding_operation_running_||lidar_network_operation_running_||upgrade_running_||
+          device_logs_running_||cors_session_.active()||client_.streamTransferActive()) {
+        QMessageBox::information(log_dialog_,uiText("Device logs","设备日志"),
+          uiText("Stop capture/recording and host CORS, and wait for device operations to finish before exporting logs.",
+                 "请先停止采集、录制和主机 CORS，并等待设备操作完成，再导出日志。"));return;
+      }
+      auto path=QFileDialog::getSaveFileName(log_dialog_,uiText("Save device logs","保存设备日志"),
+        QDir(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).filePath(
+          QStringLiteral("prism-device-logs-%1.zip").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")))),
+        QStringLiteral("ZIP (*.zip)"));
+      if(path.isEmpty())return;
+      if(!path.endsWith(QStringLiteral(".zip"),Qt::CaseInsensitive))path+=QStringLiteral(".zip");
+      device_logs_running_=true;refreshControls();
+      prism_viewer::ui::showDeviceLogsDialog(log_dialog_,path,[this](const prism::DeviceLogProgress& p,const prism::DeviceLogCancel& c){
+        return withClientIo([&]{return client_.deviceLogArchive(p,c);});
+      });
+      device_logs_running_=false;refreshControls();
+    });
     log_actions->addWidget(log_auto_scroll_);
     log_actions->addStretch(1);
     log_actions->addWidget(copy_log_button);
@@ -7275,7 +7302,7 @@ class MainWindow : public QMainWindow {
     const bool encoding_busy = camera_encoding_operation_running_;
     const bool lidar_network_busy = lidar_network_operation_running_;
     const bool busy = running || time_syncing || wifi_busy || exposure_busy ||
-                      encoding_busy || lidar_network_busy;
+                      encoding_busy || lidar_network_busy || device_logs_running_;
     const bool upgrading = upgrade_running_;
     const bool cors_active = cors_session_.active();
     const bool device_open = connected && !maintenance_only_;
@@ -11226,6 +11253,7 @@ class MainWindow : public QMainWindow {
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> worker_running_{false};
   std::atomic<bool> upgrade_running_{false};
+  std::atomic<bool> device_logs_running_{false};
   std::atomic<bool> time_sync_running_{false};
   std::atomic<bool> wifi_operation_running_{false};
   std::atomic<bool> camera_exposure_operation_running_{false};

@@ -65,6 +65,7 @@ class Client {
 
   prism::HelloInfo hello();
   std::vector<prism::RecordedDataset> recordedDatasets();
+  prism::DeviceLogArchive deviceLogArchive(const prism::DeviceLogProgress& progress={},const prism::DeviceLogCancel& cancel={});
   std::string downloadRecordedDataset(const std::string& name,const std::string& parent,
       const prism::DatasetProgress& progress={},const prism::DatasetCancel& cancel={});
   prism::DeviceInfo deviceInfo();
