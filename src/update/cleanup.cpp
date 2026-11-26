@@ -204,46 +204,54 @@ int finishUpdateCleanup(const QString& installed, const QString& work) {
   const QFileInfo target(installed);
   if (!validRoot(target)) return 2;
   const auto receipt = receiptPath(installed);
+  const auto previous = QJsonDocument::fromJson(readSmall(receipt, 32768)).object();
   if (!work.isEmpty()) {
     if (!committed(work)) return 2;
   } else {
-    const auto previous = QJsonDocument::fromJson(readSmall(receipt, 32768)).object();
     if (previous.value("format").toInt() != 1 || previous.value("installed_root").toString() != installed ||
         !previous.value("committed").toBool()) return 2;
   }
   if (!QDir().mkpath(QFileInfo(receipt).absolutePath())) return 4;
   QLockFile lock(receiptPath(installed) + ".lock");
   if (!lock.tryLock(1000)) return 4;
+  QSet<QString> tokens;
+  if (previous.value("installed_root").toString() == installed && previous.value("committed").toBool()) {
+    for (const auto& entry : previous.value("stages").toArray()) {
+      if (tokens.size() < 32 && QRegularExpression("^[A-Za-z0-9]{6}$").match(entry.toString()).hasMatch())
+        tokens.insert(entry.toString());
+    }
+  }
   QJsonObject evidence{{"format", 1}, {"installed_root", installed}, {"committed", true}};
-  if (!writeJson(receipt, evidence)) return 4;
   int result = 0;
   QJsonArray reports;
   // Outside the GUI: short retries for transient Windows handles, then another
   // bounded pass on the next healthy startup using the persisted commit.
   for (int attempt = 0; attempt < 3; ++attempt) {
     bool deferred = false;
-    int count = 0;
     reports = {};
     const auto entries = target.dir().entryInfoList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
     for (const auto& backup : entries) {
-      if (backupToken(target, backup).isEmpty()) continue;
-      if (++count > 32) break;
+      const auto token = backupToken(target, backup);
+      if (!token.isEmpty() && tokens.size() < 32) tokens.insert(token);
+    }
+    evidence.insert("stages", QJsonArray::fromStringList(tokens.values()));
+    if (!writeJson(receipt, evidence)) return 4;
+    for (const auto& token : tokens.values()) {
+      const QFileInfo backup(target.dir().filePath(target.fileName() + ".backup-" + token));
       QJsonObject report;
       const int code = cleanPackage(target, backup, report);
       report.insert("backup", backup.fileName()); report.insert("code", code);
       reports.append(report);
       deferred |= code == 4;
-    }
-    // Empty stages only; payloads from failed/prepared updates remain intact.
-    for (const auto& stage : entries) {
-      const auto match = QRegularExpression("^\\.prism-viewer-stage-([A-Za-z0-9]{6})$").match(stage.fileName());
-      if (match.hasMatch()) emptyStage(target.dir(), match.captured(1));
+      if (!backup.exists() && !QFileInfo::exists(target.dir().filePath(".prism-viewer-stage-" + token)))
+        tokens.remove(token);
     }
     result = deferred ? 4 : 0;
     if (!deferred) break;
     if (attempt < 2) QThread::msleep(1000);
   }
   evidence.insert("backups", reports); evidence.insert("deferred", result != 0);
+  evidence.insert("stages", QJsonArray::fromStringList(tokens.values()));
   writeJson(receipt, evidence);
   if (!work.isEmpty()) writeJson(work + "/startup-cleanup.json", evidence);
   return result;

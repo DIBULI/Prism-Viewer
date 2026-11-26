@@ -71,6 +71,8 @@ for scenario in scenarios:
         unrelated.mkdir(); (unrelated / "data").write_text("unrelated")
         failed_stage = base / ".prism-viewer-stage-FAILED"
         failed_stage.mkdir(); (failed_stage / "failed-package").write_text("keep failure evidence")
+        other_stage = base / ".prism-viewer-stage-OTHER1"
+        (other_stage / "extract").mkdir(parents=True)
         if scenario == "stage-symlink":
             shutil.rmtree(stage)
             stage.symlink_to(unrelated, target_is_directory=True)
@@ -133,6 +135,7 @@ for scenario in scenarios:
             assert outside.read_text() == "outside unchanged"
             assert (unrelated / "data").read_text() == "unrelated"
             assert (failed_stage / "failed-package").read_text() == "keep failure evidence"
+            assert (other_stage / "extract").is_dir(), "unrelated empty stage belongs to another update"
             assert executable.exists()
         finally:
             if unlock: unlock()
